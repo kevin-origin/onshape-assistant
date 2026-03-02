@@ -21,16 +21,16 @@ from flask import Flask, jsonify, render_template_string, request, redirect
 # ============================================================
 # CREDENTIALS & CONFIG
 # ============================================================
-ACCESS_KEY         = "on_sRiFqD1gRGXiwVGXyzANH"
-SECRET_KEY         = "9wc3KzifxPAcIkapb7tVqFjGio98kIcIHxcpMJQ7tYBoa5oz"
+ACCESS_KEY         = os.environ.get("ONSHAPE_ACCESS_KEY",    "on_sRiFqD1gRGXiwVGXyzANH")
+SECRET_KEY         = os.environ.get("ONSHAPE_SECRET_KEY",    "9wc3KzifxPAcIkapb7tVqFjGio98kIcIHxcpMJQ7tYBoa5oz")
 BASE_URL           = "https://cad.onshape.com"
-COMPANY_ID         = "6810c247e7c40668c32816a6"
+COMPANY_ID         = os.environ.get("ONSHAPE_COMPANY_ID",    "6810c247e7c40668c32816a6")
 REGISTRY_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "folders.json")
 DEFAULT_SUBFOLDERS = ["Parts", "Assemblies", "Drawings"]
 CACHE_TTL          = 300  # seconds (5 minutes)
 
 # Watcher
-SLACK_WEBHOOK_URL        = "https://hooks.slack.com/services/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"
+SLACK_WEBHOOK_URL        = os.environ.get("SLACK_WEBHOOK_URL",     "https://hooks.slack.com/services/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")
 WATCHER_POLL_INTERVAL    = 30   # seconds; increase in production
 PROTECTION_DELAY_SECONDS = 30
 VERSION_DELAY_SECONDS    = 10
@@ -128,18 +128,16 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
                     "position": {"x": 0.06, "y": 0.12},
                     "orientation": "front",
                     "scale": {"scaleSource": "Custom", "numerator": 1, "denominator": 1},
-                    "reference": {"elementId": ps_eid, "idTag": part_id},
+                    "reference": {"elementId": ps_eid, "partId": part_id},
                     "showViewLabel": True,
-                    "showScaleLabel": True,
                 },
                 {
                     "viewType": "TopLevel",
                     "position": {"x": 0.20, "y": 0.12},
                     "orientation": "isometric",
                     "scale": {"scaleSource": "Custom", "numerator": 1, "denominator": 1},
-                    "reference": {"elementId": ps_eid, "idTag": part_id},
+                    "reference": {"elementId": ps_eid, "partId": part_id},
                     "showViewLabel": True,
-                    "showScaleLabel": True,
                 },
             ],
         }],
@@ -158,46 +156,11 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
             return
         ok = poll_modify_status(doc_id, wid, drawing_eid, mid)
         if not ok:
-            log("Views did not complete — skipping dimensions")
+            log("Views did not complete successfully")
             return
         log(f"Views added to drawing for '{part_name}'")
     except Exception as e:
         log(f"View creation error: {e}")
-        return
-
-    # --- Phase 2: add linear dimensions (best-effort) ---
-    dim_body = {
-        "description": "Add dims",
-        "jsonRequests": [{
-            "messageName": "onshapeCreateAnnotations",
-            "formatVersion": "2021-01-01",
-            "annotations": [
-                {
-                    "type": "BTModelAnnotationLinearDimension1905",
-                    "BTModelAnnotationLinearDimension1905": {
-                        "dimensionType": "POINT_TO_POINT",
-                        "point1": {"x": 0.03, "y": 0.09},
-                        "point2": {"x": 0.09, "y": 0.09},
-                        "textPosition": {"x": 0.06, "y": 0.07},
-                    },
-                },
-            ],
-        }],
-    }
-    try:
-        r = requests.post(
-            f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{drawing_eid}/modify",
-            headers=HEADERS, json=dim_body, auth=AUTH, timeout=20,
-        )
-        if r.status_code not in (200, 201):
-            log(f"Dimension modify failed ({r.status_code}): {r.text[:300]}")
-            return
-        mid = r.json().get("id", "")
-        if mid:
-            poll_modify_status(doc_id, wid, drawing_eid, mid)
-        log(f"Dimension attempt done for '{part_name}'")
-    except Exception as e:
-        log(f"Dimension error: {e}")
 
 
 # ============================================================
@@ -585,6 +548,17 @@ def time_ago(iso_str):
         else:              return f"{secs // 86400}d ago"
     except Exception:
         return iso_str[:10]
+
+
+_watcher_started = False
+
+@app.before_request
+def ensure_watcher():
+    global _watcher_started
+    if not _watcher_started:
+        _watcher_started = True
+        t = threading.Thread(target=watcher_loop, daemon=True, name="watcher")
+        t.start()
 
 
 # ============================================================
