@@ -12,6 +12,7 @@ Local:   python dashboard.py  ->  http://localhost:5001
 import os
 import json
 import time
+import random
 import threading
 import requests
 from datetime import datetime
@@ -31,6 +32,8 @@ CACHE_TTL          = 300  # seconds (5 minutes)
 
 # Watcher
 SLACK_WEBHOOK_URL        = os.environ.get("SLACK_WEBHOOK_URL",     "https://hooks.slack.com/services/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")
+WEBHOOK_SECRET           = os.environ.get("ONSHAPE_WEBHOOK_SECRET", "artila-webhook-secret")
+DASHBOARD_URL            = os.environ.get("DASHBOARD_URL",          "http://localhost:5001")
 WATCHER_POLL_INTERVAL    = 30   # seconds; increase in production
 PROTECTION_DELAY_SECONDS = 30
 VERSION_DELAY_SECONDS    = 10
@@ -42,7 +45,18 @@ HEADERS = {
     "Accept": "application/json;charset=UTF-8;qs=0.09",
     "Content-Type": "application/json",
 }
-AUTH = (ACCESS_KEY, SECRET_KEY)
+# Key pool — all pairs must be from the same Onshape account (same COMPANY_ID).
+_KEY_POOL = [
+    (ACCESS_KEY, SECRET_KEY),
+    ("on_z1UhhHZH6oalYiXInyEYi", "bYSpbfhM6KJQbzBVDGLCCFwaQFQHStnuYwObGamtxHhPVYs5"),
+    ("on_OEu3wzjc3lrvyh1wZl0V9", "R1AlU0ZraRWOOZoiJP41eYS6zlxlL6AwTrxvbaiB9gDcHIWR"),
+    ("on_0iSvyZlEfnmBTMagWG1MT", "Yt5li8BzbUPNUaV3uLJbNA5tuBvlxQDcJsRxGYVHI3cIfxay"),
+    ("on_AwY0N0aTHRZ3lH1BvIXq0",  "10eAjkwdf83tSgoRgbTkvrXyESTmcQi2K4TTJtqUcN3BuM3C"),
+    ("on_SGYDfnKOfECj80oPyTIpf",  "jNPlQ4eUoS7WBkrrmY6EXf72oyoHXW79ns8gGbJDlpLDANU3"),
+    ("on_LeDYm2hVFdCuc15ghJdbs",  "jkEU9iGpz8v7vdd0GnyyAoTHwBU9HFT0K0m3JpgEHKDCFCbV"),
+]
+def next_auth():
+    return random.choice(_KEY_POOL)
 
 app = Flask(__name__)
 
@@ -59,6 +73,8 @@ doc_timers    = {}
 watcher_lock  = threading.Lock()
 _recent_docs  = []   # list of up to 5 dicts; populated by watcher, read by index()
 _rdocs_lock   = threading.Lock()
+_recent_releases = []
+_releases_lock   = threading.Lock()
 
 
 def log(msg):
@@ -74,7 +90,7 @@ def onshape_get(path, params=None):
     r = requests.get(
         f"{BASE_URL}{path}",
         headers=HEADERS,
-        auth=AUTH,
+        auth=next_auth(),
         params=params,
         timeout=15,
     )
@@ -87,7 +103,7 @@ def onshape_post(path, body):
         f"{BASE_URL}{path}",
         headers=HEADERS,
         json=body,
-        auth=AUTH,
+        auth=next_auth(),
         timeout=15,
     )
     r.raise_for_status()
@@ -115,7 +131,30 @@ def poll_modify_status(doc_id, wid, eid, mid, timeout=30):
     return False
 
 
-def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
+def get_part_scale(doc_id, wid, ps_eid, part_id):
+    """Returns (numerator, denominator) for a scale that fits the part on the sheet."""
+    try:
+        bb = onshape_get(
+            f"/api/v10/parts/d/{doc_id}/w/{wid}/e/{ps_eid}/partid/{part_id}/boundingboxes"
+        )
+        dx = (bb["highX"] - bb["lowX"]) * 1000  # metres → mm
+        dy = (bb["highY"] - bb["lowY"]) * 1000
+        dz = (bb["highZ"] - bb["lowZ"]) * 1000
+        largest = max(dx, dy, dz)
+    except Exception as e:
+        log(f"Bounding box fetch failed ({e}); defaulting to 1:1")
+        return 1, 1
+
+    AVAILABLE = 120.0  # mm per view slot on an A-size sheet
+    standards = [(2,1),(1,1),(1,2),(1,5),(1,10),(1,20),(1,50)]
+    for num, den in standards:
+        if largest * num / den <= AVAILABLE:
+            return num, den
+    return 1, 50  # fallback for huge parts
+
+
+def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, scale=(1,1)):
+    log(f"Drawing scale for '{part_name}': {scale[0]}:{scale[1]}")
     # --- Phase 1: add front + isometric views with labels ---
     view_body = {
         "description": "Add views",
@@ -127,7 +166,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
                     "viewType": "TopLevel",
                     "position": {"x": 0.06, "y": 0.12},
                     "orientation": "front",
-                    "scale": {"scaleSource": "Custom", "numerator": 1, "denominator": 1},
+                    "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"elementId": ps_eid, "partId": part_id},
                     "showViewLabel": True,
                 },
@@ -135,7 +174,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
                     "viewType": "TopLevel",
                     "position": {"x": 0.20, "y": 0.12},
                     "orientation": "isometric",
-                    "scale": {"scaleSource": "Custom", "numerator": 1, "denominator": 1},
+                    "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"elementId": ps_eid, "partId": part_id},
                     "showViewLabel": True,
                 },
@@ -145,7 +184,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
     try:
         r = requests.post(
             f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{drawing_eid}/modify",
-            headers=HEADERS, json=view_body, auth=AUTH, timeout=20,
+            headers=HEADERS, json=view_body, auth=next_auth(), timeout=20,
         )
         if r.status_code not in (200, 201):
             log(f"View modify failed ({r.status_code}): {r.text[:300]}")
@@ -161,6 +200,74 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
         log(f"Views added to drawing for '{part_name}'")
     except Exception as e:
         log(f"View creation error: {e}")
+        return
+
+    # --- Phase 2: add Sheet 2 ("Flat Pattern") ---
+    sheet_body = {
+        "description": "Add flat pattern sheet",
+        "jsonRequests": [{
+            "messageName": "onshapeCreateSheets",
+            "formatVersion": "2021-01-01",
+            "sheets": [{"name": "Flat Pattern"}],
+        }],
+    }
+    try:
+        r = requests.post(
+            f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{drawing_eid}/modify",
+            headers=HEADERS, json=sheet_body, auth=next_auth(), timeout=20,
+        )
+        if r.status_code not in (200, 201):
+            log(f"Sheet 2 create failed ({r.status_code}): {r.text[:300]}")
+            return
+        mid = r.json().get("id", "")
+        if not mid:
+            log("Sheet 2 modify: no modification ID")
+            return
+        ok = poll_modify_status(doc_id, wid, drawing_eid, mid)
+        if not ok:
+            log("Sheet 2 creation did not complete successfully")
+            return
+        log(f"Sheet 2 added for '{part_name}'")
+    except Exception as e:
+        log(f"Sheet 2 creation error: {e}")
+        return
+
+    # --- Phase 3: add flat pattern view on Sheet 2 ---
+    flat_body = {
+        "description": "Add flat pattern view",
+        "jsonRequests": [{
+            "messageName": "onshapeCreateViews",
+            "formatVersion": "2021-01-01",
+            "views": [{
+                "viewType": "TopLevel",
+                "position": {"x": 0.13, "y": 0.12},
+                "orientation": "flatPattern",
+                "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
+                "reference": {"elementId": ps_eid, "partId": part_id},
+                "showViewLabel": True,
+                "sheetIndex": 1,
+            }],
+        }],
+    }
+    try:
+        r = requests.post(
+            f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{drawing_eid}/modify",
+            headers=HEADERS, json=flat_body, auth=next_auth(), timeout=20,
+        )
+        if r.status_code not in (200, 201):
+            log(f"Flat pattern view failed ({r.status_code}) — part may not be sheet metal")
+            return
+        mid = r.json().get("id", "")
+        if not mid:
+            log("Flat pattern modify: no modification ID")
+            return
+        ok = poll_modify_status(doc_id, wid, drawing_eid, mid)
+        if ok:
+            log(f"Flat pattern view added for '{part_name}'")
+        else:
+            log(f"Flat pattern view failed for '{part_name}' — likely not sheet metal")
+    except Exception as e:
+        log(f"Flat pattern view error: {e}")
 
 
 # ============================================================
@@ -305,7 +412,7 @@ def create_branch(doc_id, doc_name, workspace_id):
         "workspaceId": workspace_id,
     }
     try:
-        r = requests.post(url, headers=HEADERS, json=body, auth=AUTH, timeout=10)
+        r = requests.post(url, headers=HEADERS, json=body, auth=next_auth(), timeout=10)
         if r.status_code in (200, 201):
             branch_id = r.json().get("id", "?")
             log(f"Branch '{AUTO_BRANCH_NAME}' created. ID: {branch_id}")
@@ -337,7 +444,7 @@ def create_initial_version(doc_id, doc_name, workspace_id):
         try:
             r = requests.get(
                 f"{BASE_URL}/api/v10/documents/{doc_id}",
-                headers=HEADERS, auth=AUTH, timeout=5
+                headers=HEADERS, auth=next_auth(), timeout=5
             )
             if r.status_code == 200:
                 doc_data = r.json()
@@ -367,7 +474,7 @@ def create_initial_version(doc_id, doc_name, workspace_id):
 
     log(f"Creating version '{version_name}'...")
     try:
-        r = requests.post(url, headers=HEADERS, json=body, auth=AUTH, timeout=10)
+        r = requests.post(url, headers=HEADERS, json=body, auth=next_auth(), timeout=10)
         if r.status_code in (200, 201):
             vid = r.json().get("id", "?")
             log(f"Version created. ID: {vid}")
@@ -414,7 +521,7 @@ def protection_reminder(doc_id, doc_name):
     send_slack(
         "New Document Setup — Action Required",
         f"Document *{doc_name}* setup complete:\n{v_line}\n{b_line}\n\n"
-        f"Enable workspace protection on Main now.",
+        f"Please enable workspace protection and continue work in the development branch.",
         f"{BASE_URL}/documents/{doc_id}",
     )
 
@@ -550,6 +657,40 @@ def time_ago(iso_str):
         return iso_str[:10]
 
 
+def seed_recent_releases():
+    try:
+        data = onshape_get("/api/v10/releasepackages",
+                           params={"companyId": COMPANY_ID, "limit": 5,
+                                   "sortColumn": "createdAt", "sortOrder": "desc"})
+        items = data.get("items", data if isinstance(data, list) else [])
+        with _releases_lock:
+            for item in items:
+                _recent_releases.append({
+                    "id":       item.get("id", ""),
+                    "name":     item.get("name", "Release"),
+                    "state":    item.get("requestState", "UNKNOWN"),
+                    "by":       item.get("requestedBy", {}).get("name", "—"),
+                    "time_ago": time_ago(item.get("createdAt", "")),
+                })
+        log(f"Release seed: {len(_recent_releases)} releases loaded")
+    except Exception as e:
+        log(f"Release seed error: {e}")
+
+
+def register_release_webhook():
+    url = DASHBOARD_URL.rstrip("/") + "/webhook"
+    body = {
+        "url":     url,
+        "filter":  "onshape.revision.lifecycle.changed",
+        "options": {"collapseEvents": False},
+    }
+    try:
+        r = onshape_post("/api/v10/webhooks", body)
+        log(f"Release webhook registered: id={r.get('id', '?')} -> {url}")
+    except Exception as e:
+        log(f"Release webhook registration failed: {e} — releases will not be live-updated")
+
+
 _watcher_started = False
 
 @app.before_request
@@ -557,8 +698,9 @@ def ensure_watcher():
     global _watcher_started
     if not _watcher_started:
         _watcher_started = True
-        t = threading.Thread(target=watcher_loop, daemon=True, name="watcher")
-        t.start()
+        threading.Thread(target=watcher_loop, daemon=True, name="watcher").start()
+        threading.Thread(target=seed_recent_releases, daemon=True).start()
+        threading.Thread(target=register_release_webhook, daemon=True).start()
 
 
 # ============================================================
@@ -793,6 +935,28 @@ HTML = """<!DOCTYPE html>
   </div>
   {% endif %}
 
+  {% if recent_releases %}
+  <div class="mt-10">
+    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">Recent Releases</h2>
+    <div class="flex flex-col gap-3">
+      {% for rel in recent_releases %}
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex items-center justify-between gap-3">
+        <div>
+          <p class="font-semibold text-sm text-white">{{ rel.name }}</p>
+          <p class="text-xs text-gray-500 mt-0.5">{{ rel.time_ago }} &middot; {{ rel.by }}</p>
+        </div>
+        <span class="px-2 py-1 rounded text-xs border
+          {% if rel.state == 'RELEASED' %}bg-green-950 text-green-400 border-green-800
+          {% elif rel.state == 'PENDING' %}bg-yellow-950 text-yellow-400 border-yellow-800
+          {% else %}bg-gray-800 text-gray-400 border-gray-700{% endif %}">
+          {{ rel.state }}
+        </span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endif %}
+
 </main>
 
 <script>
@@ -849,10 +1013,14 @@ def index():
     with _rdocs_lock:
         recent_docs = list(_recent_docs)
 
+    with _releases_lock:
+        recent_releases = list(_recent_releases)
+
     return render_template_string(
         HTML,
         folders=folder_list,
         recent_docs=recent_docs,
+        recent_releases=recent_releases,
         error=error,
         now=datetime.now().strftime("%H:%M"),
         flash_msg=request.args.get("msg", ""),
@@ -930,6 +1098,27 @@ def api_watcher_status():
     })
 
 
+@app.route("/webhook", methods=["POST"])
+def webhook():
+    data = request.get_json(silent=True) or {}
+    event = data.get("event", "")
+    if "revision" in event or "release" in event:
+        payload = data.get("payload", {})
+        rel_id   = payload.get("releasePackageId", data.get("id", ""))
+        rel_name = payload.get("name", "Release")
+        state    = payload.get("requestState", "UNKNOWN")
+        by       = payload.get("requestedBy", {}).get("name", "—")
+        with _releases_lock:
+            _recent_releases[:] = [r for r in _recent_releases if r["id"] != rel_id]
+            _recent_releases.insert(0, {
+                "id": rel_id, "name": rel_name,
+                "state": state, "by": by, "time_ago": "just now",
+            })
+            del _recent_releases[5:]
+        log(f"Release webhook received: '{rel_name}' -> {state}")
+    return ("", 200)
+
+
 @app.route("/create-drawing/<doc_id>", methods=["POST"])
 def create_drawing(doc_id):
     with _rdocs_lock:
@@ -964,17 +1153,21 @@ def create_drawing(doc_id):
                     "drawingName": f"Drawing - {part_name}",
                     "elementId":   ps_eid,
                     "partId":      part_id,
+                    "templateDocumentId":  "e4ecea9df80b53b39ab4fa38",
+                    "templateWorkspaceId": "038996d814574f1d1d3b774a",
+                    "templateElementId":   "4a80b03c1485e714f587fb61",
                 }
                 r = requests.post(
                     f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{workspace_id}/create",
-                    headers=HEADERS, json=body, auth=AUTH, timeout=20,
+                    headers=HEADERS, json=body, auth=next_auth(), timeout=20,
                 )
                 if r.status_code in (200, 201):
                     drawing_eid = r.json().get("id", "")
                     created.append(part_name)
                     log(f"Drawing created for part '{part_name}', eid={drawing_eid}")
                     if drawing_eid:
-                        add_drawing_content(doc_id, workspace_id, drawing_eid, ps_eid, part_id, part_name)
+                        scale = get_part_scale(doc_id, workspace_id, ps_eid, part_id)
+                        add_drawing_content(doc_id, workspace_id, drawing_eid, ps_eid, part_id, part_name, scale)
                 else:
                     log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
 
