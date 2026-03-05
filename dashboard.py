@@ -27,6 +27,7 @@ SECRET_KEY         = os.environ.get("ONSHAPE_SECRET_KEY",    "9wc3KzifxPAcIkapb7
 BASE_URL           = "https://cad.onshape.com"
 COMPANY_ID         = os.environ.get("ONSHAPE_COMPANY_ID",    "6810c247e7c40668c32816a6")
 REGISTRY_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "folders.json")
+METRICS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics.json")
 DEFAULT_SUBFOLDERS = ["Parts", "Assemblies", "Drawings"]
 CACHE_TTL          = 300  # seconds (5 minutes)
 
@@ -55,7 +56,29 @@ _KEY_POOL = [
     ("on_SGYDfnKOfECj80oPyTIpf",  "jNPlQ4eUoS7WBkrrmY6EXf72oyoHXW79ns8gGbJDlpLDANU3"),
     ("on_LeDYm2hVFdCuc15ghJdbs",  "jkEU9iGpz8v7vdd0GnyyAoTHwBU9HFT0K0m3JpgEHKDCFCbV"),
 ]
+
+_metrics_lock = threading.Lock()
+
+def _load_metrics():
+    try:
+        with open(METRICS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {"total_api_calls": 0}
+
+_metrics = _load_metrics()
+
+def _inc_api_calls():
+    with _metrics_lock:
+        _metrics["total_api_calls"] += 1
+        try:
+            with open(METRICS_FILE, "w") as f:
+                json.dump(_metrics, f)
+        except Exception:
+            pass
+
 def next_auth():
+    _inc_api_calls()
     return random.choice(_KEY_POOL)
 
 app = Flask(__name__)
@@ -835,7 +858,7 @@ HTML = """<!DOCTYPE html>
   </div>
   {% endif %}
 
-  <div class="grid grid-cols-3 gap-3 mb-8">
+  <div class="grid grid-cols-4 gap-3 mb-8">
     <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
       <p class="text-xs text-gray-500 mb-1">Project Folders</p>
       <p class="text-2xl font-bold text-white">{{ folders | length }}</p>
@@ -848,6 +871,10 @@ HTML = """<!DOCTYPE html>
     <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
       <p class="text-xs text-gray-500 mb-1">Updated</p>
       <p class="text-2xl font-bold text-white">{{ now }}</p>
+    </div>
+    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
+      <p class="text-xs text-gray-500 mb-1">API Calls (all time)</p>
+      <p class="text-2xl font-bold text-white">{{ total_api_calls }}</p>
     </div>
   </div>
 
@@ -1027,6 +1054,7 @@ def index():
         flash_err=request.args.get("err", ""),
         default_subfolders=",".join(DEFAULT_SUBFOLDERS),
         watcher_status=get_watcher_status(),
+        total_api_calls=_metrics["total_api_calls"],
     )
 
 
