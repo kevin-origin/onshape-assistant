@@ -29,13 +29,13 @@ COMPANY_ID         = os.environ.get("ONSHAPE_COMPANY_ID",    "6810c247e7c40668c3
 REGISTRY_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "folders.json")
 METRICS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics.json")
 DEFAULT_SUBFOLDERS = ["Parts", "Assemblies", "Drawings"]
+ASSEMBLY_NAMES     = ["Master Assembly", "Placement Assembly", "Routing Assembly", "Manufacturing Assembly"]
 CACHE_TTL          = 300  # seconds (5 minutes)
 
 # Watcher
 SLACK_WEBHOOK_URL        = os.environ.get("SLACK_WEBHOOK_URL",     "https://hooks.slack.com/services/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")
 WEBHOOK_SECRET           = os.environ.get("ONSHAPE_WEBHOOK_SECRET", "artila-webhook-secret")
 DASHBOARD_URL            = os.environ.get("DASHBOARD_URL",          "http://localhost:5001")
-WATCHER_POLL_INTERVAL    = 60   # seconds
 PROTECTION_DELAY_SECONDS = 30
 VERSION_DELAY_SECONDS    = 10
 BRANCH_DELAY_SECONDS     = 5
@@ -64,7 +64,7 @@ def _load_metrics():
         with open(METRICS_FILE, "r") as f:
             return json.load(f)
     except Exception:
-        return {"total_api_calls": 0}
+        return {"total_api_calls": 0, "api_enabled": True}
 
 _metrics = _load_metrics()
 
@@ -86,16 +86,19 @@ app = Flask(__name__)
 # 5-minute server-side data cache
 _cache = {"data": None, "ts": 0}
 
-# Watcher state
+# Watcher state (webhook-driven — no polling)
 _watcher = {
-    "known_ids":    None,   # None = first poll not yet done
-    "last_poll_ts": 0,
-    "error":        None,
+    "doc_wh_id":     None,   # Onshape webhook ID for doc-creation events
+    "rel_wh_id":     None,   # Onshape webhook ID for release events
+    "last_event_ts": 0,
+    "error":         None,
 }
 doc_timers    = {}
 watcher_lock  = threading.Lock()
 _recent_docs  = []   # list of up to 5 dicts; populated by watcher, read by index()
 _rdocs_lock   = threading.Lock()
+_system_created_docs  = set()   # doc IDs created by the dashboard — watcher skips them
+_sysdc_lock   = threading.Lock()
 _recent_releases = []
 _releases_lock   = threading.Lock()
 
@@ -110,6 +113,8 @@ def log(msg):
 # ============================================================
 
 def onshape_get(path, params=None):
+    if not _metrics.get("api_enabled", True):
+        raise RuntimeError("API calls are disabled")
     r = requests.get(
         f"{BASE_URL}{path}",
         headers=HEADERS,
@@ -122,6 +127,8 @@ def onshape_get(path, params=None):
 
 
 def onshape_post(path, body):
+    if not _metrics.get("api_enabled", True):
+        raise RuntimeError("API calls are disabled")
     r = requests.post(
         f"{BASE_URL}{path}",
         headers=HEADERS,
@@ -597,73 +604,21 @@ def handle_new_doc(doc_id, doc_name, workspace_id, created_at="", created_by="�
         }
 
 
-def poll_once():
-    """Fetches document list and triggers protection workflow for any new docs."""
-    data = onshape_get(
-        "/api/v10/documents",
-        params={
-            "filter":     6,
-            "owner":      COMPANY_ID,
-            "ownerType":  1,
-            "limit":      20,
-            "sortColumn": "createdAt",
-            "sortOrder":  "desc",
-        },
-    )
-    current_ids = {d["id"] for d in data.get("items", []) if d.get("id")}
-
-    with watcher_lock:
-        if _watcher["known_ids"] is None:
-            _watcher["known_ids"]    = current_ids
-            _watcher["last_poll_ts"] = time.time()
-            _watcher["error"]        = None
-            log(f"Watcher baseline: {len(current_ids)} docs known")
-            return
-
-        new_ids = current_ids - _watcher["known_ids"]
-        _watcher["known_ids"]    = current_ids
-        _watcher["last_poll_ts"] = time.time()
-        _watcher["error"]        = None
-
-    for doc_id in new_ids:
-        try:
-            doc_data     = onshape_get(f"/api/v10/documents/{doc_id}")
-            doc_name     = doc_data.get("name", doc_id[:8])
-            workspace_id = doc_data.get("defaultWorkspace", {}).get("id", "")
-            created_at   = doc_data.get("createdAt", "")
-            created_by   = doc_data.get("createdBy", {}).get("name", "—")
-            handle_new_doc(doc_id, doc_name, workspace_id, created_at, created_by)
-        except Exception as e:
-            log(f"Error fetching new doc {doc_id}: {e}")
-
-
-def watcher_loop():
-    while True:
-        try:
-            poll_once()
-        except Exception as e:
-            with watcher_lock:
-                _watcher["error"] = str(e)
-            log(f"Watcher poll error: {e}")
-        time.sleep(WATCHER_POLL_INTERVAL)
-
-
 def get_watcher_status():
     with watcher_lock:
-        known_ids = _watcher["known_ids"]
-        last_ts   = _watcher["last_poll_ts"]
-        error     = _watcher["error"]
+        doc_wh  = _watcher["doc_wh_id"]
+        last_ts = _watcher["last_event_ts"]
+        error   = _watcher["error"]
 
-    active    = error is None
-    doc_count = len(known_ids) if known_ids is not None else 0
+    active = doc_wh is not None and error is None
 
     if last_ts == 0:
-        last_poll_ago = "not yet polled"
+        last_event = "no events yet"
     else:
         secs = int(time.time() - last_ts)
-        last_poll_ago = f"{secs}s ago" if secs < 60 else f"{secs // 60}m ago"
+        last_event = f"{secs}s ago" if secs < 60 else f"{secs // 60}m ago"
 
-    return {"active": active, "last_poll_ago": last_poll_ago, "doc_count": doc_count, "error": error}
+    return {"active": active, "last_event": last_event, "error": error}
 
 
 def time_ago(iso_str):
@@ -700,18 +655,25 @@ def seed_recent_releases():
         log(f"Release seed error: {e}")
 
 
-def register_release_webhook():
+def register_webhooks():
+    """Registers Onshape webhooks for doc creation and release events."""
     url = DASHBOARD_URL.rstrip("/") + "/webhook"
-    body = {
-        "url":     url,
-        "filter":  "onshape.revision.lifecycle.changed",
-        "options": {"collapseEvents": False},
-    }
-    try:
-        r = onshape_post("/api/v10/webhooks", body)
-        log(f"Release webhook registered: id={r.get('id', '?')} -> {url}")
-    except Exception as e:
-        log(f"Release webhook registration failed: {e} — releases will not be live-updated")
+    for filter_str, wh_key in [
+        ("onshape.model.lifecycle.created",    "doc_wh_id"),
+        ("onshape.revision.lifecycle.changed", "rel_wh_id"),
+    ]:
+        body = {"url": url, "filter": filter_str, "options": {"collapseEvents": False}}
+        try:
+            r = onshape_post("/api/v10/webhooks", body)
+            wh_id = r.get("id", "?")
+            with watcher_lock:
+                _watcher[wh_key] = wh_id
+                _watcher["error"] = None
+            log(f"Webhook registered ({filter_str}): id={wh_id}")
+        except Exception as e:
+            with watcher_lock:
+                _watcher["error"] = str(e)
+            log(f"Webhook registration failed ({filter_str}): {e}")
 
 
 _watcher_started = False
@@ -721,9 +683,8 @@ def ensure_watcher():
     global _watcher_started
     if not _watcher_started:
         _watcher_started = True
-        threading.Thread(target=watcher_loop, daemon=True, name="watcher").start()
         threading.Thread(target=seed_recent_releases, daemon=True).start()
-        threading.Thread(target=register_release_webhook, daemon=True).start()
+        threading.Thread(target=register_webhooks, daemon=True).start()
 
 
 # ============================================================
@@ -834,6 +795,14 @@ HTML = """<!DOCTYPE html>
       <a href="/" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
         Refresh
       </a>
+      <form method="POST" action="/toggle-api">
+        <button type="submit"
+          class="px-3 py-1.5 rounded text-xs font-medium transition-colors border
+                 {% if api_enabled %}bg-green-950 border-green-800 text-green-400 hover:bg-red-950 hover:border-red-800 hover:text-red-400
+                 {% else %}bg-red-950 border-red-800 text-red-400 hover:bg-green-950 hover:border-green-800 hover:text-green-400{% endif %}">
+          {% if api_enabled %}API On{% else %}API Off{% endif %}
+        </button>
+      </form>
     </div>
   </div>
 </header>
@@ -864,9 +833,9 @@ HTML = """<!DOCTYPE html>
       <p class="text-2xl font-bold text-white">{{ folders | length }}</p>
     </div>
     <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-      <p class="text-xs text-gray-500 mb-1">Watcher</p>
+      <p class="text-xs text-gray-500 mb-1">Webhook</p>
       <p class="text-2xl font-bold {% if watcher_status.active %}text-green-400{% else %}text-red-400{% endif %}">{% if watcher_status.active %}Active{% else %}Error{% endif %}</p>
-      <p class="text-xs text-gray-600 mt-1">{{ watcher_status.last_poll_ago }} &middot; {{ watcher_status.doc_count }} docs</p>
+      <p class="text-xs text-gray-600 mt-1">{{ watcher_status.last_event }}</p>
     </div>
     <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
       <p class="text-xs text-gray-500 mb-1">Updated</p>
@@ -1055,6 +1024,7 @@ def index():
         default_subfolders=",".join(DEFAULT_SUBFOLDERS),
         watcher_status=get_watcher_status(),
         total_api_calls=_metrics["total_api_calls"],
+        api_enabled=_metrics.get("api_enabled", True),
     )
 
 
@@ -1094,6 +1064,26 @@ def create_project():
             sf_id = sf_result.get("id", "")
             sub_folders.append({"id": sf_id, "name": sf_name})
 
+        # Create 4 assembly documents inside the Assemblies subfolder
+        assemblies_id = next((sf["id"] for sf in sub_folders if sf["name"] == "Assemblies"), None)
+        if assemblies_id:
+            for asm_name in ASSEMBLY_NAMES:
+                time.sleep(0.5)
+                try:
+                    asm_result = onshape_post("/api/v10/documents", {
+                        "name":      asm_name,
+                        "ownerId":   COMPANY_ID,
+                        "ownerType": 1,
+                        "parentId":  assemblies_id,
+                    })
+                    asm_id = asm_result.get("id", "")
+                    if asm_id:
+                        with _sysdc_lock:
+                            _system_created_docs.add(asm_id)
+                        log(f"Assembly doc created: '{asm_name}' id={asm_id[:8]}")
+                except Exception as e:
+                    log(f"Assembly doc creation failed for '{asm_name}': {e}")
+
         reg = load_registry()
         reg["folders"].append({
             "id":          root_id,
@@ -1115,23 +1105,53 @@ def create_project():
 @app.route("/api/watcher-status")
 def api_watcher_status():
     with watcher_lock:
-        known_ids = _watcher["known_ids"]
-        last_ts   = _watcher["last_poll_ts"]
-        error     = _watcher["error"]
-    return jsonify({
-        "doc_count":    len(known_ids) if known_ids is not None else None,
-        "last_poll_ts": last_ts,
-        "error":        error,
-        "active_timers": list(doc_timers.keys()),
-    })
+        snap = dict(_watcher)
+    snap["active_timers"] = list(doc_timers.keys())
+    return jsonify(snap)
+
+
+@app.route("/toggle-api", methods=["POST"])
+def toggle_api():
+    with _metrics_lock:
+        current = _metrics.get("api_enabled", True)
+        _metrics["api_enabled"] = not current
+        try:
+            with open(METRICS_FILE, "w") as f:
+                json.dump(_metrics, f)
+        except Exception:
+            pass
+    log(f"API calls {'enabled' if not current else 'disabled'} via dashboard toggle")
+    return redirect("/")
 
 
 @app.route("/webhook", methods=["POST"])
 def webhook():
     data = request.get_json(silent=True) or {}
     event = data.get("event", "")
-    if "revision" in event or "release" in event:
-        payload = data.get("payload", {})
+
+    if "model.lifecycle.created" in event:
+        doc_id = data.get("documentId", "")
+        with watcher_lock:
+            _watcher["last_event_ts"] = time.time()
+        if doc_id:
+            with _sysdc_lock:
+                is_system = doc_id in _system_created_docs
+            if is_system:
+                log(f"Webhook: system-created doc {doc_id[:8]} ignored")
+            else:
+                log(f"Webhook: new doc {doc_id[:8]} — fetching details")
+                try:
+                    doc_data     = onshape_get(f"/api/v10/documents/{doc_id}")
+                    doc_name     = doc_data.get("name", doc_id[:8])
+                    workspace_id = doc_data.get("defaultWorkspace", {}).get("id", "")
+                    created_at   = doc_data.get("createdAt", "")
+                    created_by   = doc_data.get("createdBy", {}).get("name", "—")
+                    handle_new_doc(doc_id, doc_name, workspace_id, created_at, created_by)
+                except Exception as e:
+                    log(f"Webhook doc fetch error for {doc_id[:8]}: {e}")
+
+    elif "revision" in event or "release" in event:
+        payload  = data.get("payload", {})
         rel_id   = payload.get("releasePackageId", data.get("id", ""))
         rel_name = payload.get("name", "Release")
         state    = payload.get("requestState", "UNKNOWN")
@@ -1144,6 +1164,7 @@ def webhook():
             })
             del _recent_releases[5:]
         log(f"Release webhook received: '{rel_name}' -> {state}")
+
     return ("", 200)
 
 
@@ -1216,6 +1237,4 @@ if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
     print(f"   Onshape Dashboard + Protection Watcher")
     print(f"   Open: http://localhost:{port}")
-    t = threading.Thread(target=watcher_loop, daemon=True, name="watcher")
-    t.start()
     app.run(host="0.0.0.0", port=port, use_reloader=False)
