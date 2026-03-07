@@ -1139,31 +1139,29 @@ def webhook():
         ver_id = (data.get("versionId", "")
                   or data.get("payload", {}).get("versionId", ""))
         if doc_id and ver_id:
-            reg_ids = {item["id"] for item in load_registry().get("folders", [])}
-            if doc_id in reg_ids:
-                with watcher_lock:
-                    _watcher["last_event_ts"] = time.time()
-                with _dvc_lock:
-                    _doc_version_counts[doc_id] = _doc_version_counts.get(doc_id, 0) + 1
-                    count = _doc_version_counts[doc_id]
-                log(f"Version webhook: doc={doc_id[:8]}, count={count}")
-                if count == VERSION_RELEASE_THRESHOLD:
-                    doc_name = doc_id[:8]
-                    creator  = (data.get("createdBy", {}).get("name", "")
-                                or data.get("payload", {}).get("requestedBy", {}).get("name", ""))
-                    try:
-                        doc_data = onshape_get(f"/api/v10/documents/{doc_id}")
-                        doc_name = doc_data.get("name", doc_name)
-                        if not creator:
-                            creator = doc_data.get("createdBy", {}).get("name", "—")
-                    except Exception:
-                        pass
-                    send_slack(
-                        f"Version alert: {doc_name}",
-                        f"Document *{doc_name}* now has *{count} versions* with no release.\n"
-                        f"Creator: {creator or '—'}\nConsider cutting a release.",
-                        f"{BASE_URL}/documents/{doc_id}",
-                    )
+            with watcher_lock:
+                _watcher["last_event_ts"] = time.time()
+            with _dvc_lock:
+                _doc_version_counts[doc_id] = _doc_version_counts.get(doc_id, 0) + 1
+                count = _doc_version_counts[doc_id]
+            log(f"Version webhook: doc={doc_id[:8]}, count={count}")
+            if count == VERSION_RELEASE_THRESHOLD:
+                doc_name = doc_id[:8]
+                creator  = (data.get("createdBy", {}).get("name", "")
+                            or data.get("payload", {}).get("requestedBy", {}).get("name", ""))
+                try:
+                    doc_data = onshape_get(f"/api/v10/documents/{doc_id}")
+                    doc_name = doc_data.get("name", doc_name)
+                    if not creator:
+                        creator = doc_data.get("createdBy", {}).get("name", "—")
+                except Exception:
+                    pass
+                send_slack(
+                    f"Version alert: {doc_name}",
+                    f"Document *{doc_name}* now has *{count} versions* with no release.\n"
+                    f"Creator: {creator or '—'}\nConsider cutting a release.",
+                    f"{BASE_URL}/documents/{doc_id}",
+                )
 
     elif "revision" in event or "release" in event:
         payload     = data.get("payload", {})
