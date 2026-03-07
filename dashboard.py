@@ -432,7 +432,7 @@ def register_webhooks():
         ("onshape.revision.lifecycle.changed", "rel_wh_id"),
         ("onshape.model.lifecycle.created",    "ver_wh_id"),
     ]:
-        body = {"url": url, "filter": filter_str, "options": {"collapseEvents": False}}
+        body = {"url": url, "filter": filter_str, "options": {"collapseEvents": False}, "companyId": COMPANY_ID}
         try:
             r = onshape_post("/api/v10/webhooks", body)
             wh_id = r.get("id", "?")
@@ -633,49 +633,83 @@ HTML = """<!DOCTYPE html>
 <!-- ACTIVE RELEASES -->
 <div class="sep">
   <section class="max-w-5xl mx-auto px-8 py-16">
-    <div class="flex items-end justify-between mb-8">
-      <div>
-        <p class="eyebrow mb-2">Live Feed</p>
-        <h2 class="text-2xl font-bold mb-2" style="color:rgba(255,255,255,0.9)">Active Releases</h2>
-        <p class="text-sm" style="color:rgba(255,255,255,0.35)">Releases from the past 5 minutes. <a href="/previous-releases" class="accent">View full history &rarr;</a></p>
+    <div class="mb-10">
+      <p class="eyebrow mb-2">Live Feed</p>
+      <h2 class="text-2xl font-bold mb-2" style="color:rgba(255,255,255,0.9)">Active Releases</h2>
+      <p class="text-sm" style="color:rgba(255,255,255,0.35)">Release activity from the past 5 minutes. <a href="/previous-releases" class="accent">View full history &rarr;</a></p>
+    </div>
+
+    {% set candidates = recent_releases | selectattr("state", "equalto", "PENDING") | list %}
+    {% set approved   = recent_releases | selectattr("state", "equalto", "RELEASED") | list %}
+
+    <!-- Release Candidates -->
+    <div class="mb-10">
+      <div class="flex items-center gap-3 mb-4">
+        <h3 class="text-sm font-semibold" style="color:rgba(255,255,255,0.5)">Release Candidates</h3>
+        <span class="px-2 py-0.5 rounded-full text-xs font-medium" style="background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.25);color:#fbbf24">PENDING</span>
+        <span class="text-xs" style="color:rgba(255,255,255,0.2)">{{ candidates | length }}</span>
       </div>
-    </div>
-    {% if recent_releases %}
-    <div class="flex flex-col gap-3">
-      {% for rel in recent_releases %}
-      <div class="card rounded-2xl px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4 fade-up">
-        <div class="flex-1 min-w-0">
-          <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.9)">{{ rel.name }}</p>
-          <p class="text-xs" style="color:rgba(255,255,255,0.33)">
-            {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
-            &middot; {{ rel.by }}
-          </p>
+      {% if candidates %}
+      <div class="flex flex-col gap-2">
+        {% for rel in candidates %}
+        <div class="card rounded-2xl px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4 fade-up" style="border-color:rgba(251,191,36,0.12)">
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.9)">{{ rel.name }}</p>
+            <p class="text-xs" style="color:rgba(255,255,255,0.33)">
+              {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
+              &middot; {{ rel.by }}
+            </p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <span class="px-3 py-1 rounded-full text-xs font-medium" style="background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.28);color:#fbbf24">Awaiting approval</span>
+            {% if rel.rel_url %}<a href="{{ rel.rel_url }}" target="_blank" rel="noopener" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Open</a>{% endif %}
+          </div>
         </div>
-        <div class="flex items-center gap-2 flex-shrink-0">
-          <span class="px-3 py-1 rounded-full text-xs font-medium"
-            style="{% if rel.state == 'RELEASED' %}background:rgba(57,165,125,0.13);border:1px solid rgba(57,165,125,0.28);color:#39A57D{% elif rel.state == 'PENDING' %}background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.28);color:#fbbf24{% else %}background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.4){% endif %}">
-            {{ rel.state }}
-          </span>
-          {% if rel.rel_url %}
-          <a href="{{ rel.rel_url }}" target="_blank" rel="noopener"
-            class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Open</a>
-          {% endif %}
-          {% if rel.doc_id %}
-          <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
-            <button type="submit" class="btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold">Create Drawings</button>
-          </form>
-          {% endif %}
-        </div>
+        {% endfor %}
       </div>
-      {% endfor %}
+      {% else %}
+      <div class="card-static rounded-xl px-4 py-5 text-center">
+        <p class="text-xs" style="color:rgba(255,255,255,0.22)">No pending release candidates</p>
+      </div>
+      {% endif %}
     </div>
-    {% else %}
-    <div class="card-static rounded-2xl px-6 py-16 text-center">
-      <p class="text-sm font-medium mb-2" style="color:rgba(255,255,255,0.35)">No active releases</p>
-      <p class="text-xs mb-4" style="color:rgba(255,255,255,0.2)">Releases appear here for 5 minutes after being triggered in Onshape.</p>
-      <a href="/previous-releases" class="text-xs accent">Browse release history &rarr;</a>
+
+    <!-- Approved Releases -->
+    <div>
+      <div class="flex items-center gap-3 mb-4">
+        <h3 class="text-sm font-semibold" style="color:rgba(255,255,255,0.5)">Approved Releases</h3>
+        <span class="px-2 py-0.5 rounded-full text-xs font-medium" style="background:rgba(57,165,125,0.13);border:1px solid rgba(57,165,125,0.28);color:#39A57D">RELEASED</span>
+        <span class="text-xs" style="color:rgba(255,255,255,0.2)">{{ approved | length }}</span>
+      </div>
+      {% if approved %}
+      <div class="flex flex-col gap-2">
+        {% for rel in approved %}
+        <div class="card rounded-2xl px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4 fade-up" style="border-color:rgba(57,165,125,0.12)">
+          <div class="flex-1 min-w-0">
+            <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.9)">{{ rel.name }}</p>
+            <p class="text-xs" style="color:rgba(255,255,255,0.33)">
+              {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
+              &middot; {{ rel.by }}
+            </p>
+          </div>
+          <div class="flex items-center gap-2 flex-shrink-0">
+            <span class="px-3 py-1 rounded-full text-xs font-medium" style="background:rgba(57,165,125,0.13);border:1px solid rgba(57,165,125,0.28);color:#39A57D">Released</span>
+            {% if rel.rel_url %}<a href="{{ rel.rel_url }}" target="_blank" rel="noopener" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Open</a>{% endif %}
+            {% if rel.doc_id %}
+            <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
+              <button type="submit" class="btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold">Create Drawings</button>
+            </form>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %}
+      </div>
+      {% else %}
+      <div class="card-static rounded-xl px-4 py-5 text-center">
+        <p class="text-xs" style="color:rgba(255,255,255,0.22)">No approved releases in the last 5 minutes. <a href="/previous-releases" class="accent" style="opacity:0.8">View history &rarr;</a></p>
+      </div>
+      {% endif %}
     </div>
-    {% endif %}
   </section>
 </div>
 
@@ -944,24 +978,33 @@ EXPORT_HTML = """<!DOCTYPE html>
     <p class="text-xs" style="color:rgba(255,255,255,0.32)">Download all drawings as PDF or sheet metal flat patterns as DXF. Each export is a ZIP file.</p>
   </div>
 
-  {% if folders %}
+  {% if releases %}
   <div class="flex flex-col gap-2">
-    {% for f in folders %}
-    <div class="card rounded-xl px-4 py-3.5 flex flex-col sm:flex-row sm:items-center gap-3">
+    {% for rel in releases %}
+    {% if rel.doc_id %}
+    <div class="card rounded-2xl px-5 py-4 flex flex-col sm:flex-row sm:items-center gap-3">
       <div class="flex-1 min-w-0">
-        <p class="text-sm font-medium" style="color:rgba(255,255,255,0.88)">{{ f.name }}</p>
-        <p class="text-xs mt-0.5 font-mono" style="color:rgba(255,255,255,0.22)">{{ f.id[:20] }}...</p>
+        <p class="text-sm font-semibold mb-0.5" style="color:rgba(255,255,255,0.88)">{{ rel.name }}</p>
+        <p class="text-xs" style="color:rgba(255,255,255,0.33)">
+          {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
+          &middot; {{ rel.by }}
+        </p>
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">
-        <a href="/export-pdfs/{{ f.id }}" class="btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold">Export PDFs</a>
-        <a href="/export-dxfs/{{ f.id }}" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-semibold">Export DXFs</a>
+        <span class="px-2.5 py-1 rounded-full text-xs font-medium"
+          style="{% if rel.state == 'RELEASED' %}background:rgba(57,165,125,0.13);border:1px solid rgba(57,165,125,0.28);color:#39A57D{% elif rel.state == 'PENDING' %}background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.28);color:#fbbf24{% else %}background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.4){% endif %}">
+          {{ rel.state }}
+        </span>
+        <a href="/export-pdfs/{{ rel.doc_id }}" class="btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold">Export PDFs</a>
+        <a href="/export-dxfs/{{ rel.doc_id }}" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-semibold">Export DXFs</a>
       </div>
     </div>
+    {% endif %}
     {% endfor %}
   </div>
   {% else %}
   <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08)" class="rounded-xl px-4 py-10 text-center">
-    <p class="text-sm" style="color:rgba(255,255,255,0.28)">No documents in registry. Create a document first.</p>
+    <p class="text-sm" style="color:rgba(255,255,255,0.28)">No releases yet. Releases appear here after being created in Onshape.</p>
   </div>
   {% endif %}
 </main>
@@ -1096,29 +1139,31 @@ def webhook():
         ver_id = (data.get("versionId", "")
                   or data.get("payload", {}).get("versionId", ""))
         if doc_id and ver_id:
-            with watcher_lock:
-                _watcher["last_event_ts"] = time.time()
-            with _dvc_lock:
-                _doc_version_counts[doc_id] = _doc_version_counts.get(doc_id, 0) + 1
-                count = _doc_version_counts[doc_id]
-            log(f"Version webhook: doc={doc_id[:8]}, count={count}")
-            if count == VERSION_RELEASE_THRESHOLD:
-                doc_name = doc_id[:8]
-                creator  = (data.get("createdBy", {}).get("name", "")
-                            or data.get("payload", {}).get("requestedBy", {}).get("name", ""))
-                try:
-                    doc_data = onshape_get(f"/api/v10/documents/{doc_id}")
-                    doc_name = doc_data.get("name", doc_name)
-                    if not creator:
-                        creator = doc_data.get("createdBy", {}).get("name", "—")
-                except Exception:
-                    pass
-                send_slack(
-                    f"Version alert: {doc_name}",
-                    f"Document *{doc_name}* now has *{count} versions* with no release.\n"
-                    f"Creator: {creator or '—'}\nConsider cutting a release.",
-                    f"{BASE_URL}/documents/{doc_id}",
-                )
+            reg_ids = {item["id"] for item in load_registry().get("folders", [])}
+            if doc_id in reg_ids:
+                with watcher_lock:
+                    _watcher["last_event_ts"] = time.time()
+                with _dvc_lock:
+                    _doc_version_counts[doc_id] = _doc_version_counts.get(doc_id, 0) + 1
+                    count = _doc_version_counts[doc_id]
+                log(f"Version webhook: doc={doc_id[:8]}, count={count}")
+                if count == VERSION_RELEASE_THRESHOLD:
+                    doc_name = doc_id[:8]
+                    creator  = (data.get("createdBy", {}).get("name", "")
+                                or data.get("payload", {}).get("requestedBy", {}).get("name", ""))
+                    try:
+                        doc_data = onshape_get(f"/api/v10/documents/{doc_id}")
+                        doc_name = doc_data.get("name", doc_name)
+                        if not creator:
+                            creator = doc_data.get("createdBy", {}).get("name", "—")
+                    except Exception:
+                        pass
+                    send_slack(
+                        f"Version alert: {doc_name}",
+                        f"Document *{doc_name}* now has *{count} versions* with no release.\n"
+                        f"Creator: {creator or '—'}\nConsider cutting a release.",
+                        f"{BASE_URL}/documents/{doc_id}",
+                    )
 
     elif "revision" in event or "release" in event:
         payload     = data.get("payload", {})
@@ -1261,8 +1306,9 @@ def _workspace_id_for(doc_id):
 
 @app.route("/export")
 def export_page():
-    reg = load_registry()
-    return render_template_string(EXPORT_HTML, folders=reg.get("folders", []))
+    with _releases_lock:
+        releases = list(_previous_releases)
+    return render_template_string(EXPORT_HTML, releases=releases)
 
 
 @app.route("/export-pdfs/<doc_id>")
