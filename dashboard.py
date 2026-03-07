@@ -506,11 +506,11 @@ HTML = """<!DOCTYPE html>
 <meta http-equiv="refresh" content="300">
 <title>Artila Robotics — Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0a; color: rgba(255,255,255,0.88); }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0a; color: rgba(255,255,255,0.88); overflow-x: hidden; }
   .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); transition: background .15s, border-color .15s; }
   .card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.13); }
   .card-static { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); }
@@ -522,48 +522,53 @@ HTML = """<!DOCTYPE html>
   .inp:focus { outline: none; border-color: #39A57D; }
   .inp::placeholder { color: rgba(255,255,255,0.25); }
   .accent { color: #39A57D; }
+  .eyebrow { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: #39A57D; }
+  .sep { border-top: 1px solid rgba(255,255,255,0.06); }
   a { text-decoration: none; }
-  @keyframes fade-up { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
-  .fade-up { animation: fade-up .18s ease forwards; }
+  @keyframes fade-up { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+  .fade-up { animation: fade-up .2s ease forwards; }
   ::-webkit-scrollbar { width: 4px; }
   ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
 </style>
 </head>
-<body class="min-h-screen">
+<body>
 
 <!-- MODAL -->
-<div id="modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.75);backdrop-filter:blur(6px)">
-  <div class="card-static rounded-2xl p-6 w-full max-w-sm fade-up">
+<div id="modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.8);backdrop-filter:blur(8px)">
+  <div class="card-static rounded-2xl p-7 w-full max-w-md fade-up">
     <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.9)">New Document</p>
-    <p class="text-xs mb-5" style="color:rgba(255,255,255,0.35)">Creates a document with 4 assembly tabs, an initial version, and a Development branch.</p>
+    <p class="text-xs mb-6" style="color:rgba(255,255,255,0.35)">Creates a document with 4 assembly tabs, an initial version, and a Development branch.</p>
     <form method="POST" action="/create-project" onsubmit="this.querySelector('button[type=submit]').disabled=true">
       <label class="block text-xs mb-1.5" style="color:rgba(255,255,255,0.45)">Project name</label>
       <input name="project_name" required
-        class="inp w-full rounded-lg px-3 py-2 text-sm mb-5" placeholder="e.g. MECH-01">
+        class="inp w-full rounded-lg px-3 py-2.5 text-sm mb-4" placeholder="e.g. MECH-01">
+      <label class="block text-xs mb-1.5" style="color:rgba(255,255,255,0.45)">Parent folder ID <span style="color:rgba(255,255,255,0.2)">(optional — paste Onshape folder ID)</span></label>
+      <input name="parent_folder_id"
+        class="inp w-full rounded-lg px-3 py-2.5 text-sm mb-6 font-mono" placeholder="e.g. 6810c247e7c40668c3281...">
       <div class="flex gap-2 justify-end">
         <button type="button" onclick="closeModal()"
           class="btn-ghost px-4 py-2 rounded-lg text-xs font-medium">Cancel</button>
         <button type="submit"
-          class="btn-primary px-4 py-2 rounded-lg text-xs font-semibold">Create</button>
+          class="btn-primary px-5 py-2 rounded-lg text-xs font-semibold">Create</button>
       </div>
     </form>
   </div>
 </div>
 
 <!-- HEADER -->
-<header class="sticky top-0 z-10" style="background:rgba(10,10,10,0.88);backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,0.07)">
-  <div class="max-w-4xl mx-auto px-6 h-14 flex items-center justify-between">
+<header class="sticky top-0 z-10" style="background:rgba(10,10,10,0.9);backdrop-filter:blur(16px);border-bottom:1px solid rgba(255,255,255,0.07)">
+  <div class="max-w-5xl mx-auto px-8 h-14 flex items-center justify-between">
     <div class="flex items-center gap-3">
       <span class="text-sm font-semibold" style="color:rgba(255,255,255,0.9)">Artila Robotics</span>
       <span class="text-xs" style="color:rgba(255,255,255,0.15)">|</span>
       <span class="text-xs" style="color:rgba(255,255,255,0.35)">Dashboard</span>
     </div>
     <div class="flex items-center gap-2">
-      <button onclick="openModal()" class="btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold">New Document</button>
+      <button onclick="openModal()" class="btn-primary px-3.5 py-1.5 rounded-lg text-xs font-semibold">New Document</button>
       <a href="/" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Refresh</a>
       <a href="/export" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Export</a>
       <form method="POST" action="/toggle-api">
-        <button type="submit" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+        <button type="submit" class="px-3 py-1.5 rounded-lg text-xs font-medium"
           style="{% if api_enabled %}background:rgba(57,165,125,0.12);border:1px solid rgba(57,165,125,0.28);color:#39A57D{% else %}background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);color:#f87171{% endif %}">
           {% if api_enabled %}API On{% else %}API Off{% endif %}
         </button>
@@ -572,84 +577,233 @@ HTML = """<!DOCTYPE html>
   </div>
 </header>
 
-<main class="max-w-4xl mx-auto px-6 py-8">
-
+<!-- FLASH MESSAGES -->
+{% if flash_msg or flash_err %}
+<div class="max-w-5xl mx-auto px-8 pt-6">
   {% if flash_msg %}
-  <div class="mb-5 px-4 py-3 rounded-xl text-sm fade-up"
-    style="background:rgba(57,165,125,0.1);border:1px solid rgba(57,165,125,0.25);color:#39A57D">
-    {{ flash_msg }}
-  </div>
+  <div class="px-4 py-3 rounded-xl text-sm fade-up mb-3"
+    style="background:rgba(57,165,125,0.1);border:1px solid rgba(57,165,125,0.25);color:#39A57D">{{ flash_msg }}</div>
   {% endif %}
-
   {% if flash_err %}
-  <div class="mb-5 px-4 py-3 rounded-xl text-sm fade-up"
-    style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);color:#f87171">
-    {{ flash_err }}
-  </div>
+  <div class="px-4 py-3 rounded-xl text-sm fade-up"
+    style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);color:#f87171">{{ flash_err }}</div>
   {% endif %}
+</div>
+{% endif %}
 
-  <!-- STAT CARDS -->
-  <div class="grid grid-cols-3 gap-3 mb-8">
-    <div class="card-static rounded-xl px-4 py-3.5">
-      <p class="text-xs mb-1.5" style="color:rgba(255,255,255,0.32)">Webhook</p>
-      <p class="text-base font-semibold {% if watcher_status.active %}accent{% else %}text-red-400{% endif %}">
+<!-- HERO -->
+<section class="max-w-5xl mx-auto px-8 pt-20 pb-16">
+  <p class="eyebrow mb-5">Engineering Dashboard</p>
+  <h1 class="text-5xl font-bold mb-5 leading-tight" style="color:rgba(255,255,255,0.95);letter-spacing:-0.025em">
+    Full-cycle visibility<br>for Artila Robotics.
+  </h1>
+  <p class="text-base mb-8" style="color:rgba(255,255,255,0.38);max-width:480px;line-height:1.7">
+    Monitor releases, manage Onshape documents, and export production files — all from one interface.
+  </p>
+  <div class="flex items-center gap-3 flex-wrap">
+    <button onclick="openModal()" class="btn-primary px-5 py-2.5 rounded-xl text-sm font-semibold">New Document</button>
+    <a href="/previous-releases" class="btn-ghost px-5 py-2.5 rounded-xl text-sm font-medium">View All Releases &rarr;</a>
+    <a href="/export" class="btn-ghost px-5 py-2.5 rounded-xl text-sm font-medium">Export Files</a>
+  </div>
+</section>
+
+<!-- STAT STRIP -->
+<div class="sep">
+  <div class="max-w-5xl mx-auto px-8 py-10 grid grid-cols-3 gap-4">
+    <div class="card-static rounded-2xl px-6 py-6">
+      <p class="eyebrow mb-3">Webhook</p>
+      <p class="text-3xl font-bold mb-1 {% if watcher_status.active %}accent{% else %}text-red-400{% endif %}">
         {% if watcher_status.active %}Active{% else %}Error{% endif %}
       </p>
-      <p class="text-xs mt-0.5" style="color:rgba(255,255,255,0.22)">{{ watcher_status.last_event }}</p>
+      <p class="text-xs" style="color:rgba(255,255,255,0.25)">Last event: {{ watcher_status.last_event }}</p>
     </div>
-    <div class="card-static rounded-xl px-4 py-3.5">
-      <p class="text-xs mb-1.5" style="color:rgba(255,255,255,0.32)">Updated</p>
-      <p class="text-base font-semibold" style="color:rgba(255,255,255,0.88)">{{ now }}</p>
+    <div class="card-static rounded-2xl px-6 py-6">
+      <p class="eyebrow mb-3">Last Refreshed</p>
+      <p class="text-3xl font-bold mb-1" style="color:rgba(255,255,255,0.88)">{{ now }}</p>
+      <p class="text-xs" style="color:rgba(255,255,255,0.25)">Auto-refresh every 5 min</p>
     </div>
-    <div class="card-static rounded-xl px-4 py-3.5">
-      <p class="text-xs mb-1.5" style="color:rgba(255,255,255,0.32)">API Calls</p>
-      <p class="text-base font-semibold" style="color:rgba(255,255,255,0.88)">{{ total_api_calls }}</p>
+    <div class="card-static rounded-2xl px-6 py-6">
+      <p class="eyebrow mb-3">API Calls</p>
+      <p class="text-3xl font-bold mb-1" style="color:rgba(255,255,255,0.88)">{{ total_api_calls }}</p>
+      <p class="text-xs" style="color:rgba(255,255,255,0.25)">All-time total across all keys</p>
     </div>
   </div>
+</div>
 
-  <!-- RELEASES -->
-  <div class="flex items-center justify-between mb-3">
-    <h2 class="text-xs font-semibold uppercase tracking-widest" style="color:rgba(255,255,255,0.28)">Recent Releases</h2>
-    <a href="/previous-releases" class="text-xs font-medium accent" style="opacity:0.85">All releases &rarr;</a>
-  </div>
+<!-- ACTIVE RELEASES -->
+<div class="sep">
+  <section class="max-w-5xl mx-auto px-8 py-16">
+    <div class="flex items-end justify-between mb-8">
+      <div>
+        <p class="eyebrow mb-2">Live Feed</p>
+        <h2 class="text-2xl font-bold mb-2" style="color:rgba(255,255,255,0.9)">Active Releases</h2>
+        <p class="text-sm" style="color:rgba(255,255,255,0.35)">Releases from the past 5 minutes. <a href="/previous-releases" class="accent">View full history &rarr;</a></p>
+      </div>
+    </div>
+    {% if recent_releases %}
+    <div class="flex flex-col gap-3">
+      {% for rel in recent_releases %}
+      <div class="card rounded-2xl px-6 py-5 flex flex-col sm:flex-row sm:items-center gap-4 fade-up">
+        <div class="flex-1 min-w-0">
+          <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.9)">{{ rel.name }}</p>
+          <p class="text-xs" style="color:rgba(255,255,255,0.33)">
+            {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
+            &middot; {{ rel.by }}
+          </p>
+        </div>
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <span class="px-3 py-1 rounded-full text-xs font-medium"
+            style="{% if rel.state == 'RELEASED' %}background:rgba(57,165,125,0.13);border:1px solid rgba(57,165,125,0.28);color:#39A57D{% elif rel.state == 'PENDING' %}background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.28);color:#fbbf24{% else %}background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.4){% endif %}">
+            {{ rel.state }}
+          </span>
+          {% if rel.rel_url %}
+          <a href="{{ rel.rel_url }}" target="_blank" rel="noopener"
+            class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Open</a>
+          {% endif %}
+          {% if rel.doc_id %}
+          <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
+            <button type="submit" class="btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold">Create Drawings</button>
+          </form>
+          {% endif %}
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="card-static rounded-2xl px-6 py-16 text-center">
+      <p class="text-sm font-medium mb-2" style="color:rgba(255,255,255,0.35)">No active releases</p>
+      <p class="text-xs mb-4" style="color:rgba(255,255,255,0.2)">Releases appear here for 5 minutes after being triggered in Onshape.</p>
+      <a href="/previous-releases" class="text-xs accent">Browse release history &rarr;</a>
+    </div>
+    {% endif %}
+  </section>
+</div>
 
-  {% if recent_releases %}
-  <div class="flex flex-col gap-2">
-    {% for rel in recent_releases %}
-    <div class="card rounded-xl px-4 py-3.5 flex flex-col sm:flex-row sm:items-center gap-3 fade-up">
-      <div class="flex-1 min-w-0">
-        <p class="text-sm font-medium" style="color:rgba(255,255,255,0.88)">{{ rel.name }}</p>
-        <p class="text-xs mt-0.5" style="color:rgba(255,255,255,0.33)">
-          {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
-          &middot; {{ rel.by }}
+<!-- PROJECT DOCUMENTS -->
+<div class="sep">
+  <section class="max-w-5xl mx-auto px-8 py-16">
+    <div class="mb-8">
+      <p class="eyebrow mb-2">Registry</p>
+      <h2 class="text-2xl font-bold mb-2" style="color:rgba(255,255,255,0.9)">Project Documents</h2>
+      <p class="text-sm" style="color:rgba(255,255,255,0.35)">Documents created through this dashboard. <button onclick="openModal()" style="background:none;border:none;cursor:pointer;font-size:inherit;padding:0;" class="accent">Create new &rarr;</button></p>
+    </div>
+    {% if registry_items %}
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+      {% for item in registry_items %}
+      <div class="card rounded-2xl px-6 py-5">
+        <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.88)">{{ item.name }}</p>
+        <p class="text-xs font-mono mb-4" style="color:rgba(255,255,255,0.2)">{{ item.id[:24] }}...</p>
+        <div class="flex gap-2 flex-wrap">
+          <a href="https://cad.onshape.com/documents/{{ item.id }}" target="_blank" rel="noopener"
+            class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Open in Onshape</a>
+          <a href="/export-pdfs/{{ item.id }}" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">PDFs</a>
+          <a href="/export-dxfs/{{ item.id }}" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">DXFs</a>
+        </div>
+      </div>
+      {% endfor %}
+    </div>
+    {% else %}
+    <div class="card-static rounded-2xl px-6 py-16 text-center">
+      <p class="text-sm font-medium mb-2" style="color:rgba(255,255,255,0.35)">No documents yet</p>
+      <p class="text-xs mb-5" style="color:rgba(255,255,255,0.2)">Documents created here get quick-access links and export tools.</p>
+      <button onclick="openModal()" class="btn-primary px-5 py-2.5 rounded-xl text-xs font-semibold">New Document</button>
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+<!-- VERSION MONITORING -->
+<div class="sep">
+  <section class="max-w-5xl mx-auto px-8 py-16">
+    <div class="mb-8">
+      <p class="eyebrow mb-2">Monitoring</p>
+      <h2 class="text-2xl font-bold mb-2" style="color:rgba(255,255,255,0.9)">Version Activity</h2>
+      <p class="text-sm" style="color:rgba(255,255,255,0.35)">Webhook-driven version tracking. A Slack alert fires when a document reaches the threshold without a release.</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div class="card-static rounded-2xl px-6 py-6">
+        <p class="eyebrow mb-3">Alert Threshold</p>
+        <p class="text-3xl font-bold accent mb-1">{{ version_threshold }}</p>
+        <p class="text-xs" style="color:rgba(255,255,255,0.25)">versions without a release</p>
+      </div>
+      <div class="card-static rounded-2xl px-6 py-6">
+        <p class="eyebrow mb-3">Notification</p>
+        <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.75)">Slack Alert</p>
+        <p class="text-xs" style="color:rgba(255,255,255,0.25)">Tags document creator on trigger</p>
+      </div>
+      <div class="card-static rounded-2xl px-6 py-6">
+        <p class="eyebrow mb-3">Event Source</p>
+        <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.75)">Onshape Webhook</p>
+        <p class="text-xs" style="color:rgba(255,255,255,0.25)">model.lifecycle.created events</p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- EXPORT TOOLS -->
+<div class="sep">
+  <section class="max-w-5xl mx-auto px-8 py-16">
+    <div class="mb-8">
+      <p class="eyebrow mb-2">Production</p>
+      <h2 class="text-2xl font-bold mb-2" style="color:rgba(255,255,255,0.9)">Export Tools</h2>
+      <p class="text-sm" style="color:rgba(255,255,255,0.35)">Download drawings as PDFs or sheet metal flat patterns as DXFs. Each export is a ZIP file.</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-2 gap-4">
+      <div class="card rounded-2xl px-6 py-6">
+        <p class="eyebrow mb-4">PDF Export</p>
+        <p class="text-sm font-semibold mb-2" style="color:rgba(255,255,255,0.85)">Drawing sheets as PDF</p>
+        <p class="text-xs mb-5" style="color:rgba(255,255,255,0.35);line-height:1.6">All drawing elements rendered as a multi-page PDF. Select a document from the registry to export.</p>
+        <a href="/export" class="btn-ghost px-4 py-2 rounded-lg text-xs font-medium inline-block">Go to Export &rarr;</a>
+      </div>
+      <div class="card rounded-2xl px-6 py-6">
+        <p class="eyebrow mb-4">DXF Export</p>
+        <p class="text-sm font-semibold mb-2" style="color:rgba(255,255,255,0.85)">Flat patterns for sheet metal</p>
+        <p class="text-xs mb-5" style="color:rgba(255,255,255,0.35);line-height:1.6">Flat pattern DXFs with partId-level granularity. Only parts flagged as sheet metal are included.</p>
+        <a href="/export" class="btn-ghost px-4 py-2 rounded-lg text-xs font-medium inline-block">Go to Export &rarr;</a>
+      </div>
+    </div>
+  </section>
+</div>
+
+<!-- SYSTEM -->
+<div class="sep">
+  <section class="max-w-5xl mx-auto px-8 py-16 pb-28">
+    <div class="mb-8">
+      <p class="eyebrow mb-2">System</p>
+      <h2 class="text-2xl font-bold mb-2" style="color:rgba(255,255,255,0.9)">Controls</h2>
+      <p class="text-sm" style="color:rgba(255,255,255,0.35)">API access, webhook health, and diagnostics.</p>
+    </div>
+    <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+      <div class="card-static rounded-2xl px-6 py-6">
+        <p class="eyebrow mb-3">API Access</p>
+        <p class="text-sm font-semibold mb-4" style="color:{% if api_enabled %}#39A57D{% else %}#f87171{% endif %}">
+          {% if api_enabled %}Enabled{% else %}Disabled{% endif %}
         </p>
-      </div>
-      <div class="flex items-center gap-2 flex-shrink-0">
-        <span class="px-2.5 py-0.5 rounded-full text-xs font-medium"
-          style="{% if rel.state == 'RELEASED' %}background:rgba(57,165,125,0.13);border:1px solid rgba(57,165,125,0.28);color:#39A57D{% elif rel.state == 'PENDING' %}background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.28);color:#fbbf24{% else %}background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.4){% endif %}">
-          {{ rel.state }}
-        </span>
-        {% if rel.rel_url %}
-        <a href="{{ rel.rel_url }}" target="_blank" rel="noopener"
-          class="btn-ghost px-2.5 py-1 rounded-lg text-xs font-medium">Open</a>
-        {% endif %}
-        {% if rel.doc_id %}
-        <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
-          <button type="submit" class="btn-primary px-2.5 py-1 rounded-lg text-xs font-semibold">Create Drawings</button>
+        <form method="POST" action="/toggle-api">
+          <button type="submit" class="{% if api_enabled %}btn-ghost{% else %}btn-primary{% endif %} px-4 py-2 rounded-lg text-xs font-medium w-full">
+            {% if api_enabled %}Disable API{% else %}Enable API{% endif %}
+          </button>
         </form>
+      </div>
+      <div class="card-static rounded-2xl px-6 py-6">
+        <p class="eyebrow mb-3">Webhook Health</p>
+        <p class="text-sm font-semibold mb-1 {% if watcher_status.active %}accent{% else %}text-red-400{% endif %}">
+          {% if watcher_status.active %}Connected{% else %}Disconnected{% endif %}
+        </p>
+        {% if watcher_status.error %}
+        <p class="text-xs" style="color:rgba(248,113,113,0.7)">{{ watcher_status.error[:80] }}</p>
+        {% else %}
+        <p class="text-xs" style="color:rgba(255,255,255,0.25)">{{ watcher_status.last_event }}</p>
         {% endif %}
+      </div>
+      <div class="card-static rounded-2xl px-6 py-6">
+        <p class="eyebrow mb-3">Diagnostics</p>
+        <p class="text-sm font-semibold mb-4" style="color:rgba(255,255,255,0.6)">Raw API debug output</p>
+        <a href="/api/debug" target="_blank" class="btn-ghost px-4 py-2 rounded-lg text-xs font-medium inline-block w-full text-center">Open /api/debug</a>
       </div>
     </div>
-    {% endfor %}
-  </div>
-  {% else %}
-  <div class="card-static rounded-xl px-4 py-10 text-center">
-    <p class="text-sm" style="color:rgba(255,255,255,0.28)">No releases in the last 5 minutes.</p>
-    <a href="/previous-releases" class="text-xs mt-1.5 inline-block accent" style="opacity:0.8">View all releases &rarr;</a>
-  </div>
-  {% endif %}
-
-</main>
+  </section>
+</div>
 
 <script>
 function openModal() {
@@ -826,15 +980,18 @@ def index():
     with _releases_lock:
         recent_releases = [r for r in _recent_releases if r.get("appeared_at", 0) > cutoff]
 
+    reg = load_registry()
     return render_template_string(
         HTML,
         recent_releases=recent_releases,
+        registry_items=reg["folders"],
         now=datetime.now().strftime("%H:%M"),
         flash_msg=request.args.get("msg", ""),
         flash_err=request.args.get("err", ""),
         watcher_status=get_watcher_status(),
         total_api_calls=_metrics["total_api_calls"],
         api_enabled=_metrics.get("api_enabled", True),
+        version_threshold=VERSION_RELEASE_THRESHOLD,
     )
 
 
@@ -848,14 +1005,16 @@ def previous_releases_page():
 @app.route("/create-project", methods=["POST"])
 def create_project():
     project_name = request.form.get("project_name", "").strip()
+    parent_folder_id = request.form.get("parent_folder_id", "").strip()
     if not project_name:
         return redirect("/?err=" + quote_plus("Project name is required"))
 
     try:
         # 1. Create document
-        doc_result = onshape_post("/api/v10/documents", {
-            "name": project_name, "ownerId": COMPANY_ID, "ownerType": 1,
-        })
+        doc_body = {"name": project_name, "ownerId": COMPANY_ID, "ownerType": 1}
+        if parent_folder_id:
+            doc_body["parentId"] = parent_folder_id
+        doc_result = onshape_post("/api/v10/documents", doc_body)
         doc_id = doc_result.get("id", "")
         workspace_id = doc_result.get("defaultWorkspace", {}).get("id", "")
         if not doc_id or not workspace_id:
