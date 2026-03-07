@@ -29,9 +29,7 @@ BASE_URL           = "https://cad.onshape.com"
 COMPANY_ID         = os.environ.get("ONSHAPE_COMPANY_ID",    "6810c247e7c40668c32816a6")
 REGISTRY_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "folders.json")
 METRICS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics.json")
-DEFAULT_SUBFOLDERS = ["Parts", "Assemblies", "Drawings"]
 ASSEMBLY_NAMES     = ["Master Assembly", "Placement Assembly", "Routing Assembly", "Manufacturing Assembly"]
-CACHE_TTL          = 300  # seconds (5 minutes)
 AUTO_BRANCH_NAME          = "Development"
 VERSION_RELEASE_THRESHOLD = 5   # Slack alert when a doc has this many versions with no release
 
@@ -88,9 +86,6 @@ def next_auth():
         return next(_rr_iter)
 
 app = Flask(__name__)
-
-# 5-minute server-side data cache
-_cache = {"data": None, "ts": 0}
 
 # Watcher state (webhook-driven — no polling)
 _watcher = {
@@ -323,87 +318,6 @@ def save_registry(reg):
         json.dump(reg, f, indent=2)
 
 
-def build_lookups(reg):
-    """
-    Returns (sub_to_top, top_ids, sub_id_to_name).
-      sub_to_top:     sub_folder_id -> parent top-level registry entry
-      top_ids:        set of top-level folder IDs
-      sub_id_to_name: sub_folder_id -> folder name string
-    """
-    sub_to_top     = {}
-    top_ids        = set()
-    sub_id_to_name = {}
-    for entry in reg.get("folders", []):
-        top_ids.add(entry["id"])
-        for sf in entry.get("sub_folders", []):
-            sid = sf["id"]
-            sub_to_top[sid]     = entry
-            sub_id_to_name[sid] = sf["name"]
-    return sub_to_top, top_ids, sub_id_to_name
-
-
-# ============================================================
-# DATA FETCHING  (1 Onshape API call per cache miss)
-# ============================================================
-
-def fetch_folders(reg, sub_to_top, top_ids, sub_id_to_name):
-    # Pre-populate all registered folders so empty ones still appear as cards
-    top_folders = {}
-    for entry in reg.get("folders", []):
-        fid = entry["id"]
-        top_folders[fid] = {
-            "name":        entry["name"],
-            "url":         f"{BASE_URL}/documents?nodeId={fid}&resourceType=resourceFolder",
-            "sub_folders": set(),
-            "doc_count":   0,
-        }
-
-    uncategorised_count = 0
-    error = None
-    try:
-        data = onshape_get(
-            "/api/v10/documents",
-            params={
-                "filter":     6,
-                "owner":      COMPANY_ID,
-                "ownerType":  1,
-                "limit":      20,
-                "sortColumn": "createdAt",
-                "sortOrder":  "desc",
-            },
-        )
-        for d in data.get("items", []):
-            pid = d.get("parentId")
-            if not pid:
-                continue
-            if pid in top_ids:
-                top_folders[pid]["doc_count"] += 1
-            elif pid in sub_to_top:
-                top_entry = sub_to_top[pid]
-                top_fid   = top_entry["id"]
-                if top_fid in top_folders:
-                    top_folders[top_fid]["doc_count"] += 1
-                    sf_name = sub_id_to_name.get(pid, "")
-                    if sf_name:
-                        top_folders[top_fid]["sub_folders"].add(sf_name)
-            else:
-                uncategorised_count += 1
-    except Exception as e:
-        error = str(e)
-
-    folder_list = sorted(top_folders.values(), key=lambda f: f["name"].lower())
-    for f in folder_list:
-        f["sub_folders"] = sorted(f["sub_folders"])
-
-    if uncategorised_count > 0:
-        folder_list.append({
-            "name":        "Uncategorised",
-            "url":         f"{BASE_URL}/documents",
-            "sub_folders": [],
-            "doc_count":   uncategorised_count,
-        })
-
-    return folder_list, error
 
 
 # ============================================================
@@ -574,8 +488,7 @@ def api_debug():
     except Exception as e:
         out["docs_error"] = str(e)
 
-    out["registry"]          = load_registry()
-    out["cache_age_seconds"] = round(time.time() - _cache["ts"])
+    out["registry"] = load_registry()
     return jsonify(out)
 
 
@@ -589,68 +502,67 @@ HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="refresh" content="300">
-<title>Artila Robotics — Onshape Dashboard</title>
+<title>Artila Robotics — Dashboard</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; }
-  @keyframes fade-in { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
-  .fade-in { animation: fade-in 0.2s ease forwards; }
-  .folder-card { transition: border-color .15s, box-shadow .15s; }
-  .folder-card:hover { border-color: #6366f1; box-shadow: 0 0 0 1px #6366f1; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0a; color: rgba(255,255,255,0.88); }
+  .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); transition: background .15s, border-color .15s; }
+  .card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.13); }
+  .card-static { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); }
+  .btn-primary { background: #39A57D; color: #fff; transition: background .15s; }
+  .btn-primary:hover { background: #2e906c; }
+  .btn-ghost { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.6); transition: background .15s, border-color .15s; }
+  .btn-ghost:hover { background: rgba(255,255,255,0.1); border-color: rgba(255,255,255,0.18); color: rgba(255,255,255,0.85); }
+  .inp { background: rgba(255,255,255,0.05); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.9); transition: border-color .15s; }
+  .inp:focus { outline: none; border-color: #39A57D; }
+  .inp::placeholder { color: rgba(255,255,255,0.25); }
+  .accent { color: #39A57D; }
   a { text-decoration: none; }
+  @keyframes fade-up { from { opacity:0; transform:translateY(6px); } to { opacity:1; transform:none; } }
+  .fade-up { animation: fade-up .18s ease forwards; }
+  ::-webkit-scrollbar { width: 4px; }
+  ::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 2px; }
 </style>
 </head>
-<body class="bg-gray-950 text-gray-100 min-h-screen">
+<body class="min-h-screen">
 
-<!-- NEW DOCUMENT MODAL -->
-<div id="modal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-  <div class="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-sm shadow-2xl">
-    <h2 class="text-sm font-semibold mb-5">New Document</h2>
+<!-- MODAL -->
+<div id="modal" class="hidden fixed inset-0 z-50 flex items-center justify-center p-4" style="background:rgba(0,0,0,0.75);backdrop-filter:blur(6px)">
+  <div class="card-static rounded-2xl p-6 w-full max-w-sm fade-up">
+    <p class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.9)">New Document</p>
+    <p class="text-xs mb-5" style="color:rgba(255,255,255,0.35)">Creates a document with 4 assembly tabs, an initial version, and a Development branch.</p>
     <form method="POST" action="/create-project" onsubmit="this.querySelector('button[type=submit]').disabled=true">
-      <label class="block text-xs text-gray-400 mb-1">Project name</label>
+      <label class="block text-xs mb-1.5" style="color:rgba(255,255,255,0.45)">Project name</label>
       <input name="project_name" required
-        class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-5
-               focus:outline-none focus:border-indigo-500 transition-colors"
-        placeholder="e.g. MECH01">
+        class="inp w-full rounded-lg px-3 py-2 text-sm mb-5" placeholder="e.g. MECH-01">
       <div class="flex gap-2 justify-end">
         <button type="button" onclick="closeModal()"
-          class="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
-          Cancel
-        </button>
+          class="btn-ghost px-4 py-2 rounded-lg text-xs font-medium">Cancel</button>
         <button type="submit"
-          class="px-4 py-2 bg-indigo-600 hover:bg-indigo-500 rounded text-xs font-medium transition-colors">
-          Create
-        </button>
+          class="btn-primary px-4 py-2 rounded-lg text-xs font-semibold">Create</button>
       </div>
     </form>
   </div>
 </div>
 
-<header class="sticky top-0 z-10 bg-gray-950/90 backdrop-blur border-b border-gray-800">
-  <div class="max-w-5xl mx-auto px-5 h-14 flex items-center justify-between">
+<!-- HEADER -->
+<header class="sticky top-0 z-10" style="background:rgba(10,10,10,0.88);backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,0.07)">
+  <div class="max-w-4xl mx-auto px-6 h-14 flex items-center justify-between">
     <div class="flex items-center gap-3">
-      <div class="w-7 h-7 bg-blue-600 rounded text-xs font-bold flex items-center justify-center select-none">AR</div>
-      <span class="font-semibold text-sm">Artila Robotics</span>
-      <span class="text-gray-700 hidden sm:block">|</span>
-      <span class="text-gray-400 text-sm hidden sm:block">Projects</span>
+      <span class="text-sm font-semibold" style="color:rgba(255,255,255,0.9)">Artila Robotics</span>
+      <span class="text-xs" style="color:rgba(255,255,255,0.15)">|</span>
+      <span class="text-xs" style="color:rgba(255,255,255,0.35)">Dashboard</span>
     </div>
     <div class="flex items-center gap-2">
-      <button onclick="openModal()"
-        class="px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 border border-indigo-600 rounded text-xs font-medium transition-colors">
-        New Document
-      </button>
-      <a href="/" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
-        Refresh
-      </a>
-      <a href="/export" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
-        Export
-      </a>
+      <button onclick="openModal()" class="btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold">New Document</button>
+      <a href="/" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Refresh</a>
+      <a href="/export" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">Export</a>
       <form method="POST" action="/toggle-api">
-        <button type="submit"
-          class="px-3 py-1.5 rounded text-xs font-medium transition-colors border
-                 {% if api_enabled %}bg-green-950 border-green-800 text-green-400 hover:bg-red-950 hover:border-red-800 hover:text-red-400
-                 {% else %}bg-red-950 border-red-800 text-red-400 hover:bg-green-950 hover:border-green-800 hover:text-green-400{% endif %}">
+        <button type="submit" class="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+          style="{% if api_enabled %}background:rgba(57,165,125,0.12);border:1px solid rgba(57,165,125,0.28);color:#39A57D{% else %}background:rgba(239,68,68,0.12);border:1px solid rgba(239,68,68,0.3);color:#f87171{% endif %}">
           {% if api_enabled %}API On{% else %}API Off{% endif %}
         </button>
       </form>
@@ -658,165 +570,95 @@ HTML = """<!DOCTYPE html>
   </div>
 </header>
 
-<main class="max-w-5xl mx-auto px-5 py-7">
+<main class="max-w-4xl mx-auto px-6 py-8">
 
   {% if flash_msg %}
-  <div class="mb-6 p-4 bg-green-950 border border-green-800 rounded-lg text-sm text-green-300">
+  <div class="mb-5 px-4 py-3 rounded-xl text-sm fade-up"
+    style="background:rgba(57,165,125,0.1);border:1px solid rgba(57,165,125,0.25);color:#39A57D">
     {{ flash_msg }}
   </div>
   {% endif %}
 
   {% if flash_err %}
-  <div class="mb-6 p-4 bg-red-950 border border-red-800 rounded-lg text-sm text-red-300">
-    Error: {{ flash_err }}
+  <div class="mb-5 px-4 py-3 rounded-xl text-sm fade-up"
+    style="background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.25);color:#f87171">
+    {{ flash_err }}
   </div>
   {% endif %}
 
-  {% if error %}
-  <div class="mb-6 p-4 bg-red-950 border border-red-800 rounded-lg text-sm text-red-300">
-    Error loading data from Onshape: {{ error }}
-  </div>
-  {% endif %}
-
-  <div class="grid grid-cols-4 gap-3 mb-8">
-    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-      <p class="text-xs text-gray-500 mb-1">Project Folders</p>
-      <p class="text-2xl font-bold text-white">{{ folders | length }}</p>
+  <!-- STAT CARDS -->
+  <div class="grid grid-cols-3 gap-3 mb-8">
+    <div class="card-static rounded-xl px-4 py-3.5">
+      <p class="text-xs mb-1.5" style="color:rgba(255,255,255,0.32)">Webhook</p>
+      <p class="text-base font-semibold {% if watcher_status.active %}accent{% else %}text-red-400{% endif %}">
+        {% if watcher_status.active %}Active{% else %}Error{% endif %}
+      </p>
+      <p class="text-xs mt-0.5" style="color:rgba(255,255,255,0.22)">{{ watcher_status.last_event }}</p>
     </div>
-    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-      <p class="text-xs text-gray-500 mb-1">Webhook</p>
-      <p class="text-2xl font-bold {% if watcher_status.active %}text-green-400{% else %}text-red-400{% endif %}">{% if watcher_status.active %}Active{% else %}Error{% endif %}</p>
-      <p class="text-xs text-gray-600 mt-1">{{ watcher_status.last_event }}</p>
+    <div class="card-static rounded-xl px-4 py-3.5">
+      <p class="text-xs mb-1.5" style="color:rgba(255,255,255,0.32)">Updated</p>
+      <p class="text-base font-semibold" style="color:rgba(255,255,255,0.88)">{{ now }}</p>
     </div>
-    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-      <p class="text-xs text-gray-500 mb-1">Updated</p>
-      <p class="text-2xl font-bold text-white">{{ now }}</p>
-    </div>
-    <div class="bg-gray-900 rounded-lg p-4 border border-gray-800">
-      <p class="text-xs text-gray-500 mb-1">API Calls (all time)</p>
-      <p class="text-2xl font-bold text-white">{{ total_api_calls }}</p>
+    <div class="card-static rounded-xl px-4 py-3.5">
+      <p class="text-xs mb-1.5" style="color:rgba(255,255,255,0.32)">API Calls</p>
+      <p class="text-base font-semibold" style="color:rgba(255,255,255,0.88)">{{ total_api_calls }}</p>
     </div>
   </div>
 
-  <div class="flex items-center justify-between mb-4">
-    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">Project Folders</h2>
-    <input id="search" type="text" placeholder="Search folders..."
-      oninput="filterFolders()"
-      class="w-44 sm:w-56 bg-gray-900 border border-gray-700 rounded px-3 py-1.5 text-xs
-             placeholder-gray-600 focus:outline-none focus:border-indigo-500 transition-colors">
+  <!-- RELEASES -->
+  <div class="flex items-center justify-between mb-3">
+    <h2 class="text-xs font-semibold uppercase tracking-widest" style="color:rgba(255,255,255,0.28)">Recent Releases</h2>
+    <a href="/previous-releases" class="text-xs font-medium accent" style="opacity:0.85">All releases &rarr;</a>
   </div>
 
-  {% if folders %}
-  <div id="folder-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-    {% for f in folders %}
-    <a href="{{ f.url }}" target="_blank" rel="noopener"
-      data-name="{{ f.name | lower }}"
-      class="folder-card block bg-gray-900 border border-gray-800 rounded-lg p-5 fade-in">
-      <div class="flex items-center gap-3 mb-3">
-        <svg class="w-5 h-5 text-indigo-400 flex-shrink-0" fill="currentColor" viewBox="0 0 20 20">
-          <path d="M2 6a2 2 0 012-2h5l2 2h5a2 2 0 012 2v6a2 2 0 01-2 2H4a2 2 0 01-2-2V6z"/>
-        </svg>
-        <span class="font-semibold text-sm text-white leading-snug">{{ f.name }}</span>
+  {% if recent_releases %}
+  <div class="flex flex-col gap-2">
+    {% for rel in recent_releases %}
+    <div class="card rounded-xl px-4 py-3.5 flex flex-col sm:flex-row sm:items-center gap-3 fade-up">
+      <div class="flex-1 min-w-0">
+        <p class="text-sm font-medium" style="color:rgba(255,255,255,0.88)">{{ rel.name }}</p>
+        <p class="text-xs mt-0.5" style="color:rgba(255,255,255,0.33)">
+          {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
+          &middot; {{ rel.by }}
+        </p>
       </div>
-      {% if f.sub_folders %}
-      <div class="flex flex-wrap gap-1.5 mb-2">
-        {% for sf in f.sub_folders %}
-        <span class="px-2 py-0.5 rounded text-xs bg-indigo-950 text-indigo-300 border border-indigo-800">{{ sf }}</span>
-        {% endfor %}
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span class="px-2.5 py-0.5 rounded-full text-xs font-medium"
+          style="{% if rel.state == 'RELEASED' %}background:rgba(57,165,125,0.13);border:1px solid rgba(57,165,125,0.28);color:#39A57D{% elif rel.state == 'PENDING' %}background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.28);color:#fbbf24{% else %}background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.4){% endif %}">
+          {{ rel.state }}
+        </span>
+        {% if rel.rel_url %}
+        <a href="{{ rel.rel_url }}" target="_blank" rel="noopener"
+          class="btn-ghost px-2.5 py-1 rounded-lg text-xs font-medium">Open</a>
+        {% endif %}
+        {% if rel.doc_id %}
+        <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
+          <button type="submit" class="btn-primary px-2.5 py-1 rounded-lg text-xs font-semibold">Create Drawings</button>
+        </form>
+        {% endif %}
       </div>
-      {% endif %}
-      {% if f.doc_count %}
-      <p class="text-xs text-gray-500 mt-2">{{ f.doc_count }} document{{ 's' if f.doc_count != 1 else '' }}</p>
-      {% else %}
-      <p class="text-xs text-gray-600 mt-2">Empty</p>
-      {% endif %}
-    </a>
+    </div>
     {% endfor %}
   </div>
   {% else %}
-  <p class="text-sm text-gray-500">
-    {% if error %}See error above.
-    {% else %}No project folders registered yet. Click "New Document" to create one.{% endif %}
-  </p>
-  {% endif %}
-
-  <!-- RELEASES SECTION -->
-  <div class="mt-10">
-    <div class="flex items-center justify-between mb-4">
-      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">Releases</h2>
-      <a href="/previous-releases" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">All releases &rarr;</a>
-    </div>
-
-    {% if recent_releases %}
-    <div class="flex flex-col gap-3">
-      {% for rel in recent_releases %}
-      <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
-        <div class="flex-1 min-w-0">
-          <p class="font-semibold text-sm text-white">{{ rel.name }}</p>
-          <p class="text-xs text-gray-500 mt-0.5">
-            {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
-            &middot; {{ rel.by }}
-          </p>
-        </div>
-        <div class="flex items-center gap-2 flex-shrink-0">
-          <span class="px-2 py-1 rounded text-xs border
-            {% if rel.state == 'RELEASED' %}bg-green-950 text-green-400 border-green-800
-            {% elif rel.state == 'PENDING' %}bg-yellow-950 text-yellow-400 border-yellow-800
-            {% else %}bg-gray-800 text-gray-400 border-gray-700{% endif %}">
-            {{ rel.state }}
-          </span>
-          {% if rel.rel_url %}
-          <a href="{{ rel.rel_url }}" target="_blank" rel="noopener"
-            class="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-colors">
-            Open
-          </a>
-          {% endif %}
-          {% if rel.doc_id %}
-          <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
-            <button type="submit"
-              class="px-2 py-1 rounded text-xs bg-indigo-700 hover:bg-indigo-600 border border-indigo-600 transition-colors">
-              Create Drawings
-            </button>
-          </form>
-          {% endif %}
-        </div>
-      </div>
-      {% endfor %}
-    </div>
-    {% else %}
-    <p class="text-sm text-gray-500">No releases in the last 5 minutes.
-      <a href="/previous-releases" class="text-indigo-400 hover:text-indigo-300">View all releases.</a>
-    </p>
-    {% endif %}
+  <div class="card-static rounded-xl px-4 py-10 text-center">
+    <p class="text-sm" style="color:rgba(255,255,255,0.28)">No releases in the last 5 minutes.</p>
+    <a href="/previous-releases" class="text-xs mt-1.5 inline-block accent" style="opacity:0.8">View all releases &rarr;</a>
   </div>
+  {% endif %}
 
 </main>
 
 <script>
 function openModal() {
   document.getElementById('modal').classList.remove('hidden');
-  setTimeout(function() {
-    document.querySelector('#modal input[name=project_name]').focus();
-  }, 50);
+  setTimeout(function(){ document.querySelector('#modal input[name=project_name]').focus(); }, 50);
 }
 function closeModal() {
   document.getElementById('modal').classList.add('hidden');
 }
-// Close on backdrop click
-document.getElementById('modal').addEventListener('click', function(e) {
-  if (e.target === this) closeModal();
-});
-// Close on Escape
-document.addEventListener('keydown', function(e) {
-  if (e.key === 'Escape') closeModal();
-});
-function filterFolders() {
-  var q = document.getElementById('search').value.toLowerCase();
-  var cards = document.querySelectorAll('#folder-grid a');
-  cards.forEach(function(c) {
-    c.style.display = c.dataset.name.includes(q) ? '' : 'none';
-  });
-}
+document.getElementById('modal').addEventListener('click', function(e){ if(e.target===this) closeModal(); });
+document.addEventListener('keydown', function(e){ if(e.key==='Escape') closeModal(); });
 </script>
 
 </body>
@@ -829,67 +671,65 @@ PREVIOUS_RELEASES_HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Artila Robotics — All Releases</title>
+<title>Artila Robotics — Release History</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0a; color: rgba(255,255,255,0.88); }
+  .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); transition: background .15s, border-color .15s; }
+  .card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.13); }
+  .btn-primary { background: #39A57D; color: #fff; transition: background .15s; }
+  .btn-primary:hover { background: #2e906c; }
+  .btn-ghost { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.6); transition: background .15s; }
+  .btn-ghost:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.85); }
   a { text-decoration: none; }
 </style>
 </head>
-<body class="bg-gray-950 text-gray-100 min-h-screen">
+<body class="min-h-screen">
 
-<header class="sticky top-0 z-10 bg-gray-950/90 backdrop-blur border-b border-gray-800">
-  <div class="max-w-5xl mx-auto px-5 h-14 flex items-center justify-between">
+<header class="sticky top-0 z-10" style="background:rgba(10,10,10,0.88);backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,0.07)">
+  <div class="max-w-4xl mx-auto px-6 h-14 flex items-center justify-between">
     <div class="flex items-center gap-3">
-      <div class="w-7 h-7 bg-blue-600 rounded text-xs font-bold flex items-center justify-center select-none">AR</div>
-      <span class="font-semibold text-sm">Artila Robotics</span>
-      <span class="text-gray-700">|</span>
-      <span class="text-gray-400 text-sm">All Releases</span>
+      <span class="text-sm font-semibold" style="color:rgba(255,255,255,0.9)">Artila Robotics</span>
+      <span class="text-xs" style="color:rgba(255,255,255,0.15)">|</span>
+      <span class="text-xs" style="color:rgba(255,255,255,0.35)">Release History</span>
     </div>
-    <a href="/" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
-      &larr; Dashboard
-    </a>
+    <a href="/" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">&larr; Dashboard</a>
   </div>
 </header>
 
-<main class="max-w-5xl mx-auto px-5 py-7">
+<main class="max-w-4xl mx-auto px-6 py-8">
 
-  <div class="flex items-center justify-between mb-6">
-    <h1 class="text-sm font-semibold text-gray-300">Release History</h1>
-    <span class="text-xs text-gray-500">{{ releases | length }} total</span>
+  <div class="flex items-center justify-between mb-5">
+    <h1 class="text-sm font-semibold" style="color:rgba(255,255,255,0.88)">Release History</h1>
+    <span class="text-xs" style="color:rgba(255,255,255,0.3)">{{ releases | length }} total</span>
   </div>
 
   {% if releases %}
-  <div class="flex flex-col gap-3">
+  <div class="flex flex-col gap-2">
     {% for rel in releases %}
-    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+    <div class="card rounded-xl px-4 py-3.5 flex flex-col sm:flex-row sm:items-center gap-3">
       <div class="flex-1 min-w-0">
-        <p class="font-semibold text-sm text-white">{{ rel.name }}</p>
-        <p class="text-xs text-gray-500 mt-0.5">
+        <p class="text-sm font-medium" style="color:rgba(255,255,255,0.88)">{{ rel.name }}</p>
+        <p class="text-xs mt-0.5" style="color:rgba(255,255,255,0.33)">
           {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
           &middot; {{ rel.by }}
         </p>
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">
-        <span class="px-2 py-1 rounded text-xs border
-          {% if rel.state == 'RELEASED' %}bg-green-950 text-green-400 border-green-800
-          {% elif rel.state == 'PENDING' %}bg-yellow-950 text-yellow-400 border-yellow-800
-          {% else %}bg-gray-800 text-gray-400 border-gray-700{% endif %}">
+        <span class="px-2.5 py-0.5 rounded-full text-xs font-medium"
+          style="{% if rel.state == 'RELEASED' %}background:rgba(57,165,125,0.13);border:1px solid rgba(57,165,125,0.28);color:#39A57D{% elif rel.state == 'PENDING' %}background:rgba(251,191,36,0.1);border:1px solid rgba(251,191,36,0.28);color:#fbbf24{% else %}background:rgba(255,255,255,0.05);border:1px solid rgba(255,255,255,0.1);color:rgba(255,255,255,0.4){% endif %}">
           {{ rel.state }}
         </span>
         {% if rel.rel_url %}
         <a href="{{ rel.rel_url }}" target="_blank" rel="noopener"
-          class="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-colors">
-          Open
-        </a>
+          class="btn-ghost px-2.5 py-1 rounded-lg text-xs font-medium">Open</a>
         {% endif %}
         {% if rel.doc_id %}
         <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
-          <button type="submit"
-            class="px-2 py-1 rounded text-xs bg-indigo-700 hover:bg-indigo-600 border border-indigo-600 transition-colors">
-            Create Drawings
-          </button>
+          <button type="submit" class="btn-primary px-2.5 py-1 rounded-lg text-xs font-semibold">Create Drawings</button>
         </form>
         {% endif %}
       </div>
@@ -897,7 +737,9 @@ PREVIOUS_RELEASES_HTML = """<!DOCTYPE html>
     {% endfor %}
   </div>
   {% else %}
-  <p class="text-sm text-gray-500">No previous releases yet. They appear here after 5 minutes or on the next server start.</p>
+  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08)" class="rounded-xl px-4 py-10 text-center">
+    <p class="text-sm" style="color:rgba(255,255,255,0.28)">No releases yet. They appear here after 5 minutes or on next restart.</p>
+  </div>
   {% endif %}
 
 </main>
@@ -912,58 +754,59 @@ EXPORT_HTML = """<!DOCTYPE html>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Artila Robotics — Export</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600&display=swap" rel="stylesheet">
 <script src="https://cdn.tailwindcss.com"></script>
 <style>
   * { box-sizing: border-box; }
-  body { font-family: system-ui, -apple-system, sans-serif; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: #0a0a0a; color: rgba(255,255,255,0.88); }
+  .card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.08); transition: background .15s, border-color .15s; }
+  .card:hover { background: rgba(255,255,255,0.05); border-color: rgba(255,255,255,0.13); }
+  .btn-primary { background: #39A57D; color: #fff; transition: background .15s; }
+  .btn-primary:hover { background: #2e906c; }
+  .btn-ghost { background: rgba(255,255,255,0.06); border: 1px solid rgba(255,255,255,0.1); color: rgba(255,255,255,0.6); transition: background .15s; }
+  .btn-ghost:hover { background: rgba(255,255,255,0.1); color: rgba(255,255,255,0.85); }
   a { text-decoration: none; }
 </style>
 </head>
-<body class="bg-gray-950 text-gray-100 min-h-screen">
+<body class="min-h-screen">
 
-<header class="sticky top-0 z-10 bg-gray-950/90 backdrop-blur border-b border-gray-800">
-  <div class="max-w-5xl mx-auto px-5 h-14 flex items-center justify-between">
+<header class="sticky top-0 z-10" style="background:rgba(10,10,10,0.88);backdrop-filter:blur(14px);border-bottom:1px solid rgba(255,255,255,0.07)">
+  <div class="max-w-4xl mx-auto px-6 h-14 flex items-center justify-between">
     <div class="flex items-center gap-3">
-      <div class="w-7 h-7 bg-blue-600 rounded text-xs font-bold flex items-center justify-center select-none">AR</div>
-      <span class="font-semibold text-sm">Artila Robotics</span>
-      <span class="text-gray-700">|</span>
-      <span class="text-gray-400 text-sm">Export</span>
+      <span class="text-sm font-semibold" style="color:rgba(255,255,255,0.9)">Artila Robotics</span>
+      <span class="text-xs" style="color:rgba(255,255,255,0.15)">|</span>
+      <span class="text-xs" style="color:rgba(255,255,255,0.35)">Export</span>
     </div>
-    <a href="/" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
-      &larr; Dashboard
-    </a>
+    <a href="/" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-medium">&larr; Dashboard</a>
   </div>
 </header>
 
-<main class="max-w-5xl mx-auto px-5 py-7">
+<main class="max-w-4xl mx-auto px-6 py-8">
   <div class="mb-6">
-    <h1 class="text-sm font-semibold text-gray-300 mb-1">Export</h1>
-    <p class="text-xs text-gray-500">Download all drawings as PDF or all sheet metal flat patterns as DXF. Files are packaged as a ZIP.</p>
+    <h1 class="text-sm font-semibold mb-1" style="color:rgba(255,255,255,0.88)">Export</h1>
+    <p class="text-xs" style="color:rgba(255,255,255,0.32)">Download all drawings as PDF or sheet metal flat patterns as DXF. Each export is a ZIP file.</p>
   </div>
 
   {% if folders %}
-  <div class="flex flex-col gap-3">
+  <div class="flex flex-col gap-2">
     {% for f in folders %}
-    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+    <div class="card rounded-xl px-4 py-3.5 flex flex-col sm:flex-row sm:items-center gap-3">
       <div class="flex-1 min-w-0">
-        <p class="font-semibold text-sm text-white">{{ f.name }}</p>
-        <p class="text-xs text-gray-600 font-mono mt-0.5">{{ f.id[:16] }}...</p>
+        <p class="text-sm font-medium" style="color:rgba(255,255,255,0.88)">{{ f.name }}</p>
+        <p class="text-xs mt-0.5 font-mono" style="color:rgba(255,255,255,0.22)">{{ f.id[:20] }}...</p>
       </div>
       <div class="flex items-center gap-2 flex-shrink-0">
-        <a href="/export-pdfs/{{ f.id }}"
-          class="px-3 py-1.5 rounded text-xs bg-indigo-700 hover:bg-indigo-600 border border-indigo-600 transition-colors">
-          Export PDFs
-        </a>
-        <a href="/export-dxfs/{{ f.id }}"
-          class="px-3 py-1.5 rounded text-xs bg-teal-700 hover:bg-teal-600 border border-teal-600 transition-colors">
-          Export DXFs
-        </a>
+        <a href="/export-pdfs/{{ f.id }}" class="btn-primary px-3 py-1.5 rounded-lg text-xs font-semibold">Export PDFs</a>
+        <a href="/export-dxfs/{{ f.id }}" class="btn-ghost px-3 py-1.5 rounded-lg text-xs font-semibold">Export DXFs</a>
       </div>
     </div>
     {% endfor %}
   </div>
   {% else %}
-  <p class="text-sm text-gray-500">No documents in registry. Create a document first.</p>
+  <div style="background:rgba(255,255,255,0.03);border:1px solid rgba(255,255,255,0.08)" class="rounded-xl px-4 py-10 text-center">
+    <p class="text-sm" style="color:rgba(255,255,255,0.28)">No documents in registry. Create a document first.</p>
+  </div>
   {% endif %}
 </main>
 </body>
@@ -977,28 +820,13 @@ EXPORT_HTML = """<!DOCTYPE html>
 
 @app.route("/")
 def index():
-    global _cache
-
-    reg = load_registry()
-    sub_to_top, top_ids, sub_id_to_name = build_lookups(reg)
-
-    now_ts = time.time()
-    if _cache["data"] is not None and (now_ts - _cache["ts"]) < CACHE_TTL:
-        folder_list, error = _cache["data"]
-    else:
-        folder_list, error = fetch_folders(reg, sub_to_top, top_ids, sub_id_to_name)
-        _cache["data"] = (folder_list, error)
-        _cache["ts"]   = now_ts
-
     cutoff = time.time() - 300
     with _releases_lock:
         recent_releases = [r for r in _recent_releases if r.get("appeared_at", 0) > cutoff]
 
     return render_template_string(
         HTML,
-        folders=folder_list,
         recent_releases=recent_releases,
-        error=error,
         now=datetime.now().strftime("%H:%M"),
         flash_msg=request.args.get("msg", ""),
         flash_err=request.args.get("err", ""),
@@ -1068,8 +896,6 @@ def create_project():
             "workspace_id": workspace_id,
         })
         save_registry(reg)
-        _cache["ts"] = 0
-
         return redirect("/?msg=" + quote_plus(f"Document '{project_name}' created"))
 
     except requests.exceptions.HTTPError as e:
