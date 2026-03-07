@@ -2,22 +2,23 @@
 """
 Onshape Dashboard
 =================
-Folder-only dashboard for Artila Robotics.
-Shows project folders from local registry (folders.json).
+Document-based dashboard for Artila Robotics.
 Server-side rendered — no client-side API calls.
 
 Local:   python dashboard.py  ->  http://localhost:5001
 """
 
+import io
 import os
 import json
 import time
-import random
+import zipfile
+import itertools
 import threading
 import requests
 from datetime import datetime
 from urllib.parse import quote_plus
-from flask import Flask, jsonify, render_template_string, request, redirect
+from flask import Flask, jsonify, render_template_string, request, redirect, send_file
 
 # ============================================================
 # CREDENTIALS & CONFIG
@@ -31,15 +32,13 @@ METRICS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "m
 DEFAULT_SUBFOLDERS = ["Parts", "Assemblies", "Drawings"]
 ASSEMBLY_NAMES     = ["Master Assembly", "Placement Assembly", "Routing Assembly", "Manufacturing Assembly"]
 CACHE_TTL          = 300  # seconds (5 minutes)
+AUTO_BRANCH_NAME          = "Development"
+VERSION_RELEASE_THRESHOLD = 5   # Slack alert when a doc has this many versions with no release
 
 # Watcher
 SLACK_WEBHOOK_URL        = os.environ.get("SLACK_WEBHOOK_URL",     "https://hooks.slack.com/services/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")
 WEBHOOK_SECRET           = os.environ.get("ONSHAPE_WEBHOOK_SECRET", "artila-webhook-secret")
 DASHBOARD_URL            = os.environ.get("DASHBOARD_URL",          "http://localhost:5001")
-PROTECTION_DELAY_SECONDS = 30
-VERSION_DELAY_SECONDS    = 10
-BRANCH_DELAY_SECONDS     = 5
-AUTO_BRANCH_NAME         = "Development"
 # ============================================================
 
 HEADERS = {
@@ -47,7 +46,8 @@ HEADERS = {
     "Content-Type": "application/json",
 }
 # Key pool — all pairs must be from the same Onshape account (same COMPANY_ID).
-_KEY_POOL = [
+# Weight 1 = 1 slot per round-robin cycle; weight 3 = 3 slots.
+_REGULAR_KEYS = [
     (ACCESS_KEY, SECRET_KEY),
     ("on_z1UhhHZH6oalYiXInyEYi", "bYSpbfhM6KJQbzBVDGLCCFwaQFQHStnuYwObGamtxHhPVYs5"),
     ("on_OEu3wzjc3lrvyh1wZl0V9", "R1AlU0ZraRWOOZoiJP41eYS6zlxlL6AwTrxvbaiB9gDcHIWR"),
@@ -56,6 +56,11 @@ _KEY_POOL = [
     ("on_SGYDfnKOfECj80oPyTIpf",  "jNPlQ4eUoS7WBkrrmY6EXf72oyoHXW79ns8gGbJDlpLDANU3"),
     ("on_LeDYm2hVFdCuc15ghJdbs",  "jkEU9iGpz8v7vdd0GnyyAoTHwBU9HFT0K0m3JpgEHKDCFCbV"),
 ]
+_SPECIAL_KEY = ("on_FDJfzRLfVfE2rx9XwLjcS", "5BpXsu5Ct1JFreMdzQmLXEgskuLmPFrkfYJ8KB6gR60VTTKV")
+# Cycle: 1 slot per regular key, 3 slots for the special key
+_rr_sequence = [_SPECIAL_KEY] * 3 + _REGULAR_KEYS
+_rr_iter = itertools.cycle(_rr_sequence)
+_rr_lock = threading.Lock()
 
 _metrics_lock = threading.Lock()
 
@@ -79,7 +84,8 @@ def _inc_api_calls():
 
 def next_auth():
     _inc_api_calls()
-    return random.choice(_KEY_POOL)
+    with _rr_lock:
+        return next(_rr_iter)
 
 app = Flask(__name__)
 
@@ -88,19 +94,17 @@ _cache = {"data": None, "ts": 0}
 
 # Watcher state (webhook-driven — no polling)
 _watcher = {
-    "doc_wh_id":     None,   # Onshape webhook ID for doc-creation events
     "rel_wh_id":     None,   # Onshape webhook ID for release events
+    "ver_wh_id":     None,   # Onshape webhook ID for version-creation events
     "last_event_ts": 0,
     "error":         None,
 }
-doc_timers    = {}
-watcher_lock  = threading.Lock()
-_recent_docs  = []   # list of up to 5 dicts; populated by watcher, read by index()
-_rdocs_lock   = threading.Lock()
-_system_created_docs  = set()   # doc IDs created by the dashboard — watcher skips them
-_sysdc_lock   = threading.Lock()
-_recent_releases = []
-_releases_lock   = threading.Lock()
+watcher_lock        = threading.Lock()
+_recent_releases    = []   # webhook-received releases (main page, filtered to 5 min)
+_previous_releases  = []   # all releases: seeded + webhook (for /previous-releases)
+_releases_lock      = threading.Lock()
+_doc_version_counts = {}   # doc_id -> version count since last release
+_dvc_lock           = threading.Lock()
 
 
 def log(msg):
@@ -403,7 +407,7 @@ def fetch_folders(reg, sub_to_top, top_ids, sub_id_to_name):
 
 
 # ============================================================
-# PROTECTION WATCHER
+# WATCHER
 # ============================================================
 
 def send_slack(title, message, doc_url=""):
@@ -432,185 +436,14 @@ def send_slack(title, message, doc_url=""):
         log(f"Slack error: {e}")
 
 
-def create_branch(doc_id, doc_name, workspace_id):
-    """Creates the Development branch after the initial version is confirmed."""
-    log(f"Creating branch '{AUTO_BRANCH_NAME}' for '{doc_name}'...")
-    url = f"{BASE_URL}/api/v10/documents/d/{doc_id}/workspaces"
-    body = {
-        "name": AUTO_BRANCH_NAME,
-        "description": "Auto-created working branch",
-        "workspaceId": workspace_id,
-    }
-    try:
-        r = requests.post(url, headers=HEADERS, json=body, auth=next_auth(), timeout=10)
-        if r.status_code in (200, 201):
-            branch_id = r.json().get("id", "?")
-            log(f"Branch '{AUTO_BRANCH_NAME}' created. ID: {branch_id}")
-            with _rdocs_lock:
-                for d in _recent_docs:
-                    if d["id"] == doc_id:
-                        if AUTO_BRANCH_NAME not in d["workspaces"]:
-                            d["workspaces"].append(AUTO_BRANCH_NAME)
-                        break
-            with watcher_lock:
-                if doc_id in doc_timers:
-                    doc_timers[doc_id]["branch_ok"] = True
-        else:
-            log(f"Branch creation failed ({r.status_code}): {r.text[:300]}")
-            with watcher_lock:
-                if doc_id in doc_timers:
-                    doc_timers[doc_id]["branch_ok"] = False
-    except Exception as e:
-        log(f"Branch creation error: {e}")
-
-
-def create_initial_version(doc_id, doc_name, workspace_id):
-    """
-    Called after VERSION_DELAY_SECONDS. Creates 'V0 - Initial' version.
-    If version succeeds, schedules branch creation after BRANCH_DELAY_SECONDS.
-    """
-    if not workspace_id:
-        log("No workspaceId cached — fetching from API...")
-        try:
-            r = requests.get(
-                f"{BASE_URL}/api/v10/documents/{doc_id}",
-                headers=HEADERS, auth=next_auth(), timeout=5
-            )
-            if r.status_code == 200:
-                doc_data = r.json()
-                workspace_id = doc_data.get("defaultWorkspace", {}).get("id", "")
-                if not doc_name or len(doc_name) == 8:
-                    doc_name = doc_data.get("name", doc_name)
-                log(f"workspaceId fetched: '{workspace_id}'")
-            else:
-                log(f"Doc fetch failed ({r.status_code}) — cannot create version")
-                return
-        except Exception as e:
-            log(f"Doc fetch exception: {e} — cannot create version")
-            return
-
-    if not workspace_id:
-        log("workspaceId still empty — cannot create version")
-        return
-
-    version_name = f"V0 - Initial ({doc_name})"
-    url = f"{BASE_URL}/api/v10/documents/d/{doc_id}/versions"
-    body = {
-        "name": version_name,
-        "workspaceId": workspace_id,
-        "documentId": doc_id,
-        "description": "Auto-created on document creation",
-    }
-
-    log(f"Creating version '{version_name}'...")
-    try:
-        r = requests.post(url, headers=HEADERS, json=body, auth=next_auth(), timeout=10)
-        if r.status_code in (200, 201):
-            vid = r.json().get("id", "?")
-            log(f"Version created. ID: {vid}")
-            with _rdocs_lock:
-                for d in _recent_docs:
-                    if d["id"] == doc_id:
-                        d["versions"]   = [version_name]
-                        d["version_id"] = vid
-                        break
-            with watcher_lock:
-                if doc_id in doc_timers:
-                    doc_timers[doc_id]["version_name"] = version_name
-                    doc_timers[doc_id]["version_ok"]   = True
-            branch_timer = threading.Timer(
-                BRANCH_DELAY_SECONDS, create_branch, args=[doc_id, doc_name, workspace_id]
-            )
-            branch_timer.daemon = True
-            branch_timer.start()
-        else:
-            log(f"Version creation failed ({r.status_code}): {r.text[:300]}")
-            with watcher_lock:
-                if doc_id in doc_timers:
-                    doc_timers[doc_id]["version_ok"] = False
-    except Exception as e:
-        log(f"Version creation error: {e}")
-
-
-def protection_reminder(doc_id, doc_name):
-    """Sends a single consolidated Slack message: version + branch outcomes + protection reminder."""
-    with watcher_lock:
-        entry = doc_timers.pop(doc_id, {})
-
-    version_name = entry.get("version_name", "")
-    version_ok   = entry.get("version_ok", False)
-    branch_ok    = entry.get("branch_ok", False)
-
-    log(f"Protection reminder + setup summary for '{doc_name}'")
-
-    v_line = f"- Version *{version_name}* — created" if version_ok and version_name \
-             else "- Version — failed (check terminal)"
-    b_line = f"- Branch *{AUTO_BRANCH_NAME}* — created" if branch_ok \
-             else "- Branch — failed (check terminal)"
-
-    send_slack(
-        "New Document Setup — Action Required",
-        f"Document *{doc_name}* setup complete:\n{v_line}\n{b_line}\n\n"
-        f"Please enable workspace protection and continue work in the development branch.",
-        f"{BASE_URL}/documents/{doc_id}",
-    )
-
-
-def handle_new_doc(doc_id, doc_name, workspace_id, created_at="", created_by="—"):
-    """Cancels any existing timers for this doc, then starts fresh ones."""
-    # Store in recent docs list (watcher-driven, zero extra API calls)
-    with _rdocs_lock:
-        _recent_docs[:] = [d for d in _recent_docs if d["id"] != doc_id]
-        _recent_docs.insert(0, {
-            "id":           doc_id,
-            "name":         doc_name,
-            "url":          f"{BASE_URL}/documents/{doc_id}",
-            "time_ago":     time_ago(created_at) if created_at else "just now",
-            "created_by":   created_by,
-            "workspaces":   ["Main"],
-            "versions":     [],
-            "workspace_id": workspace_id,
-            "version_id":   "",
-        })
-        del _recent_docs[5:]
-
-    with watcher_lock:
-        if doc_id in doc_timers:
-            for key in ("timer", "version_timer"):
-                old = doc_timers[doc_id].get(key)
-                if old:
-                    old.cancel()
-
-        log(f"New doc '{doc_name}' — version in {VERSION_DELAY_SECONDS}s, protection reminder in {PROTECTION_DELAY_SECONDS}s")
-
-        version_timer = threading.Timer(
-            VERSION_DELAY_SECONDS, create_initial_version, args=[doc_id, doc_name, workspace_id]
-        )
-        version_timer.daemon = True
-        version_timer.start()
-
-        protection_timer = threading.Timer(
-            PROTECTION_DELAY_SECONDS, protection_reminder, args=[doc_id, doc_name]
-        )
-        protection_timer.daemon = True
-        protection_timer.start()
-
-        doc_timers[doc_id] = {
-            "last_edit":    time.time(),
-            "timer":        protection_timer,
-            "version_timer": version_timer,
-            "name":         doc_name,
-            "workspace_id": workspace_id,
-        }
-
-
 def get_watcher_status():
     with watcher_lock:
-        doc_wh  = _watcher["doc_wh_id"]
+        rel_wh  = _watcher["rel_wh_id"]
+        ver_wh  = _watcher["ver_wh_id"]
         last_ts = _watcher["last_event_ts"]
         error   = _watcher["error"]
 
-    active = doc_wh is not None and error is None
+    active = rel_wh is not None and ver_wh is not None and error is None
 
     if last_ts == 0:
         last_event = "no events yet"
@@ -635,32 +468,53 @@ def time_ago(iso_str):
         return iso_str[:10]
 
 
+def _parse_release_ts(iso_str):
+    """Returns (formatted_str, epoch_float) from an ISO timestamp, or ('', 0) on failure."""
+    if not iso_str:
+        return "", 0
+    try:
+        dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00"))
+        return dt.strftime("%d %b %Y, %H:%M"), dt.timestamp()
+    except Exception:
+        return "", 0
+
+
 def seed_recent_releases():
     try:
         data = onshape_get("/api/v10/releasepackages",
                            params={"companyId": COMPANY_ID, "limit": 5,
                                    "sortColumn": "createdAt", "sortOrder": "desc"})
         items = data.get("items", data if isinstance(data, list) else [])
+        seeded = []
+        for item in items:
+            doc_id      = item.get("documentId", "")
+            created_iso = item.get("createdAt", "")
+            created_at_str, created_at_ts = _parse_release_ts(created_iso)
+            seeded.append({
+                "id":             item.get("id", ""),
+                "name":           item.get("name", "Release"),
+                "state":          item.get("requestState", "UNKNOWN"),
+                "by":             item.get("requestedBy", {}).get("name", "—"),
+                "time_ago":       time_ago(created_iso),
+                "appeared_at":    time.time() - 301,  # pre-aged: go straight to /previous-releases
+                "doc_id":         doc_id,
+                "created_at_str": created_at_str,
+                "created_at_ts":  created_at_ts,
+                "rel_url":        f"{BASE_URL}/documents/{doc_id}" if doc_id else "",
+            })
         with _releases_lock:
-            for item in items:
-                _recent_releases.append({
-                    "id":       item.get("id", ""),
-                    "name":     item.get("name", "Release"),
-                    "state":    item.get("requestState", "UNKNOWN"),
-                    "by":       item.get("requestedBy", {}).get("name", "—"),
-                    "time_ago": time_ago(item.get("createdAt", "")),
-                })
-        log(f"Release seed: {len(_recent_releases)} releases loaded")
+            _previous_releases.extend(seeded)
+        log(f"Release seed: {len(seeded)} releases loaded")
     except Exception as e:
         log(f"Release seed error: {e}")
 
 
 def register_webhooks():
-    """Registers Onshape webhooks for doc creation and release events."""
+    """Registers Onshape webhooks for release and version-creation events."""
     url = DASHBOARD_URL.rstrip("/") + "/webhook"
     for filter_str, wh_key in [
-        ("onshape.model.lifecycle.created",    "doc_wh_id"),
         ("onshape.revision.lifecycle.changed", "rel_wh_id"),
+        ("onshape.model.lifecycle.created",    "ver_wh_id"),
     ]:
         body = {"url": url, "filter": filter_str, "options": {"collapseEvents": False}}
         try:
@@ -749,22 +603,16 @@ HTML = """<!DOCTYPE html>
 </head>
 <body class="bg-gray-950 text-gray-100 min-h-screen">
 
-<!-- NEW PROJECT MODAL -->
+<!-- NEW DOCUMENT MODAL -->
 <div id="modal" class="hidden fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
   <div class="bg-gray-900 border border-gray-700 rounded-xl p-6 w-full max-w-sm shadow-2xl">
-    <h2 class="text-sm font-semibold mb-5">Create Project Folder</h2>
-    <form method="POST" action="/create-project">
+    <h2 class="text-sm font-semibold mb-5">New Document</h2>
+    <form method="POST" action="/create-project" onsubmit="this.querySelector('button[type=submit]').disabled=true">
       <label class="block text-xs text-gray-400 mb-1">Project name</label>
       <input name="project_name" required
-        class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-4
+        class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-5
                focus:outline-none focus:border-indigo-500 transition-colors"
         placeholder="e.g. MECH01">
-      <label class="block text-xs text-gray-400 mb-1">
-        Sub-folders <span class="text-gray-600">(comma-separated)</span>
-      </label>
-      <input name="subfolders" value="{{ default_subfolders }}"
-        class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 text-sm mb-5
-               focus:outline-none focus:border-indigo-500 transition-colors">
       <div class="flex gap-2 justify-end">
         <button type="button" onclick="closeModal()"
           class="px-4 py-2 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
@@ -785,15 +633,18 @@ HTML = """<!DOCTYPE html>
       <div class="w-7 h-7 bg-blue-600 rounded text-xs font-bold flex items-center justify-center select-none">AR</div>
       <span class="font-semibold text-sm">Artila Robotics</span>
       <span class="text-gray-700 hidden sm:block">|</span>
-      <span class="text-gray-400 text-sm hidden sm:block">Project Folders</span>
+      <span class="text-gray-400 text-sm hidden sm:block">Projects</span>
     </div>
     <div class="flex items-center gap-2">
       <button onclick="openModal()"
         class="px-3 py-1.5 bg-indigo-700 hover:bg-indigo-600 border border-indigo-600 rounded text-xs font-medium transition-colors">
-        New Project
+        New Document
       </button>
       <a href="/" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
         Refresh
+      </a>
+      <a href="/export" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
+        Export
       </a>
       <form method="POST" action="/toggle-api">
         <button type="submit"
@@ -885,39 +736,43 @@ HTML = """<!DOCTYPE html>
   {% else %}
   <p class="text-sm text-gray-500">
     {% if error %}See error above.
-    {% else %}No project folders registered yet. Click "New Project" to create one, or use option [3] in onshape-tools.py to register an existing folder.{% endif %}
+    {% else %}No project folders registered yet. Click "New Document" to create one.{% endif %}
   </p>
   {% endif %}
 
-  {% if recent_docs %}
+  <!-- RELEASES SECTION -->
   <div class="mt-10">
-    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">Recent Documents</h2>
+    <div class="flex items-center justify-between mb-4">
+      <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest">Releases</h2>
+      <a href="/previous-releases" class="text-xs text-indigo-400 hover:text-indigo-300 transition-colors">All releases &rarr;</a>
+    </div>
+
+    {% if recent_releases %}
     <div class="flex flex-col gap-3">
-      {% for doc in recent_docs %}
-      <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-start gap-3">
+      {% for rel in recent_releases %}
+      <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
         <div class="flex-1 min-w-0">
-          <a href="{{ doc.url }}" target="_blank" rel="noopener"
-             class="font-semibold text-sm text-white hover:text-indigo-400 transition-colors">{{ doc.name }}</a>
-          <p class="text-xs text-gray-500 mt-0.5">{{ doc.time_ago }} &middot; {{ doc.created_by }}</p>
-          {% if doc.workspaces %}
-          <div class="flex flex-wrap gap-1.5 mt-2">
-            {% for ws in doc.workspaces %}
-            <span class="px-2 py-0.5 rounded text-xs bg-gray-800 text-gray-300 border border-gray-700">{{ ws }}</span>
-            {% endfor %}
-          </div>
-          {% endif %}
-          {% if doc.versions %}
-          <div class="flex flex-wrap gap-1.5 mt-1.5">
-            {% for v in doc.versions %}
-            <span class="px-2 py-0.5 rounded text-xs bg-indigo-950 text-indigo-300 border border-indigo-800">{{ v }}</span>
-            {% endfor %}
-          </div>
-          {% endif %}
+          <p class="font-semibold text-sm text-white">{{ rel.name }}</p>
+          <p class="text-xs text-gray-500 mt-0.5">
+            {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
+            &middot; {{ rel.by }}
+          </p>
         </div>
-        <div class="flex-shrink-0 flex flex-col items-end gap-2">
-          <span class="px-2 py-1 rounded text-xs bg-yellow-950 text-yellow-400 border border-yellow-800">Workspace protection reminder sent</span>
-          {% if doc.workspace_id %}
-          <form method="POST" action="/create-drawing/{{ doc.id }}" onsubmit="this.querySelector('button').disabled=true">
+        <div class="flex items-center gap-2 flex-shrink-0">
+          <span class="px-2 py-1 rounded text-xs border
+            {% if rel.state == 'RELEASED' %}bg-green-950 text-green-400 border-green-800
+            {% elif rel.state == 'PENDING' %}bg-yellow-950 text-yellow-400 border-yellow-800
+            {% else %}bg-gray-800 text-gray-400 border-gray-700{% endif %}">
+            {{ rel.state }}
+          </span>
+          {% if rel.rel_url %}
+          <a href="{{ rel.rel_url }}" target="_blank" rel="noopener"
+            class="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-colors">
+            Open
+          </a>
+          {% endif %}
+          {% if rel.doc_id %}
+          <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
             <button type="submit"
               class="px-2 py-1 rounded text-xs bg-indigo-700 hover:bg-indigo-600 border border-indigo-600 transition-colors">
               Create Drawings
@@ -928,30 +783,12 @@ HTML = """<!DOCTYPE html>
       </div>
       {% endfor %}
     </div>
+    {% else %}
+    <p class="text-sm text-gray-500">No releases in the last 5 minutes.
+      <a href="/previous-releases" class="text-indigo-400 hover:text-indigo-300">View all releases.</a>
+    </p>
+    {% endif %}
   </div>
-  {% endif %}
-
-  {% if recent_releases %}
-  <div class="mt-10">
-    <h2 class="text-xs font-semibold text-gray-500 uppercase tracking-widest mb-4">Recent Releases</h2>
-    <div class="flex flex-col gap-3">
-      {% for rel in recent_releases %}
-      <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex items-center justify-between gap-3">
-        <div>
-          <p class="font-semibold text-sm text-white">{{ rel.name }}</p>
-          <p class="text-xs text-gray-500 mt-0.5">{{ rel.time_ago }} &middot; {{ rel.by }}</p>
-        </div>
-        <span class="px-2 py-1 rounded text-xs border
-          {% if rel.state == 'RELEASED' %}bg-green-950 text-green-400 border-green-800
-          {% elif rel.state == 'PENDING' %}bg-yellow-950 text-yellow-400 border-yellow-800
-          {% else %}bg-gray-800 text-gray-400 border-gray-700{% endif %}">
-          {{ rel.state }}
-        </span>
-      </div>
-      {% endfor %}
-    </div>
-  </div>
-  {% endif %}
 
 </main>
 
@@ -987,6 +824,153 @@ function filterFolders() {
 """
 
 
+PREVIOUS_RELEASES_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Artila Robotics — All Releases</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; }
+  a { text-decoration: none; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+<header class="sticky top-0 z-10 bg-gray-950/90 backdrop-blur border-b border-gray-800">
+  <div class="max-w-5xl mx-auto px-5 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 bg-blue-600 rounded text-xs font-bold flex items-center justify-center select-none">AR</div>
+      <span class="font-semibold text-sm">Artila Robotics</span>
+      <span class="text-gray-700">|</span>
+      <span class="text-gray-400 text-sm">All Releases</span>
+    </div>
+    <a href="/" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
+      &larr; Dashboard
+    </a>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-5 py-7">
+
+  <div class="flex items-center justify-between mb-6">
+    <h1 class="text-sm font-semibold text-gray-300">Release History</h1>
+    <span class="text-xs text-gray-500">{{ releases | length }} total</span>
+  </div>
+
+  {% if releases %}
+  <div class="flex flex-col gap-3">
+    {% for rel in releases %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div class="flex-1 min-w-0">
+        <p class="font-semibold text-sm text-white">{{ rel.name }}</p>
+        <p class="text-xs text-gray-500 mt-0.5">
+          {% if rel.created_at_str %}{{ rel.created_at_str }}{% else %}{{ rel.time_ago }}{% endif %}
+          &middot; {{ rel.by }}
+        </p>
+      </div>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <span class="px-2 py-1 rounded text-xs border
+          {% if rel.state == 'RELEASED' %}bg-green-950 text-green-400 border-green-800
+          {% elif rel.state == 'PENDING' %}bg-yellow-950 text-yellow-400 border-yellow-800
+          {% else %}bg-gray-800 text-gray-400 border-gray-700{% endif %}">
+          {{ rel.state }}
+        </span>
+        {% if rel.rel_url %}
+        <a href="{{ rel.rel_url }}" target="_blank" rel="noopener"
+          class="px-2 py-1 rounded text-xs bg-gray-800 hover:bg-gray-700 border border-gray-700 transition-colors">
+          Open
+        </a>
+        {% endif %}
+        {% if rel.doc_id %}
+        <form method="POST" action="/create-drawing/{{ rel.doc_id }}" onsubmit="this.querySelector('button').disabled=true">
+          <button type="submit"
+            class="px-2 py-1 rounded text-xs bg-indigo-700 hover:bg-indigo-600 border border-indigo-600 transition-colors">
+            Create Drawings
+          </button>
+        </form>
+        {% endif %}
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-sm text-gray-500">No previous releases yet. They appear here after 5 minutes or on the next server start.</p>
+  {% endif %}
+
+</main>
+</body>
+</html>
+"""
+
+
+EXPORT_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Artila Robotics — Export</title>
+<script src="https://cdn.tailwindcss.com"></script>
+<style>
+  * { box-sizing: border-box; }
+  body { font-family: system-ui, -apple-system, sans-serif; }
+  a { text-decoration: none; }
+</style>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen">
+
+<header class="sticky top-0 z-10 bg-gray-950/90 backdrop-blur border-b border-gray-800">
+  <div class="max-w-5xl mx-auto px-5 h-14 flex items-center justify-between">
+    <div class="flex items-center gap-3">
+      <div class="w-7 h-7 bg-blue-600 rounded text-xs font-bold flex items-center justify-center select-none">AR</div>
+      <span class="font-semibold text-sm">Artila Robotics</span>
+      <span class="text-gray-700">|</span>
+      <span class="text-gray-400 text-sm">Export</span>
+    </div>
+    <a href="/" class="px-3 py-1.5 bg-gray-800 hover:bg-gray-700 border border-gray-700 rounded text-xs font-medium transition-colors">
+      &larr; Dashboard
+    </a>
+  </div>
+</header>
+
+<main class="max-w-5xl mx-auto px-5 py-7">
+  <div class="mb-6">
+    <h1 class="text-sm font-semibold text-gray-300 mb-1">Export</h1>
+    <p class="text-xs text-gray-500">Download all drawings as PDF or all sheet metal flat patterns as DXF. Files are packaged as a ZIP.</p>
+  </div>
+
+  {% if folders %}
+  <div class="flex flex-col gap-3">
+    {% for f in folders %}
+    <div class="bg-gray-900 border border-gray-800 rounded-lg p-4 flex flex-col sm:flex-row sm:items-center gap-3">
+      <div class="flex-1 min-w-0">
+        <p class="font-semibold text-sm text-white">{{ f.name }}</p>
+        <p class="text-xs text-gray-600 font-mono mt-0.5">{{ f.id[:16] }}...</p>
+      </div>
+      <div class="flex items-center gap-2 flex-shrink-0">
+        <a href="/export-pdfs/{{ f.id }}"
+          class="px-3 py-1.5 rounded text-xs bg-indigo-700 hover:bg-indigo-600 border border-indigo-600 transition-colors">
+          Export PDFs
+        </a>
+        <a href="/export-dxfs/{{ f.id }}"
+          class="px-3 py-1.5 rounded text-xs bg-teal-700 hover:bg-teal-600 border border-teal-600 transition-colors">
+          Export DXFs
+        </a>
+      </div>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <p class="text-sm text-gray-500">No documents in registry. Create a document first.</p>
+  {% endif %}
+</main>
+</body>
+</html>
+"""
+
+
 # ============================================================
 # ROUTES
 # ============================================================
@@ -1006,94 +990,87 @@ def index():
         _cache["data"] = (folder_list, error)
         _cache["ts"]   = now_ts
 
-    with _rdocs_lock:
-        recent_docs = list(_recent_docs)
-
+    cutoff = time.time() - 300
     with _releases_lock:
-        recent_releases = list(_recent_releases)
+        recent_releases = [r for r in _recent_releases if r.get("appeared_at", 0) > cutoff]
 
     return render_template_string(
         HTML,
         folders=folder_list,
-        recent_docs=recent_docs,
         recent_releases=recent_releases,
         error=error,
         now=datetime.now().strftime("%H:%M"),
         flash_msg=request.args.get("msg", ""),
         flash_err=request.args.get("err", ""),
-        default_subfolders=",".join(DEFAULT_SUBFOLDERS),
         watcher_status=get_watcher_status(),
         total_api_calls=_metrics["total_api_calls"],
         api_enabled=_metrics.get("api_enabled", True),
     )
 
 
+@app.route("/previous-releases")
+def previous_releases_page():
+    with _releases_lock:
+        releases = list(_previous_releases)
+    return render_template_string(PREVIOUS_RELEASES_HTML, releases=releases)
+
+
 @app.route("/create-project", methods=["POST"])
 def create_project():
     global _cache
 
-    project_name   = request.form.get("project_name", "").strip()
-    subfolders_raw = request.form.get("subfolders", "").strip()
-
+    project_name = request.form.get("project_name", "").strip()
     if not project_name:
         return redirect("/?err=" + quote_plus("Project name is required"))
 
-    subfolder_names = [s.strip() for s in subfolders_raw.split(",") if s.strip()]
-    if not subfolder_names:
-        subfolder_names = DEFAULT_SUBFOLDERS[:]
-
     try:
-        root_result = onshape_post("/api/folders", {
-            "name":      project_name,
-            "ownerId":   COMPANY_ID,
-            "ownerType": 1,
+        # 1. Create document
+        doc_result = onshape_post("/api/v10/documents", {
+            "name": project_name, "ownerId": COMPANY_ID, "ownerType": 1,
         })
-        root_id = root_result.get("id")
-        if not root_id:
-            return redirect("/?err=" + quote_plus("Root folder created but no ID returned"))
+        doc_id = doc_result.get("id", "")
+        workspace_id = doc_result.get("defaultWorkspace", {}).get("id", "")
+        if not doc_id or not workspace_id:
+            return redirect("/?err=" + quote_plus("Document created but missing ID or workspace"))
 
-        sub_folders = []
-        for sf_name in subfolder_names:
-            time.sleep(0.5)
-            sf_result = onshape_post("/api/folders", {
-                "name":      sf_name,
-                "ownerId":   COMPANY_ID,
-                "ownerType": 1,
-                "parentId":  root_id,
+        # 2. Create 4 assembly tabs
+        for asm_name in ASSEMBLY_NAMES:
+            try:
+                onshape_post(f"/api/v10/assemblies/d/{doc_id}/w/{workspace_id}", {"name": asm_name})
+            except Exception as e:
+                log(f"Assembly tab creation failed for '{asm_name}': {e}")
+
+        # 3. Create initial version
+        try:
+            onshape_post(f"/api/v10/documents/d/{doc_id}/versions", {
+                "name": "Initial version",
+                "workspaceId": workspace_id,
+                "documentId": doc_id,
+                "description": "Auto-created",
             })
-            sf_id = sf_result.get("id", "")
-            sub_folders.append({"id": sf_id, "name": sf_name})
+        except Exception as e:
+            log(f"Version creation failed: {e}")
 
-        # Create 4 assembly documents inside the Assemblies subfolder
-        assemblies_id = next((sf["id"] for sf in sub_folders if sf["name"] == "Assemblies"), None)
-        if assemblies_id:
-            for asm_name in ASSEMBLY_NAMES:
-                time.sleep(0.5)
-                try:
-                    asm_result = onshape_post("/api/v10/documents", {
-                        "name":      asm_name,
-                        "ownerId":   COMPANY_ID,
-                        "ownerType": 1,
-                        "parentId":  assemblies_id,
-                    })
-                    asm_id = asm_result.get("id", "")
-                    if asm_id:
-                        with _sysdc_lock:
-                            _system_created_docs.add(asm_id)
-                        log(f"Assembly doc created: '{asm_name}' id={asm_id[:8]}")
-                except Exception as e:
-                    log(f"Assembly doc creation failed for '{asm_name}': {e}")
+        # 4. Create Development branch
+        try:
+            onshape_post(f"/api/v10/documents/d/{doc_id}/workspaces", {
+                "name": AUTO_BRANCH_NAME,
+                "description": "Development branch",
+                "workspaceId": workspace_id,
+            })
+        except Exception as e:
+            log(f"Branch creation failed: {e}")
 
         reg = load_registry()
         reg["folders"].append({
-            "id":          root_id,
+            "id":          doc_id,
             "name":        project_name,
-            "sub_folders": sub_folders,
+            "workspace_id": workspace_id,
         })
         save_registry(reg)
-        _cache["ts"] = 0  # invalidate cache so next load fetches fresh data
+        _cache["ts"] = 0
 
-        return redirect("/?msg=" + quote_plus(f"Project '{project_name}' created successfully"))
+        return redirect("/?msg=" + quote_plus(f"Document '{project_name}' created"))
 
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "?"
@@ -1106,7 +1083,6 @@ def create_project():
 def api_watcher_status():
     with watcher_lock:
         snap = dict(_watcher)
-    snap["active_timers"] = list(doc_timers.keys())
     return jsonify(snap)
 
 
@@ -1130,53 +1106,103 @@ def webhook():
     event = data.get("event", "")
 
     if "model.lifecycle.created" in event:
+        # Version creation events include a versionId; document/workspace creation events do not.
         doc_id = data.get("documentId", "")
-        with watcher_lock:
-            _watcher["last_event_ts"] = time.time()
-        if doc_id:
-            with _sysdc_lock:
-                is_system = doc_id in _system_created_docs
-            if is_system:
-                log(f"Webhook: system-created doc {doc_id[:8]} ignored")
-            else:
-                log(f"Webhook: new doc {doc_id[:8]} — fetching details")
+        ver_id = (data.get("versionId", "")
+                  or data.get("payload", {}).get("versionId", ""))
+        if doc_id and ver_id:
+            with watcher_lock:
+                _watcher["last_event_ts"] = time.time()
+            with _dvc_lock:
+                _doc_version_counts[doc_id] = _doc_version_counts.get(doc_id, 0) + 1
+                count = _doc_version_counts[doc_id]
+            log(f"Version webhook: doc={doc_id[:8]}, count={count}")
+            if count == VERSION_RELEASE_THRESHOLD:
+                doc_name = doc_id[:8]
+                creator  = (data.get("createdBy", {}).get("name", "")
+                            or data.get("payload", {}).get("requestedBy", {}).get("name", ""))
                 try:
-                    doc_data     = onshape_get(f"/api/v10/documents/{doc_id}")
-                    doc_name     = doc_data.get("name", doc_id[:8])
-                    workspace_id = doc_data.get("defaultWorkspace", {}).get("id", "")
-                    created_at   = doc_data.get("createdAt", "")
-                    created_by   = doc_data.get("createdBy", {}).get("name", "—")
-                    handle_new_doc(doc_id, doc_name, workspace_id, created_at, created_by)
-                except Exception as e:
-                    log(f"Webhook doc fetch error for {doc_id[:8]}: {e}")
+                    doc_data = onshape_get(f"/api/v10/documents/{doc_id}")
+                    doc_name = doc_data.get("name", doc_name)
+                    if not creator:
+                        creator = doc_data.get("createdBy", {}).get("name", "—")
+                except Exception:
+                    pass
+                send_slack(
+                    f"Version alert: {doc_name}",
+                    f"Document *{doc_name}* now has *{count} versions* with no release.\n"
+                    f"Creator: {creator or '—'}\nConsider cutting a release.",
+                    f"{BASE_URL}/documents/{doc_id}",
+                )
 
     elif "revision" in event or "release" in event:
-        payload  = data.get("payload", {})
-        rel_id   = payload.get("releasePackageId", data.get("id", ""))
-        rel_name = payload.get("name", "Release")
-        state    = payload.get("requestState", "UNKNOWN")
-        by       = payload.get("requestedBy", {}).get("name", "—")
+        payload     = data.get("payload", {})
+        rel_id      = payload.get("releasePackageId", data.get("id", ""))
+        rel_name    = payload.get("name", "Release")
+        state       = payload.get("requestState", "UNKNOWN")
+        by          = payload.get("requestedBy", {}).get("name", "—")
+        doc_id      = payload.get("documentId", "")
+        created_iso = payload.get("createdAt", "")
+        created_at_str, created_at_ts = _parse_release_ts(created_iso)
+        rel_url = f"{BASE_URL}/documents/{doc_id}" if doc_id else ""
+
+        entry = {
+            "id":             rel_id,
+            "name":           rel_name,
+            "state":          state,
+            "by":             by,
+            "time_ago":       "just now",
+            "appeared_at":    time.time(),
+            "doc_id":         doc_id,
+            "created_at_str": created_at_str,
+            "created_at_ts":  created_at_ts,
+            "rel_url":        rel_url,
+        }
+
         with _releases_lock:
             _recent_releases[:] = [r for r in _recent_releases if r["id"] != rel_id]
-            _recent_releases.insert(0, {
-                "id": rel_id, "name": rel_name,
-                "state": state, "by": by, "time_ago": "just now",
-            })
-            del _recent_releases[5:]
-        log(f"Release webhook received: '{rel_name}' -> {state}")
+            _recent_releases.insert(0, entry)
+            del _recent_releases[20:]
+            _previous_releases[:] = [r for r in _previous_releases if r["id"] != rel_id]
+            _previous_releases.insert(0, entry)
+
+        with watcher_lock:
+            _watcher["last_event_ts"] = time.time()
+
+        # Reset version counter for this document when any release event fires
+        if doc_id:
+            with _dvc_lock:
+                _doc_version_counts.pop(doc_id, None)
+
+        if state == "RELEASED":
+            send_slack(
+                f"Release: {rel_name}",
+                f"*{by}* released *{rel_name}*\nStatus: {state}\n{created_at_str}",
+                rel_url if rel_url else f"{BASE_URL}/releases",
+            )
+
+        log(f"Release webhook: '{rel_name}' -> {state}")
 
     return ("", 200)
 
 
 @app.route("/create-drawing/<doc_id>", methods=["POST"])
 def create_drawing(doc_id):
-    with _rdocs_lock:
-        doc_entry = next((d for d in _recent_docs if d["id"] == doc_id), None)
+    # Look up workspace_id from registry first (zero extra API calls if found)
+    workspace_id = ""
+    reg = load_registry()
+    for entry in reg.get("folders", []):
+        if entry.get("id") == doc_id:
+            workspace_id = entry.get("workspace_id", "")
+            break
 
-    if not doc_entry:
-        return redirect("/?err=" + quote_plus("Document not found in recent list"))
-
-    workspace_id = doc_entry.get("workspace_id", "")
+    # Fallback: fetch workspace_id from Onshape (1 extra API call)
+    if not workspace_id:
+        try:
+            doc_data = onshape_get(f"/api/v10/documents/{doc_id}")
+            workspace_id = doc_data.get("defaultWorkspace", {}).get("id", "")
+        except Exception as e:
+            return redirect("/?err=" + quote_plus(f"Could not fetch workspace: {str(e)[:100]}"))
 
     if not workspace_id:
         return redirect("/?err=" + quote_plus("Workspace ID not available"))
@@ -1233,8 +1259,119 @@ def create_drawing(doc_id):
         return redirect("/?err=" + quote_plus(str(e)[:200]))
 
 
+def _workspace_id_for(doc_id):
+    """Returns workspace_id from registry (no API call) or falls back to Onshape GET (1 call)."""
+    reg = load_registry()
+    for entry in reg.get("folders", []):
+        if entry.get("id") == doc_id:
+            wid = entry.get("workspace_id", "")
+            if wid:
+                return wid, reg
+    try:
+        doc_data = onshape_get(f"/api/v10/documents/{doc_id}")
+        return doc_data.get("defaultWorkspace", {}).get("id", ""), reg
+    except Exception:
+        return "", reg
+
+
+@app.route("/export")
+def export_page():
+    reg = load_registry()
+    return render_template_string(EXPORT_HTML, folders=reg.get("folders", []))
+
+
+@app.route("/export-pdfs/<doc_id>")
+def export_pdfs(doc_id):
+    wid, reg = _workspace_id_for(doc_id)
+    if not wid:
+        return "Could not determine workspace ID", 400
+    try:
+        elements = onshape_get(f"/api/v10/documents/d/{doc_id}/w/{wid}/elements")
+        drawings = [e for e in elements if e.get("elementType") == "DRAWING"]
+        if not drawings:
+            return "No drawing elements found in this document", 404
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for elem in drawings:
+                eid  = elem.get("id", "")
+                name = elem.get("name", eid)
+                try:
+                    r = requests.get(
+                        f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{eid}/export",
+                        params={"format": "PDF"},
+                        auth=next_auth(),
+                        timeout=90,
+                    )
+                    if r.status_code == 200:
+                        safe = name.replace("/", "_").replace("\\", "_")
+                        zf.writestr(f"{safe}.pdf", r.content)
+                        log(f"PDF exported: {name}")
+                    else:
+                        log(f"PDF export failed for '{name}': {r.status_code}")
+                except Exception as e:
+                    log(f"PDF export error for '{name}': {e}")
+
+        buf.seek(0)
+        doc_name = next((e["name"] for e in reg.get("folders", []) if e["id"] == doc_id), doc_id[:8])
+        return send_file(buf, mimetype="application/zip", as_attachment=True,
+                         download_name=f"{doc_name}_drawings.zip")
+    except Exception as e:
+        return f"Export failed: {str(e)[:200]}", 500
+
+
+@app.route("/export-dxfs/<doc_id>")
+def export_dxfs(doc_id):
+    wid, reg = _workspace_id_for(doc_id)
+    if not wid:
+        return "Could not determine workspace ID", 400
+    try:
+        elements    = onshape_get(f"/api/v10/documents/d/{doc_id}/w/{wid}/elements")
+        part_studios = [e for e in elements if e.get("elementType") == "PARTSTUDIO"]
+        if not part_studios:
+            return "No part studios found in this document", 404
+
+        buf = io.BytesIO()
+        dxf_count = 0
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            for ps in part_studios:
+                ps_eid = ps.get("id", "")
+                parts  = onshape_get(f"/api/v10/parts/d/{doc_id}/w/{wid}/e/{ps_eid}")
+                for part in parts:
+                    part_id   = part.get("partId", "")
+                    part_name = part.get("name", "Part")
+                    if not part_id:
+                        continue
+                    try:
+                        r = requests.get(
+                            f"{BASE_URL}/api/v5/partstudios/d/{doc_id}/w/{wid}/e/{ps_eid}/export",
+                            params={"format": "DXF", "partIds": part_id, "flatten": "true"},
+                            auth=next_auth(),
+                            timeout=90,
+                        )
+                        if r.status_code == 200 and r.content:
+                            safe = part_name.replace("/", "_").replace("\\", "_")
+                            zf.writestr(f"{safe}.dxf", r.content)
+                            dxf_count += 1
+                            log(f"DXF exported: {part_name}")
+                        else:
+                            log(f"DXF skipped for '{part_name}': {r.status_code} (not sheet metal?)")
+                    except Exception as e:
+                        log(f"DXF export error for '{part_name}': {e}")
+
+        if dxf_count == 0:
+            return "No DXF files generated — document may contain no sheet metal parts", 404
+
+        buf.seek(0)
+        doc_name = next((e["name"] for e in reg.get("folders", []) if e["id"] == doc_id), doc_id[:8])
+        return send_file(buf, mimetype="application/zip", as_attachment=True,
+                         download_name=f"{doc_name}_flatpatterns.zip")
+    except Exception as e:
+        return f"Export failed: {str(e)[:200]}", 500
+
+
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 5001))
-    print(f"   Onshape Dashboard + Protection Watcher")
+    print(f"   Onshape Dashboard")
     print(f"   Open: http://localhost:{port}")
     app.run(host="0.0.0.0", port=port, use_reloader=False)
