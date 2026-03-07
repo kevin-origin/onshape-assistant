@@ -53,6 +53,8 @@ _REGULAR_KEYS = [
     ("on_AwY0N0aTHRZ3lH1BvIXq0",  "10eAjkwdf83tSgoRgbTkvrXyESTmcQi2K4TTJtqUcN3BuM3C"),
     ("on_SGYDfnKOfECj80oPyTIpf",  "jNPlQ4eUoS7WBkrrmY6EXf72oyoHXW79ns8gGbJDlpLDANU3"),
     ("on_LeDYm2hVFdCuc15ghJdbs",  "jkEU9iGpz8v7vdd0GnyyAoTHwBU9HFT0K0m3JpgEHKDCFCbV"),
+    ("on_igdCamXJs6Mj3tNLggp5v",  "s3s91k6eaZb4KewMHqgFvwxR5vhgRV7je8bitYKBuzqNB28Z"),
+    ("on_ORVkxDOYiRZ2kYtVbQXUU",  "gYVYj2Jb0ya1abi80nNEJ7LXcr0dw0B2pnLowAA1GzZlrwEx"),
 ]
 _SPECIAL_KEY = ("on_FDJfzRLfVfE2rx9XwLjcS", "5BpXsu5Ct1JFreMdzQmLXEgskuLmPFrkfYJ8KB6gR60VTTKV")
 # Cycle: 1 slot per regular key, 3 slots for the special key
@@ -845,8 +847,6 @@ def previous_releases_page():
 
 @app.route("/create-project", methods=["POST"])
 def create_project():
-    global _cache
-
     project_name = request.form.get("project_name", "").strip()
     if not project_name:
         return redirect("/?err=" + quote_plus("Project name is required"))
