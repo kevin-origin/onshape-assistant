@@ -16,7 +16,7 @@ import zipfile
 import itertools
 import threading
 import requests
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 from urllib.parse import quote_plus
 from flask import Flask, jsonify, render_template_string, request, redirect, send_file
 
@@ -36,7 +36,7 @@ VERSION_RELEASE_THRESHOLD = 5   # Slack alert when a doc has this many versions 
 # Watcher
 SLACK_WEBHOOK_URL        = os.environ.get("SLACK_WEBHOOK_URL",     "https://hooks.slack.com/services/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")
 WEBHOOK_SECRET           = os.environ.get("ONSHAPE_WEBHOOK_SECRET", "artila-webhook-secret")
-DASHBOARD_URL            = os.environ.get("DASHBOARD_URL",          "http://localhost:5001")
+DASHBOARD_URL            = os.environ.get("DASHBOARD_URL",          os.environ.get("RENDER_EXTERNAL_URL", "http://localhost:5001"))
 # ============================================================
 
 HEADERS = {
@@ -625,7 +625,7 @@ HTML = """<!DOCTYPE html>
     <div class="card-static rounded-2xl px-6 py-6">
       <p class="eyebrow mb-3">API Calls</p>
       <p class="text-3xl font-bold mb-1" style="color:rgba(255,255,255,0.88)">{{ total_api_calls }}</p>
-      <p class="text-xs" style="color:rgba(255,255,255,0.25)">All-time total across all keys</p>
+      <p class="text-xs" style="color:rgba(255,255,255,0.25)">Since last deploy</p>
     </div>
   </div>
 </div>
@@ -1028,7 +1028,7 @@ def index():
         HTML,
         recent_releases=recent_releases,
         registry_items=reg["folders"],
-        now=datetime.now().strftime("%H:%M"),
+        now=datetime.now(timezone(timedelta(hours=5, minutes=30))).strftime("%H:%M IST"),
         flash_msg=request.args.get("msg", ""),
         flash_err=request.args.get("err", ""),
         watcher_status=get_watcher_status(),
