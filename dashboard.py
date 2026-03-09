@@ -503,7 +503,7 @@ HTML = """<!DOCTYPE html>
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<meta http-equiv="refresh" content="300">
+<meta http-equiv="refresh" content="3600">
 <title>Artila Robotics — Dashboard</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
@@ -620,7 +620,7 @@ HTML = """<!DOCTYPE html>
     <div class="card-static rounded-2xl px-6 py-6">
       <p class="eyebrow mb-3">Last Refreshed</p>
       <p class="text-3xl font-bold mb-1" style="color:rgba(255,255,255,0.88)">{{ now }}</p>
-      <p class="text-xs" style="color:rgba(255,255,255,0.25)">Auto-refresh every 5 min</p>
+      <p class="text-xs" style="color:rgba(255,255,255,0.25)">Auto-refresh every 60 min</p>
     </div>
     <div class="card-static rounded-2xl px-6 py-6">
       <p class="eyebrow mb-3">API Calls</p>
