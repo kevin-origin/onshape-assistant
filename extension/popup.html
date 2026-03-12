@@ -1,0 +1,129 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      width: 320px;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 13px;
+      background: #1a1a2e;
+      color: #e0e0e0;
+      padding: 12px;
+    }
+    h2 {
+      font-size: 14px;
+      color: #fff;
+      margin-bottom: 10px;
+      border-bottom: 1px solid #333;
+      padding-bottom: 6px;
+    }
+    label {
+      display: block;
+      font-size: 11px;
+      color: #aaa;
+      margin-bottom: 3px;
+      margin-top: 10px;
+    }
+    textarea, input[type="text"] {
+      width: 100%;
+      background: #16213e;
+      border: 1px solid #333;
+      color: #e0e0e0;
+      border-radius: 4px;
+      padding: 6px 8px;
+      font-family: monospace;
+      font-size: 12px;
+      resize: vertical;
+    }
+    textarea { height: 60px; }
+    input[type="text"] { height: 30px; }
+    .btn-row {
+      display: flex;
+      gap: 6px;
+      margin-top: 12px;
+    }
+    button {
+      flex: 1;
+      padding: 7px 10px;
+      border: none;
+      border-radius: 4px;
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: opacity 0.15s;
+    }
+    button:hover { opacity: 0.85; }
+    button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-scan { background: #0f3460; color: #fff; }
+    .btn-rescan { background: #1a1a40; color: #7ec8e3; border: 1px solid #333; }
+    #status {
+      margin-top: 10px;
+      padding: 6px 8px;
+      background: #16213e;
+      border-radius: 4px;
+      font-size: 11px;
+      color: #7ec8e3;
+      min-height: 20px;
+      display: none;
+    }
+    #results {
+      margin-top: 10px;
+      max-height: 200px;
+      overflow-y: auto;
+      display: none;
+    }
+    .result-item {
+      padding: 5px 8px;
+      background: #16213e;
+      border-radius: 3px;
+      margin-bottom: 3px;
+      font-size: 11px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .result-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .badge {
+      font-size: 10px;
+      padding: 1px 6px;
+      border-radius: 8px;
+      font-weight: 600;
+      margin-left: 6px;
+      white-space: nowrap;
+    }
+    .badge-ok { background: #1b4332; color: #95d5b2; }
+    .badge-warn { background: #533a0f; color: #f0c040; }
+    .badge-err { background: #4a1525; color: #ff6b6b; }
+    .summary {
+      font-size: 11px;
+      color: #aaa;
+      margin-top: 6px;
+      margin-bottom: 4px;
+    }
+  </style>
+</head>
+<body>
+  <h2>Onshape Tab Folder Scanner</h2>
+
+  <label>Folder IDs (one per line)</label>
+  <textarea id="folderIds" placeholder="e.g. 0e6a83bfe36bbb4968b747fb"></textarea>
+
+  <label>Dashboard URL</label>
+  <input type="text" id="dashboardUrl" placeholder="https://your-dashboard.onrender.com">
+
+  <div class="btn-row">
+    <button class="btn-scan" id="btnScan">Scan All</button>
+    <button class="btn-rescan" id="btnRescan">Re-scan This Doc</button>
+  </div>
+
+  <div id="status"></div>
+  <div id="results">
+    <div class="summary" id="summaryText"></div>
+    <div id="resultList"></div>
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
