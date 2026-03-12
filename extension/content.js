@@ -7,6 +7,7 @@
 
   const CLICK_DELAY = 500;   // ms after clicking a folder before reading children
   const ROOT_DELAY  = 500;   // ms after clicking "All tabs" breadcrumb
+  let _scanning = false;     // lock to prevent concurrent scans
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -63,55 +64,62 @@
   // ---------------------------------------------------------------------------
 
   async function scanTabFolders() {
-    const docId = getDocIdFromUrl();
-    if (!docId) return null;
+    if (_scanning) return null; // another scan already running
+    _scanning = true;
 
-    const result = {
-      doc_id: docId,
-      doc_name: getDocName(),
-      folders: {},
-      root_tabs: [],
-    };
+    try {
+      const docId = getDocIdFromUrl();
+      if (!docId) return null;
 
-    // Step 1: Click "All tabs" to ensure we're at root
-    await clickAllTabs();
+      const result = {
+        doc_id: docId,
+        doc_name: getDocName(),
+        folders: {},
+        root_tabs: [],
+      };
 
-    // Step 2: Read root-level items
-    const rootItems = getTabNames();
-    if (rootItems.length === 0) return result;
+      // Step 1: Click "All tabs" to ensure we're at root
+      await clickAllTabs();
 
-    const depthBefore = getBreadcrumbDepth();
+      // Step 2: Read root-level items
+      const rootItems = getTabNames();
+      if (rootItems.length === 0) return result;
 
-    for (let i = 0; i < rootItems.length; i++) {
-      // Re-query each iteration because DOM may have changed after navigation
-      const currentItems = getTabNames();
-      if (i >= currentItems.length) break;
+      const depthBefore = getBreadcrumbDepth();
 
-      const item = currentItems[i];
-      const itemName = item.text;
+      for (let i = 0; i < rootItems.length; i++) {
+        // Re-query each iteration because DOM may have changed after navigation
+        const currentItems = getTabNames();
+        if (i >= currentItems.length) break;
 
-      // Click this item
-      item.el.click();
-      await sleep(CLICK_DELAY);
+        const item = currentItems[i];
+        const itemName = item.text;
 
-      const depthAfter = getBreadcrumbDepth();
+        // Click this item
+        item.el.click();
+        await sleep(CLICK_DELAY);
 
-      if (depthAfter > depthBefore) {
-        // This was a FOLDER — breadcrumb depth increased
-        const children = getTabNames().map(c => c.text);
-        result.folders[itemName] = children;
+        const depthAfter = getBreadcrumbDepth();
 
-        // Return to root
-        await clickAllTabs();
-      } else {
-        // Regular tab — not a folder
-        result.root_tabs.push(itemName);
-        // Return to root to keep position consistent
-        await clickAllTabs();
+        if (depthAfter > depthBefore) {
+          // This was a FOLDER — breadcrumb depth increased
+          const children = getTabNames().map(c => c.text);
+          result.folders[itemName] = children;
+
+          // Return to root
+          await clickAllTabs();
+        } else {
+          // Regular tab — not a folder
+          result.root_tabs.push(itemName);
+          // Return to root to keep position consistent
+          await clickAllTabs();
+        }
       }
-    }
 
-    return result;
+      return result;
+    } finally {
+      _scanning = false;
+    }
   }
 
   // ---------------------------------------------------------------------------
@@ -122,10 +130,11 @@
     const docId = getDocIdFromUrl();
     if (!docId) return;
 
-    // Check if this doc is in the registered list
-    const data = await chrome.storage.local.get("registeredDocIds");
-    const registered = data.registeredDocIds || [];
+    // Skip if bulk scan is running (it handles scanning itself)
+    const data = await chrome.storage.local.get(["registeredDocIds", "bulkScanRunning"]);
+    if (data.bulkScanRunning) return;
 
+    const registered = data.registeredDocIds || [];
     if (registered.length === 0) return;          // No bulk scan done yet
     if (!registered.includes(docId)) return;      // Not a registered doc
 

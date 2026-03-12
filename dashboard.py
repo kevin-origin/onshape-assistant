@@ -29,6 +29,7 @@ BASE_URL           = "https://cad.onshape.com"
 COMPANY_ID         = os.environ.get("ONSHAPE_COMPANY_ID",    "6810c247e7c40668c32816a6")
 REGISTRY_FILE      = os.path.join(os.path.dirname(os.path.abspath(__file__)), "folders.json")
 METRICS_FILE       = os.path.join(os.path.dirname(os.path.abspath(__file__)), "metrics.json")
+TAB_FOLDERS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "tab_folders.json")
 ASSEMBLY_NAMES     = ["Master Assembly", "Placement Assembly", "Routing Assembly", "Manufacturing Assembly"]
 AUTO_BRANCH_NAME          = "Development"
 VERSION_RELEASE_THRESHOLD = 5   # Slack alert when a doc has this many versions with no release
@@ -88,6 +89,15 @@ def next_auth():
         return next(_rr_iter)
 
 app = Flask(__name__)
+
+@app.after_request
+def add_cors(response):
+    origin = request.headers.get("Origin", "")
+    if origin.startswith(("moz-extension://", "chrome-extension://")):
+        response.headers["Access-Control-Allow-Origin"] = origin
+        response.headers["Access-Control-Allow-Headers"] = "Content-Type"
+        response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
+    return response
 
 # Watcher state (webhook-driven — no polling)
 _watcher = {
@@ -1397,6 +1407,41 @@ def export_dxfs(doc_id):
                          download_name=f"{doc_name}_flatpatterns.zip")
     except Exception as e:
         return f"Export failed: {str(e)[:200]}", 500
+
+
+# ============================================================
+# Tab Folder Scanner — extension reports tab folder data here
+# ============================================================
+
+def _load_tab_folder_reports():
+    try:
+        with open(TAB_FOLDERS_FILE, "r") as f:
+            return json.load(f)
+    except Exception:
+        return {}
+
+def _save_tab_folder_reports(reports):
+    with open(TAB_FOLDERS_FILE, "w") as f:
+        json.dump(reports, f, indent=2)
+
+@app.route("/api/report-tab-folders", methods=["POST", "OPTIONS"])
+def report_tab_folders():
+    if request.method == "OPTIONS":
+        return "", 204
+    data = request.get_json()
+    if not data or "doc_id" not in data:
+        return jsonify({"error": "doc_id required"}), 400
+    doc_id = data["doc_id"]
+    reports = _load_tab_folder_reports()
+    ist = timezone(timedelta(hours=5, minutes=30))
+    reports[doc_id] = {
+        "doc_name":   data.get("doc_name", ""),
+        "folders":    data.get("folders", {}),
+        "root_tabs":  data.get("root_tabs", []),
+        "scanned_at": datetime.now(ist).strftime("%H:%M IST"),
+    }
+    _save_tab_folder_reports(reports)
+    return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":

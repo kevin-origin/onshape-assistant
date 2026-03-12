@@ -1,5 +1,24 @@
 // popup.js — Onshape Tab Folder Scanner popup logic
 
+const REQUIRED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports"];
+
+// Returns { ok, badgeClass, badgeText, detail } for a scan result
+function validateFolders(result) {
+  const folders = Object.keys(result.folders || {});
+  if (folders.length === 0) {
+    return { ok: false, badgeClass: "badge-err", badgeText: "no folders", detail: null };
+  }
+  const missing = REQUIRED_FOLDERS.filter(f => !folders.includes(f));
+  const extra   = folders.filter(f => !REQUIRED_FOLDERS.includes(f));
+  if (missing.length === 0 && extra.length === 0) {
+    return { ok: true, badgeClass: "badge-ok", badgeText: "4 folders", detail: null };
+  }
+  let detail = [];
+  if (missing.length > 0) detail.push("missing: " + missing.join(", "));
+  if (extra.length > 0)   detail.push("extra: " + extra.join(", "));
+  return { ok: false, badgeClass: "badge-warn", badgeText: `${folders.length} folder${folders.length > 1 ? "s" : ""}`, detail: detail.join(" | ") };
+}
+
 const $folderIds    = document.getElementById("folderIds");
 const $dashboardUrl = document.getElementById("dashboardUrl");
 const $btnScan      = document.getElementById("btnScan");
@@ -158,7 +177,7 @@ function showSummary(data) {
   const results = data.results || [];
 
   for (const r of results) {
-    const folderCount = Object.keys(r.folders || {}).length;
+    const v = validateFolders(r);
     const el = document.createElement("div");
     el.className = "result-item";
 
@@ -168,16 +187,21 @@ function showSummary(data) {
     el.appendChild(nameSpan);
 
     const badge = document.createElement("span");
-    if (folderCount > 0) {
-      badge.className = "badge badge-ok";
-      badge.textContent = `${folderCount} folder${folderCount > 1 ? "s" : ""}`;
-    } else {
-      badge.className = "badge badge-warn";
-      badge.textContent = "no folders";
-    }
+    badge.className = "badge " + v.badgeClass;
+    badge.textContent = v.badgeText;
     el.appendChild(badge);
 
     $resultList.appendChild(el);
+
+    if (v.detail) {
+      const detailEl = document.createElement("div");
+      detailEl.className = "result-item";
+      detailEl.style.paddingLeft = "20px";
+      detailEl.style.fontSize = "10px";
+      detailEl.style.color = "#f0c040";
+      detailEl.textContent = v.detail;
+      $resultList.appendChild(detailEl);
+    }
   }
 
   // Show errors
@@ -192,7 +216,7 @@ function showSingleResult(result) {
   $results.style.display = "block";
   $resultList.innerHTML = "";
 
-  const folderCount = Object.keys(result.folders || {}).length;
+  const v = validateFolders(result);
   const el = document.createElement("div");
   el.className = "result-item";
 
@@ -202,16 +226,21 @@ function showSingleResult(result) {
   el.appendChild(nameSpan);
 
   const badge = document.createElement("span");
-  if (folderCount > 0) {
-    badge.className = "badge badge-ok";
-    badge.textContent = `${folderCount} folder${folderCount > 1 ? "s" : ""}`;
-  } else {
-    badge.className = "badge badge-warn";
-    badge.textContent = "no folders";
-  }
+  badge.className = "badge " + v.badgeClass;
+  badge.textContent = v.badgeText;
   el.appendChild(badge);
 
   $resultList.appendChild(el);
+
+  if (v.detail) {
+    const detailEl = document.createElement("div");
+    detailEl.className = "result-item";
+    detailEl.style.paddingLeft = "20px";
+    detailEl.style.fontSize = "10px";
+    detailEl.style.color = "#f0c040";
+    detailEl.textContent = v.detail;
+    $resultList.appendChild(detailEl);
+  }
 
   // Show folder details
   for (const [folder, tabs] of Object.entries(result.folders || {})) {

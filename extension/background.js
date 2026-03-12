@@ -105,9 +105,9 @@ async function runBulkScan(folderIds, dashboardUrl) {
       return { error: "No documents found in configured folders" };
     }
 
-    // Save registered doc IDs for auto-scan
+    // Save registered doc IDs for auto-scan, and set bulk scan flag
     const docIds = docs.map(d => d.id);
-    await chrome.storage.local.set({ registeredDocIds: docIds });
+    await chrome.storage.local.set({ registeredDocIds: docIds, bulkScanRunning: true });
 
     // 2. Create scanner tab (inactive/background)
     const tab = await chrome.tabs.create({
@@ -181,10 +181,12 @@ async function runBulkScan(folderIds, dashboardUrl) {
 
     broadcastProgress(`Done: ${summary.scanned} docs scanned, ${summary.errors} errors`);
     scanState.running = false;
+    await chrome.storage.local.set({ bulkScanRunning: false });
     return summary;
 
   } catch (err) {
     scanState.running = false;
+    await chrome.storage.local.set({ bulkScanRunning: false });
     try {
       if (scanState.scannerTabId) await chrome.tabs.remove(scanState.scannerTabId);
     } catch (_) {}
