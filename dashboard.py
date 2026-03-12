@@ -10,6 +10,7 @@ Local:   python dashboard.py  ->  http://localhost:5001
 
 import io
 import os
+import re
 import json
 import time
 import zipfile
@@ -33,6 +34,7 @@ TAB_FOLDERS_FILE   = os.path.join(os.path.dirname(os.path.abspath(__file__)), "t
 ASSEMBLY_NAMES     = ["Master Assembly", "Placement Assembly", "Routing Assembly", "Manufacturing Assembly"]
 AUTO_BRANCH_NAME          = "Development"
 VERSION_RELEASE_THRESHOLD = 5   # Slack alert when a doc has this many versions with no release
+_PS_URL_RE = re.compile(r"documents/([a-f0-9]{24})/w/([a-f0-9]{24})/e/([a-f0-9]{24})")
 
 # Watcher
 SLACK_WEBHOOK_URL        = os.environ.get("SLACK_WEBHOOK_URL",     "https://hooks.slack.com/services/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")
@@ -809,6 +811,24 @@ HTML = """<!DOCTYPE html>
   </section>
 </div>
 
+<!-- DRAWING GENERATOR -->
+<div class="sep">
+  <section class="max-w-5xl mx-auto px-8 py-16">
+    <div class="mb-8">
+      <p class="eyebrow mb-2">Production</p>
+      <h2 class="text-2xl font-bold mb-2" style="color:rgba(255,255,255,0.9)">Drawing Generator</h2>
+      <p class="text-sm" style="color:rgba(255,255,255,0.35)">Generate drawings for all parts in a specific Part Studio. Paste the Part Studio URL from Onshape.</p>
+    </div>
+    <div class="card rounded-2xl px-6 py-6" style="max-width:540px">
+      <form method="POST" action="/generate-drawings" onsubmit="var b=this.querySelector('button');b.disabled=true;b.textContent='Generating...'">
+        <label class="text-xs font-medium mb-2 block" style="color:rgba(255,255,255,0.5)">Part Studio URL</label>
+        <input type="text" name="ps_url" class="inp font-mono w-full mb-4" placeholder="https://cad.onshape.com/documents/.../w/.../e/..." required>
+        <button type="submit" class="btn-primary px-5 py-2 rounded-lg text-xs font-medium">Generate Drawings</button>
+      </form>
+    </div>
+  </section>
+</div>
+
 <!-- SYSTEM -->
 <div class="sep">
   <section class="max-w-5xl mx-auto px-8 py-16 pb-28">
@@ -1295,6 +1315,71 @@ def create_drawing(doc_id):
         return redirect("/?err=" + quote_plus(f"API Error {status}"))
     except Exception as e:
         return redirect("/?err=" + quote_plus(str(e)[:200]))
+
+
+@app.route("/generate-drawings", methods=["POST"])
+def generate_drawings():
+    url = (request.form.get("ps_url") or "").strip()
+    if not url:
+        return redirect("/?err=" + quote_plus("No URL provided"))
+
+    m = _PS_URL_RE.search(url)
+    if not m:
+        return redirect("/?err=" + quote_plus(
+            "Invalid URL — expected format: https://cad.onshape.com/documents/{did}/w/{wid}/e/{eid}"))
+
+    doc_id, wid, ps_eid = m.group(1), m.group(2), m.group(3)
+
+    try:
+        parts = onshape_get(f"/api/v10/parts/d/{doc_id}/w/{wid}/e/{ps_eid}")
+    except requests.exceptions.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "?"
+        if status == 404:
+            return redirect("/?err=" + quote_plus(
+                "Element not found — confirm URL points to a Part Studio"))
+        return redirect("/?err=" + quote_plus(f"API Error {status}"))
+    except Exception as e:
+        return redirect("/?err=" + quote_plus(str(e)[:200]))
+
+    if not parts:
+        return redirect("/?err=" + quote_plus("No parts found in that Part Studio"))
+
+    created = []
+    for part in parts:
+        part_id   = part.get("partId", "")
+        part_name = part.get("name", "Part")
+        if not part_id:
+            continue
+        body = {
+            "drawingName": f"Drawing - {part_name}",
+            "elementId":   ps_eid,
+            "partId":      part_id,
+            "templateDocumentId":  "e4ecea9df80b53b39ab4fa38",
+            "templateWorkspaceId": "038996d814574f1d1d3b774a",
+            "templateElementId":   "4a80b03c1485e714f587fb61",
+        }
+        try:
+            r = requests.post(
+                f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/create",
+                headers=HEADERS, json=body, auth=next_auth(), timeout=20,
+            )
+            if r.status_code in (200, 201):
+                drawing_eid = r.json().get("id", "")
+                created.append(part_name)
+                log(f"Drawing created for part '{part_name}', eid={drawing_eid}")
+                if drawing_eid:
+                    scale = get_part_scale(doc_id, wid, ps_eid, part_id)
+                    add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, scale)
+            else:
+                log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
+        except Exception as e:
+            log(f"Drawing error for '{part_name}': {e}")
+
+    if created:
+        msg = f"Drawings created for: {', '.join(created)}"
+    else:
+        msg = "No drawings created — check terminal for errors"
+    return redirect("/?msg=" + quote_plus(msg))
 
 
 def _workspace_id_for(doc_id):
