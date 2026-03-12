@@ -199,8 +199,8 @@ def get_part_scale(doc_id, wid, ps_eid, part_id):
         log(f"Bounding box fetch failed ({e}); defaulting to 1:1")
         return 1, 1
 
-    AVAILABLE = 120.0  # mm per view slot on an A-size sheet
-    standards = [(2,1),(1,1),(1,2),(1,5),(1,10),(1,20),(1,50)]
+    AVAILABLE = 90.0  # mm per view slot (conservative — two views side-by-side)
+    standards = [(2,1),(1,1),(1,2),(1,3),(1,5),(1,10),(1,20),(1,50)]
     for num, den in standards:
         if largest * num / den <= AVAILABLE:
             return num, den
@@ -218,7 +218,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             "views": [
                 {
                     "viewType": "TopLevel",
-                    "position": {"x": 0.06, "y": 0.12},
+                    "position": {"x": 0.06, "y": 0.14},
                     "orientation": "front",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"elementId": ps_eid, "partId": part_id},
@@ -226,7 +226,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                 },
                 {
                     "viewType": "TopLevel",
-                    "position": {"x": 0.20, "y": 0.12},
+                    "position": {"x": 0.20, "y": 0.14},
                     "orientation": "isometric",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"elementId": ps_eid, "partId": part_id},
@@ -294,7 +294,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             "formatVersion": "2021-01-01",
             "views": [{
                 "viewType": "TopLevel",
-                "position": {"x": 0.13, "y": 0.12},
+                "position": {"x": 0.13, "y": 0.14},
                 "orientation": "flatPattern",
                 "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                 "reference": {"elementId": ps_eid, "partId": part_id},
