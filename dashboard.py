@@ -1329,6 +1329,7 @@ def generate_drawings():
             "Invalid URL — expected format: https://cad.onshape.com/documents/{did}/w/{wid}/e/{eid}"))
 
     doc_id, wid, ps_eid = m.group(1), m.group(2), m.group(3)
+    log(f"Generate drawings: doc={doc_id}, wid={wid}, ps_eid={ps_eid}")
 
     try:
         parts = onshape_get(f"/api/v10/parts/d/{doc_id}/w/{wid}/e/{ps_eid}")
@@ -1341,45 +1342,51 @@ def generate_drawings():
     except Exception as e:
         return redirect("/?err=" + quote_plus(str(e)[:200]))
 
-    if not parts:
+    if not isinstance(parts, list) or not parts:
+        log(f"Parts response unexpected or empty: {str(parts)[:200]}")
         return redirect("/?err=" + quote_plus("No parts found in that Part Studio"))
 
-    created = []
-    for part in parts:
-        part_id   = part.get("partId", "")
-        part_name = part.get("name", "Part")
-        if not part_id:
-            continue
-        body = {
-            "drawingName": f"Drawing - {part_name}",
-            "elementId":   ps_eid,
-            "partId":      part_id,
-            "templateDocumentId":  "e4ecea9df80b53b39ab4fa38",
-            "templateWorkspaceId": "038996d814574f1d1d3b774a",
-            "templateElementId":   "4a80b03c1485e714f587fb61",
-        }
-        try:
-            r = requests.post(
-                f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/create",
-                headers=HEADERS, json=body, auth=next_auth(), timeout=20,
-            )
-            if r.status_code in (200, 201):
-                drawing_eid = r.json().get("id", "")
-                created.append(part_name)
-                log(f"Drawing created for part '{part_name}', eid={drawing_eid}")
-                if drawing_eid:
-                    scale = get_part_scale(doc_id, wid, ps_eid, part_id)
-                    add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, scale)
-            else:
-                log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
-        except Exception as e:
-            log(f"Drawing error for '{part_name}': {e}")
+    try:
+        created = []
+        for part in parts:
+            part_id   = part.get("partId", "")
+            part_name = part.get("name", "Part")
+            if not part_id:
+                continue
+            body = {
+                "drawingName": f"Drawing - {part_name}",
+                "elementId":   ps_eid,
+                "partId":      part_id,
+                "templateDocumentId":  "e4ecea9df80b53b39ab4fa38",
+                "templateWorkspaceId": "038996d814574f1d1d3b774a",
+                "templateElementId":   "4a80b03c1485e714f587fb61",
+            }
+            try:
+                r = requests.post(
+                    f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/create",
+                    headers=HEADERS, json=body, auth=next_auth(), timeout=20,
+                )
+                if r.status_code in (200, 201):
+                    drawing_eid = r.json().get("id", "")
+                    created.append(part_name)
+                    log(f"Drawing created for part '{part_name}', eid={drawing_eid}")
+                    if drawing_eid:
+                        scale = get_part_scale(doc_id, wid, ps_eid, part_id)
+                        add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, scale)
+                else:
+                    log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
+            except Exception as e:
+                log(f"Drawing error for '{part_name}': {e}")
 
-    if created:
-        msg = f"Drawings created for: {', '.join(created)}"
-    else:
-        msg = "No drawings created — check terminal for errors"
-    return redirect("/?msg=" + quote_plus(msg))
+        if created:
+            msg = f"Drawings created for: {', '.join(created)}"
+        else:
+            msg = "No drawings created — check terminal for errors"
+        return redirect("/?msg=" + quote_plus(msg))
+
+    except Exception as e:
+        log(f"Generate-drawings error: {e}")
+        return redirect("/?err=" + quote_plus(str(e)[:200]))
 
 
 def _workspace_id_for(doc_id):
