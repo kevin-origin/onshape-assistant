@@ -108,6 +108,10 @@ def add_cors(response):
         response.headers["Access-Control-Allow-Methods"] = "POST, OPTIONS"
     return response
 
+@app.route("/health")
+def health():
+    return "ok", 200
+
 # Watcher state (webhook-driven — no polling)
 _watcher = {
     "rel_wh_id":     None,   # Onshape webhook ID for release events
