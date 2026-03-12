@@ -16,6 +16,7 @@ import time
 import zipfile
 import itertools
 import threading
+import traceback
 import requests
 from datetime import datetime, timezone, timedelta
 from urllib.parse import quote_plus
@@ -91,6 +92,12 @@ def next_auth():
         return next(_rr_iter)
 
 app = Flask(__name__)
+
+@app.errorhandler(500)
+def handle_500(e):
+    log(f"UNHANDLED 500: {e}")
+    traceback.print_exc()
+    return f"Internal Server Error — check terminal for traceback\n\n{e}", 500
 
 @app.after_request
 def add_cors(response):
@@ -1335,11 +1342,15 @@ def generate_drawings():
         parts = onshape_get(f"/api/v10/parts/d/{doc_id}/w/{wid}/e/{ps_eid}")
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "?"
+        log(f"Parts fetch HTTP error: {status}")
+        traceback.print_exc()
         if status == 404:
             return redirect("/?err=" + quote_plus(
                 "Element not found — confirm URL points to a Part Studio"))
         return redirect("/?err=" + quote_plus(f"API Error {status}"))
     except Exception as e:
+        log(f"Parts fetch exception: {e}")
+        traceback.print_exc()
         return redirect("/?err=" + quote_plus(str(e)[:200]))
 
     if not isinstance(parts, list) or not parts:
@@ -1377,6 +1388,7 @@ def generate_drawings():
                     log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
             except Exception as e:
                 log(f"Drawing error for '{part_name}': {e}")
+                traceback.print_exc()
 
         if created:
             msg = f"Drawings created for: {', '.join(created)}"
@@ -1386,6 +1398,7 @@ def generate_drawings():
 
     except Exception as e:
         log(f"Generate-drawings error: {e}")
+        traceback.print_exc()
         return redirect("/?err=" + quote_plus(str(e)[:200]))
 
 
