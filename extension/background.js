@@ -273,6 +273,25 @@ function broadcastProgress(message) {
 }
 
 // ---------------------------------------------------------------------------
+// Try sending scan message to a tab's content script
+// Returns result or { __noConnection: true } if content script isn't there
+// ---------------------------------------------------------------------------
+
+function trySendScan(tabId) {
+  return new Promise((resolve) => {
+    const timeout = setTimeout(() => resolve({ error: "Scan timed out" }), DOC_SCAN_TIMEOUT);
+    chrome.tabs.sendMessage(tabId, { type: "scan-tab-folders" }, (result) => {
+      clearTimeout(timeout);
+      if (chrome.runtime.lastError) {
+        resolve({ __noConnection: true, error: chrome.runtime.lastError.message });
+      } else {
+        resolve(result || { error: "No response" });
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -299,29 +318,37 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
 
   } else if (msg.type === "rescan-active-tab") {
-    // Re-scan just the current active tab
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    // Re-scan the current active tab. If content script isn't injected, inject it first.
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
       if (tabs.length === 0) return sendResponse({ error: "No active tab" });
       const tab = tabs[0];
       if (!tab.url || !tab.url.includes("cad.onshape.com/documents/")) {
         return sendResponse({ error: "Active tab is not an Onshape document" });
       }
-      chrome.tabs.sendMessage(tab.id, { type: "scan-tab-folders" }, (result) => {
-        if (chrome.runtime.lastError) {
-          sendResponse({ error: chrome.runtime.lastError.message });
-        } else if (result && !result.error) {
-          // Also POST to dashboard
-          chrome.storage.local.get("dashboardUrl", (data) => {
-            const dashboardUrl = data.dashboardUrl || "";
-            if (dashboardUrl) {
-              postResultsToDashboard(dashboardUrl, [result]);
-            }
+
+      // Try messaging content script; if missing, inject and retry
+      let result = await trySendScan(tab.id);
+      if (result.__noConnection) {
+        try {
+          await chrome.scripting.executeScript({
+            target: { tabId: tab.id },
+            files: ["content.js"],
           });
-          sendResponse(result);
-        } else {
-          sendResponse(result || { error: "No response" });
+          // Wait for tab bar to be ready
+          await new Promise(r => setTimeout(r, 2000));
+          result = await trySendScan(tab.id);
+        } catch (injectErr) {
+          return sendResponse({ error: "Failed to inject scanner: " + injectErr.message });
         }
+      }
+
+      if (result.error) return sendResponse(result);
+
+      // POST to dashboard
+      chrome.storage.local.get("dashboardUrl", (data) => {
+        if (data.dashboardUrl) postResultsToDashboard(data.dashboardUrl, [result]);
       });
+      sendResponse(result);
     });
     return true;
   }

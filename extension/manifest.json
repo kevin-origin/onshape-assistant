@@ -3,8 +3,12 @@
   "name": "Onshape Tab Folder Scanner",
   "version": "1.0",
   "description": "Reads tab folder structure from Onshape documents for compliance monitoring",
-  "permissions": ["activeTab", "storage", "tabs"],
-  "host_permissions": ["https://cad.onshape.com/*"],
+  "permissions": ["activeTab", "storage", "tabs", "scripting"],
+  "host_permissions": [
+    "https://cad.onshape.com/*",
+    "http://localhost/*",
+    "https://*.onrender.com/*"
+  ],
   "background": {
     "service_worker": "background.js"
   },
