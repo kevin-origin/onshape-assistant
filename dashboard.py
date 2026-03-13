@@ -202,12 +202,13 @@ def get_part_scale(doc_id, wid, ps_eid, part_id):
         dy = (bb["highY"] - bb["lowY"]) * 1000
         dz = (bb["highZ"] - bb["lowZ"]) * 1000
         largest = max(dx, dy, dz)
+        log(f"Bounding box: {dx:.1f} x {dy:.1f} x {dz:.1f} mm, largest={largest:.1f} mm")
     except Exception as e:
         log(f"Bounding box fetch failed ({e}); defaulting to 1:1")
         return 1, 1
 
-    AVAILABLE = 90.0  # mm per view slot (conservative — two views side-by-side)
-    standards = [(2,1),(1,1),(1,2),(1,3),(1,5),(1,10),(1,20),(1,50)]
+    AVAILABLE = 50.0  # mm per view slot (accounts for isometric projection + two views)
+    standards = [(2,1),(1,1),(1,2),(1,3),(1,5),(1,7),(1,10),(1,15),(1,20),(1,50)]
     for num, den in standards:
         if largest * num / den <= AVAILABLE:
             return num, den
@@ -225,7 +226,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             "views": [
                 {
                     "viewType": "TopLevel",
-                    "position": {"x": 0.06, "y": 0.14},
+                    "position": {"x": 0.06, "y": 0.17},
                     "orientation": "front",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"elementId": ps_eid, "partId": part_id},
@@ -234,7 +235,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                 },
                 {
                     "viewType": "TopLevel",
-                    "position": {"x": 0.20, "y": 0.14},
+                    "position": {"x": 0.20, "y": 0.17},
                     "orientation": "isometric",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"elementId": ps_eid, "partId": part_id},
@@ -303,7 +304,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             "formatVersion": "2021-01-01",
             "views": [{
                 "viewType": "TopLevel",
-                "position": {"x": 0.13, "y": 0.14},
+                "position": {"x": 0.13, "y": 0.17},
                 "orientation": "flatPattern",
                 "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                 "reference": {"elementId": ps_eid, "partId": part_id},
@@ -332,6 +333,45 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             log(f"Flat pattern view failed for '{part_name}' — likely not sheet metal")
     except Exception as e:
         log(f"Flat pattern view error: {e}")
+
+    # --- Phase 4: enable view labels via post-creation edit (+3 API calls) ---
+    try:
+        drawing_data = onshape_get(
+            f"/api/v6/drawings/d/{doc_id}/w/{wid}/e/{drawing_eid}/jsonexport"
+        )
+        view_edits = []
+        if isinstance(drawing_data, dict):
+            for sheet in drawing_data.get("sheets", []):
+                for view in sheet.get("views", []):
+                    vid = view.get("viewId") or view.get("id", "")
+                    if vid:
+                        view_edits.append({"viewId": vid, "showViewLabel": True})
+        if view_edits:
+            log(f"Enabling labels on {len(view_edits)} views")
+            edit_body = {
+                "description": "Enable view labels",
+                "jsonRequests": [{
+                    "messageName": "onshapeEditViews",
+                    "formatVersion": "2021-01-01",
+                    "views": view_edits,
+                }],
+            }
+            r = requests.post(
+                f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{drawing_eid}/modify",
+                headers=HEADERS, json=edit_body, auth=next_auth(), timeout=20,
+            )
+            if r.status_code in (200, 201):
+                mid = r.json().get("id", "")
+                if mid:
+                    ok = poll_modify_status(doc_id, wid, drawing_eid, mid)
+                    log(f"View labels {'enabled' if ok else 'edit failed'}")
+            else:
+                log(f"View labels edit failed ({r.status_code}): {r.text[:300]}")
+        else:
+            log(f"No views found for label editing; JSON keys: "
+                f"{list(drawing_data.keys()) if isinstance(drawing_data, dict) else 'non-dict'}")
+    except Exception as e:
+        log(f"View labels edit skipped: {e}")
 
 
 # ============================================================
