@@ -234,12 +234,19 @@ async function createDrawingsForUrl(url) {
       broadcastDrawLog(`  GET views: ${JSON.stringify(viewsResp).slice(0, 300)}`);
       const viewList = Array.isArray(viewsResp) ? viewsResp : (viewsResp.views || viewsResp.items || []);
       if (viewList.length > 0) {
-        // A3 landscape sheet height = 0.297m. Place views near top.
-        const editViews = viewList.map((v, idx) => ({
-          viewId: v.viewId || v.id || v.uniqueId,
-          position: { x: idx === 0 ? 0.10 : 0.27, y: 0.22 },
-        }));
-        broadcastDrawLog(`  moving ${editViews.length} view(s) to y=0.22`);
+        // A3 landscape: 0.420 x 0.297m. Spread views across upper half.
+        // Positions: front view left-center, isometric right-center
+        const positions = [
+          { x: 0.12, y: 0.18 },  // front view
+          { x: 0.32, y: 0.18 },  // isometric view
+        ];
+        const editViews = viewList.map((v, idx) => {
+          const vid = v.viewId || v.id || v.uniqueId;
+          const pos = positions[idx] || positions[0];
+          broadcastDrawLog(`  view ${idx}: id=${vid}, orient=${v.orientation || "?"}, -> x=${pos.x} y=${pos.y}`);
+          return { viewId: vid, position: pos };
+        });
+        broadcastDrawLog(`  moving ${editViews.length} view(s)`);
         const editBody = {
           description: "Move views upward",
           jsonRequests: [{
