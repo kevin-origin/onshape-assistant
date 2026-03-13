@@ -167,7 +167,7 @@ def onshape_post(path, body):
 def _poll_auth():
     """Fixed key for status polls — doesn't consume round-robin slots."""
     _inc_api_calls()
-    return _REGULAR_KEYS[0]
+    return _SPECIAL_KEY
 
 def poll_modify_status(doc_id, wid, eid, mid, timeout=30):
     """Polls modification status until DONE/FAILED or timeout. Returns True on DONE."""
