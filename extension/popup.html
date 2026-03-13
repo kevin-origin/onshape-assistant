@@ -56,6 +56,7 @@
     }
     button:hover { opacity: 0.85; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-draw { background: #1b4332; color: #95d5b2; }
     .btn-scan { background: #0f3460; color: #fff; }
     .btn-rescan { background: #1a1a40; color: #7ec8e3; border: 1px solid #333; }
     #status {
@@ -102,10 +103,49 @@
       margin-top: 6px;
       margin-bottom: 4px;
     }
+    #drawLog {
+      margin-top: 8px;
+      max-height: 180px;
+      overflow-y: auto;
+      font-size: 11px;
+      font-family: monospace;
+      color: #aaa;
+      display: none;
+    }
+    #drawLog .log-line {
+      padding: 2px 6px;
+      border-bottom: 1px solid #222;
+    }
+    #drawLog .log-ok { color: #95d5b2; }
+    #drawLog .log-err { color: #ff6b6b; }
+    .section-sep {
+      border-top: 1px solid #333;
+      margin-top: 14px;
+      padding-top: 4px;
+    }
+    h3 {
+      font-size: 12px;
+      color: #aaa;
+      margin-bottom: 6px;
+    }
   </style>
 </head>
 <body>
-  <h2>Onshape Tab Folder Scanner</h2>
+  <h2>Onshape Tools</h2>
+
+  <!-- ============ Drawing Creator ============ -->
+  <label>Part Studio URL</label>
+  <input type="text" id="partStudioUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
+
+  <div class="btn-row">
+    <button class="btn-draw" id="btnCreateDrawings">Create Drawings</button>
+  </div>
+
+  <div id="drawLog"></div>
+
+  <!-- ============ Tab Folder Scanner ============ -->
+  <div class="section-sep"></div>
+  <h3>Tab Folder Scanner</h3>
 
   <label>Folder IDs (one per line)</label>
   <textarea id="folderIds" placeholder="e.g. 0e6a83bfe36bbb4968b747fb"></textarea>

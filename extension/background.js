@@ -21,6 +21,255 @@ async function onshapeFetch(path) {
   return resp.json();
 }
 
+async function onshapePost(path, body) {
+  const resp = await fetch(`${ONSHAPE_BASE}${path}`, {
+    method: "POST",
+    credentials: "include",
+    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+  if (!resp.ok) throw new Error(`Onshape POST ${path}: ${resp.status}`);
+  return resp.json();
+}
+
+// ---------------------------------------------------------------------------
+// Drawing Creator — create drawings for all parts in a Part Studio
+// ---------------------------------------------------------------------------
+
+const DRAWING_TEMPLATE = {
+  templateDocumentId: "e4ecea9df80b53b39ab4fa38",
+  templateWorkspaceId: "038996d814574f1d1d3b774a",
+  templateElementId: "4a80b03c1485e714f587fb61",
+};
+
+function broadcastDrawLog(message, cls) {
+  chrome.runtime.sendMessage({ type: "draw-log", message, cls }).catch(() => {});
+}
+
+function parsePartStudioUrl(url) {
+  // https://cad.onshape.com/documents/{docId}/w/{wid}/e/{eid}
+  const m = url.match(/\/documents\/([^/]+)\/w\/([^/]+)\/e\/([^/?#]+)/);
+  if (!m) return null;
+  return { docId: m[1], wid: m[2], eid: m[3] };
+}
+
+function computeScale(bb) {
+  const dx = (bb.highX - bb.lowX) * 1000;
+  const dy = (bb.highY - bb.lowY) * 1000;
+  const dz = (bb.highZ - bb.lowZ) * 1000;
+  const largest = Math.max(dx, dy, dz);
+  broadcastDrawLog(`  bbox: ${dx.toFixed(1)} x ${dy.toFixed(1)} x ${dz.toFixed(1)} mm, largest=${largest.toFixed(1)}`);
+  if (largest < 0.1) {
+    broadcastDrawLog("  bbox zero/tiny -- defaulting to 1:5", "log-err");
+    return [1, 5];
+  }
+  const AVAILABLE = 50.0;
+  const standards = [[2,1],[1,1],[1,2],[1,3],[1,5],[1,7],[1,10],[1,15],[1,20],[1,50]];
+  for (const [num, den] of standards) {
+    if (largest * num / den <= AVAILABLE) return [num, den];
+  }
+  return [1, 50];
+}
+
+async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
+  const url = `/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modificationstatus/${mid}`;
+  const deadline = Date.now() + timeoutSec * 1000;
+  let notFound = 0;
+  while (Date.now() < deadline) {
+    try {
+      const r = await onshapeFetch(url);
+      const state = r.requestState || "";
+      if (state === "DONE") return true;
+      if (state === "FAILED") {
+        broadcastDrawLog(`  modify FAILED: ${JSON.stringify(r).slice(0, 200)}`, "log-err");
+        return false;
+      }
+    } catch (e) {
+      if (e.message.includes("404")) {
+        notFound++;
+        if (notFound >= 3) {
+          broadcastDrawLog(`  poll 404 x${notFound} -- assuming completed`);
+          return true;
+        }
+      } else {
+        broadcastDrawLog(`  poll error: ${e.message}`, "log-err");
+        return false;
+      }
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  broadcastDrawLog(`  modify timed out after ${timeoutSec}s`, "log-err");
+  return false;
+}
+
+async function createDrawingsForUrl(url) {
+  const parsed = parsePartStudioUrl(url);
+  if (!parsed) {
+    broadcastDrawLog("Invalid Part Studio URL", "log-err");
+    chrome.runtime.sendMessage({ type: "draw-done", error: "Invalid URL" }).catch(() => {});
+    return;
+  }
+  const { docId, wid, eid } = parsed;
+  broadcastDrawLog(`Document: ${docId}`);
+  broadcastDrawLog(`Workspace: ${wid}`);
+  broadcastDrawLog(`Part Studio: ${eid}`);
+
+  // 1. Fetch parts list
+  broadcastDrawLog("Fetching parts...");
+  let parts;
+  try {
+    parts = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}`);
+  } catch (e) {
+    broadcastDrawLog(`Failed to fetch parts: ${e.message}`, "log-err");
+    chrome.runtime.sendMessage({ type: "draw-done", error: e.message }).catch(() => {});
+    return;
+  }
+
+  if (!parts || parts.length === 0) {
+    broadcastDrawLog("No parts found in Part Studio", "log-err");
+    chrome.runtime.sendMessage({ type: "draw-done", error: "No parts" }).catch(() => {});
+    return;
+  }
+
+  broadcastDrawLog(`Found ${parts.length} part(s)`);
+  let created = 0;
+  let failed = 0;
+
+  // 2. Create drawing for each part
+  for (let i = 0; i < parts.length; i++) {
+    const part = parts[i];
+    const partId = part.partId || "";
+    const partName = part.name || "Part";
+    if (!partId) { failed++; continue; }
+
+    broadcastDrawLog(`[${i + 1}/${parts.length}] ${partName}`);
+
+    // 2a. Create drawing element
+    let drawingEid;
+    try {
+      const createBody = {
+        drawingName: `Drawing - ${partName}`,
+        elementId: eid,
+        partId: partId,
+        ...DRAWING_TEMPLATE,
+      };
+      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/create`, createBody);
+      drawingEid = resp.id || "";
+      if (!drawingEid) throw new Error("No drawing element ID returned");
+      broadcastDrawLog(`  drawing created: ${drawingEid}`);
+    } catch (e) {
+      broadcastDrawLog(`  create failed: ${e.message}`, "log-err");
+      failed++;
+      continue;
+    }
+
+    // 2b. Wait for drawing to initialize
+    await new Promise(r => setTimeout(r, 3000));
+
+    // 2c. Get bounding box + compute scale
+    let scale = [1, 5];
+    try {
+      const bb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${partId}/boundingboxes`);
+      scale = computeScale(bb);
+    } catch (e) {
+      broadcastDrawLog(`  bbox failed (${e.message}), using 1:5`, "log-err");
+    }
+    broadcastDrawLog(`  scale: ${scale[0]}:${scale[1]}`);
+
+    const ref = { documentId: docId, workspaceId: wid, elementId: eid, partId: partId };
+
+    // 2d. Phase 1: front + isometric views
+    try {
+      const viewBody = {
+        description: "Add views",
+        jsonRequests: [{
+          messageName: "onshapeCreateViews",
+          formatVersion: "2021-01-01",
+          views: [
+            {
+              viewType: "TopLevel",
+              position: { x: 0.06, y: 0.25 },
+              orientation: "front",
+              scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+              reference: ref,
+              showViewLabel: true,
+              name: "Front",
+            },
+            {
+              viewType: "TopLevel",
+              position: { x: 0.20, y: 0.25 },
+              orientation: "isometric",
+              scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+              reference: ref,
+              showViewLabel: true,
+              name: "Isometric",
+            },
+          ],
+        }],
+      };
+      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, viewBody);
+      const mid = resp.id || "";
+      if (mid) await pollModify(docId, wid, drawingEid, mid);
+      broadcastDrawLog("  front + iso views added");
+    } catch (e) {
+      broadcastDrawLog(`  views failed: ${e.message}`, "log-err");
+      failed++;
+      continue;
+    }
+
+    // 2e. Phase 2: add Sheet 2
+    try {
+      const sheetBody = {
+        description: "Add flat pattern sheet",
+        jsonRequests: [{
+          messageName: "onshapeCreateSheets",
+          formatVersion: "2021-01-01",
+          sheets: [{ name: "Flat Pattern" }],
+        }],
+      };
+      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, sheetBody);
+      const mid = resp.id || "";
+      if (mid) await pollModify(docId, wid, drawingEid, mid);
+      broadcastDrawLog("  sheet 2 added");
+    } catch (e) {
+      broadcastDrawLog(`  sheet 2 failed: ${e.message}`, "log-err");
+    }
+
+    // 2f. Phase 3: flat pattern view on Sheet 2
+    try {
+      const flatBody = {
+        description: "Add flat pattern view",
+        jsonRequests: [{
+          messageName: "onshapeCreateViews",
+          formatVersion: "2021-01-01",
+          views: [{
+            viewType: "TopLevel",
+            position: { x: 0.13, y: 0.25 },
+            orientation: "flatPattern",
+            scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+            reference: ref,
+            showViewLabel: true,
+            name: "Flat Pattern",
+            sheetIndex: 1,
+          }],
+        }],
+      };
+      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
+      const mid = resp.id || "";
+      if (mid) await pollModify(docId, wid, drawingEid, mid);
+      broadcastDrawLog("  flat pattern added");
+    } catch (e) {
+      broadcastDrawLog(`  flat pattern failed (likely not sheet metal)`, "log-err");
+    }
+
+    created++;
+    broadcastDrawLog(`  done`, "log-ok");
+  }
+
+  broadcastDrawLog(`Complete: ${created} created, ${failed} failed`, created > 0 ? "log-ok" : "log-err");
+  chrome.runtime.sendMessage({ type: "draw-done", created, failed }).catch(() => {});
+}
+
 // ---------------------------------------------------------------------------
 // Document discovery — find all docs in the configured folders
 // ---------------------------------------------------------------------------
@@ -298,7 +547,12 @@ function trySendScan(tabId) {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === "start-bulk-scan") {
+  if (msg.type === "create-drawings") {
+    createDrawingsForUrl(msg.url);
+    sendResponse({ ok: true });
+    return;
+
+  } else if (msg.type === "start-bulk-scan") {
     const { folderIds, dashboardUrl } = msg;
     runBulkScan(folderIds, dashboardUrl).then(sendResponse);
     return true; // async response

@@ -19,6 +19,12 @@ function validateFolders(result) {
   return { ok: false, badgeClass: "badge-warn", badgeText: `${folders.length} folder${folders.length > 1 ? "s" : ""}`, detail: detail.join(" | ") };
 }
 
+// Drawing Creator elements
+const $partStudioUrl   = document.getElementById("partStudioUrl");
+const $btnCreateDraw   = document.getElementById("btnCreateDrawings");
+const $drawLog         = document.getElementById("drawLog");
+
+// Scanner elements
 const $folderIds    = document.getElementById("folderIds");
 const $dashboardUrl = document.getElementById("dashboardUrl");
 const $btnScan      = document.getElementById("btnScan");
@@ -32,9 +38,10 @@ const $resultList   = document.getElementById("resultList");
 // Load saved config
 // ---------------------------------------------------------------------------
 
-chrome.storage.local.get(["folderIds", "dashboardUrl", "lastScanSummary"], (data) => {
+chrome.storage.local.get(["folderIds", "dashboardUrl", "lastScanSummary", "partStudioUrl"], (data) => {
   $folderIds.value    = (data.folderIds || []).join("\n");
   $dashboardUrl.value = data.dashboardUrl || "";
+  $partStudioUrl.value = data.partStudioUrl || "";
 
   if (data.lastScanSummary) {
     showSummary(data.lastScanSummary);
@@ -53,11 +60,13 @@ function saveConfig() {
   chrome.storage.local.set({
     folderIds: ids,
     dashboardUrl: $dashboardUrl.value.trim(),
+    partStudioUrl: $partStudioUrl.value.trim(),
   });
 }
 
 $folderIds.addEventListener("change", saveConfig);
 $dashboardUrl.addEventListener("change", saveConfig);
+$partStudioUrl.addEventListener("change", saveConfig);
 
 // ---------------------------------------------------------------------------
 // Status display
@@ -71,6 +80,40 @@ function showStatus(msg) {
 function hideStatus() {
   $status.style.display = "none";
 }
+
+// ---------------------------------------------------------------------------
+// Drawing Creator
+// ---------------------------------------------------------------------------
+
+function appendDrawLog(text, cls) {
+  $drawLog.style.display = "block";
+  const line = document.createElement("div");
+  line.className = "log-line" + (cls ? " " + cls : "");
+  line.textContent = text;
+  $drawLog.appendChild(line);
+  $drawLog.scrollTop = $drawLog.scrollHeight;
+}
+
+$btnCreateDraw.addEventListener("click", () => {
+  saveConfig();
+
+  const url = $partStudioUrl.value.trim();
+  if (!url || !url.includes("cad.onshape.com/documents/")) {
+    appendDrawLog("Enter a valid Part Studio URL", "log-err");
+    return;
+  }
+
+  $btnCreateDraw.disabled = true;
+  $drawLog.innerHTML = "";
+  appendDrawLog("Starting drawing creation...");
+
+  chrome.runtime.sendMessage({ type: "create-drawings", url }, (response) => {
+    if (!response) {
+      appendDrawLog("No response from background -- try reloading extension", "log-err");
+      $btnCreateDraw.disabled = false;
+    }
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Scan All
@@ -127,6 +170,13 @@ $btnScan.addEventListener("click", () => {
 chrome.runtime.onMessage.addListener((msg) => {
   if (msg.type === "scan-progress") {
     showStatus(msg.message);
+  } else if (msg.type === "draw-log") {
+    appendDrawLog(msg.message, msg.cls);
+  } else if (msg.type === "draw-done") {
+    $btnCreateDraw.disabled = false;
+    if (msg.error) {
+      appendDrawLog("Error: " + msg.error, "log-err");
+    }
   }
 });
 

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Onshape Tab Folder Scanner",
-  "version": "1.0",
-  "description": "Reads tab folder structure from Onshape documents for compliance monitoring",
+  "name": "Onshape Tools",
+  "version": "1.1",
+  "description": "Onshape tab folder scanner + drawing creator",
   "permissions": ["activeTab", "storage", "tabs", "scripting"],
   "host_permissions": [
     "https://cad.onshape.com/*",
