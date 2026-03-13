@@ -237,15 +237,18 @@ async function createDrawingsForUrl(url) {
       const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
       const viewList = viewsResp.items || [];
       if (viewList.length > 0) {
-        // Units confirmed: millimeters. A3 landscape = 420 x 297 mm
+        // Units: mm. A3 landscape = 420 x 297 mm — TODO: Add this to dashboard later
+        // Bottom row (y=250): front + left. Top row (y=300): top + iso.
         const targetPositions = [
-          { x: 120, y: 270 },  // front — TODO: Add this to dashboard later
-          { x: 320, y: 270 },  // iso — TODO: Add this to dashboard later
+          { x: 120, y: 250 },  // front
+          { x: 320, y: 300 },  // iso
+          { x: 320, y: 250 },  // left/right
+          { x: 120, y: 300 },  // top
         ];
-        // Only reposition the 2 views we created (skip template/auto views)
-        const editViews = viewList.slice(0, 2).map((v, idx) => ({
+        const editViews = viewList.map((v, idx) => ({
           viewId: v.viewId,
-          position: targetPositions[idx],
+          position: targetPositions[idx] || targetPositions[0],
+          showViewLabel: true,
         }));
         broadcastDrawLog(`  repositioning ${editViews.length} views`);
         const editBody = {
