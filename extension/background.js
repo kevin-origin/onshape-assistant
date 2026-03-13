@@ -228,6 +228,35 @@ async function createDrawingsForUrl(url) {
       continue;
     }
 
+    // 2d2. Move views upward via onshapeEditViews
+    try {
+      const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
+      broadcastDrawLog(`  GET views: ${JSON.stringify(viewsResp).slice(0, 300)}`);
+      const viewList = Array.isArray(viewsResp) ? viewsResp : (viewsResp.views || viewsResp.items || []);
+      if (viewList.length > 0) {
+        // A3 landscape sheet height = 0.297m. Place views near top.
+        const editViews = viewList.map((v, idx) => ({
+          viewId: v.viewId || v.id || v.uniqueId,
+          position: { x: idx === 0 ? 0.10 : 0.27, y: 0.22 },
+        }));
+        broadcastDrawLog(`  moving ${editViews.length} view(s) to y=0.22`);
+        const editBody = {
+          description: "Move views upward",
+          jsonRequests: [{
+            messageName: "onshapeEditViews",
+            formatVersion: "2021-01-01",
+            views: editViews,
+          }],
+        };
+        const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
+        const editMid = editResp.id || "";
+        if (editMid) await pollModify(docId, wid, drawingEid, editMid);
+        broadcastDrawLog("  views repositioned", "log-ok");
+      }
+    } catch (e) {
+      broadcastDrawLog(`  move views failed: ${e.message}`, "log-err");
+    }
+
     // 2e. Phase 2: add Sheet 2
     try {
       const sheetBody = {
