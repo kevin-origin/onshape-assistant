@@ -232,6 +232,15 @@ async function createDrawingsForUrl(url) {
       continue;
     }
 
+    // 2d2. DEBUG: Read back views to learn coordinate system + view IDs
+    try {
+      const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
+      console.log("[Drawing] GET /views full response:", JSON.stringify(viewsResp, null, 2));
+      broadcastDrawLog(`  GET /views response logged to console (check service worker devtools)`);
+    } catch (e) {
+      broadcastDrawLog(`  GET /views failed: ${e.message}`, "log-err");
+    }
+
     // 2e. Phase 2: add Sheet 2
     try {
       const sheetBody = {
