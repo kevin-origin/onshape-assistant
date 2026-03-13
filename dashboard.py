@@ -164,13 +164,20 @@ def onshape_post(path, body):
     return r.json()
 
 
+def _poll_auth():
+    """Fixed key for status polls — doesn't consume round-robin slots."""
+    _inc_api_calls()
+    return _REGULAR_KEYS[0]
+
 def poll_modify_status(doc_id, wid, eid, mid, timeout=30):
     """Polls modification status until DONE/FAILED or timeout. Returns True on DONE."""
-    url = f"/api/v6/drawings/d/{doc_id}/w/{wid}/e/{eid}/modificationstatus/{mid}"
+    url = f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{eid}/modificationstatus/{mid}"
     deadline = time.time() + timeout
     while time.time() < deadline:
         try:
-            result = onshape_get(url)
+            r = requests.get(url, headers=HEADERS, auth=_poll_auth(), timeout=15)
+            r.raise_for_status()
+            result = r.json()
             state = result.get("requestState", "")
             if state == "DONE":
                 return True
