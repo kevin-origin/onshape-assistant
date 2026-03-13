@@ -21,11 +21,22 @@ async function onshapeFetch(path) {
   return resp.json();
 }
 
+async function getXsrfToken() {
+  return new Promise((resolve) => {
+    chrome.cookies.get({ url: ONSHAPE_BASE, name: "XSRF-TOKEN" }, (cookie) => {
+      resolve(cookie ? cookie.value : "");
+    });
+  });
+}
+
 async function onshapePost(path, body) {
+  const xsrf = await getXsrfToken();
+  const headers = { "Accept": "application/json", "Content-Type": "application/json" };
+  if (xsrf) headers["X-XSRF-TOKEN"] = xsrf;
   const resp = await fetch(`${ONSHAPE_BASE}${path}`, {
     method: "POST",
     credentials: "include",
-    headers: { "Accept": "application/json", "Content-Type": "application/json" },
+    headers,
     body: JSON.stringify(body),
   });
   if (!resp.ok) throw new Error(`Onshape POST ${path}: ${resp.status}`);
