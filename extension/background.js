@@ -231,7 +231,8 @@ async function createDrawingsForUrl(url) {
     // 2d2. Move views upward via onshapeEditViews
     try {
       const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
-      broadcastDrawLog(`  GET views: ${JSON.stringify(viewsResp).slice(0, 300)}`);
+      console.log("[DrawingCreator] GET /views full response:", JSON.stringify(viewsResp, null, 2));
+      broadcastDrawLog(`  GET views: ${JSON.stringify(viewsResp).slice(0, 500)}`);
       const viewList = Array.isArray(viewsResp) ? viewsResp : (viewsResp.views || viewsResp.items || []);
       if (viewList.length > 0) {
         // A3 landscape: 0.420 x 0.297m. Spread views across upper half.
