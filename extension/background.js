@@ -237,11 +237,10 @@ async function createDrawingsForUrl(url) {
       const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
       const viewList = viewsResp.items || [];
       if (viewList.length > 0) {
-        // Positions in normalized 0-1 coords (hypothesis: 0.12,0.19 = bottom-left)
-        // A3 landscape: front at left-center, iso at right-center
+        // Testing: units might be mm (A3 landscape = 420 x 297 mm)
         const targetPositions = [
-          { x: 0.30, y: 0.55 },  // front: 30% from left, 55% up
-          { x: 0.70, y: 0.55 },  // iso: 70% from left, 55% up
+          { x: 200, y: 150 },  // front: ~center of A3
+          { x: 350, y: 150 },  // iso: right-center of A3
         ];
         const editViews = viewList.map((v, idx) => ({
           viewId: v.viewId,
