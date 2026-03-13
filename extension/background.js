@@ -239,8 +239,8 @@ async function createDrawingsForUrl(url) {
       if (viewList.length > 0) {
         // Units confirmed: millimeters. A3 landscape = 420 x 297 mm
         const targetPositions = [
-          { x: 120, y: 100 },  // front — TODO: Add this to dashboard later
-          { x: 320, y: 100 },  // iso — TODO: Add this to dashboard later
+          { x: 120, y: 270 },  // front — TODO: Add this to dashboard later
+          { x: 320, y: 270 },  // iso — TODO: Add this to dashboard later
         ];
         // Only reposition the 2 views we created (skip template/auto views)
         const editViews = viewList.slice(0, 2).map((v, idx) => ({
