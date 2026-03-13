@@ -295,7 +295,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                     "position": {"x": 0.06, "y": 0.17},
                     "orientation": "front",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
-                    "reference": {"elementId": ps_eid, "partId": part_id},
+                    "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},
                     "showViewLabel": True,
                     "name": "Front",
                 },
@@ -304,7 +304,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                     "position": {"x": 0.20, "y": 0.17},
                     "orientation": "isometric",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
-                    "reference": {"elementId": ps_eid, "partId": part_id},
+                    "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},
                     "showViewLabel": True,
                     "name": "Isometric",
                 },
@@ -375,7 +375,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                 "position": {"x": 0.13, "y": 0.17},
                 "orientation": "flatPattern",
                 "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
-                "reference": {"elementId": ps_eid, "partId": part_id},
+                "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},
                 "showViewLabel": True,
                 "name": "Flat Pattern",
                 "sheetIndex": 1,
@@ -402,44 +402,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
     except Exception as e:
         log(f"Flat pattern view error: {e}")
 
-    # --- Phase 4: enable view labels via post-creation edit (+3 API calls) ---
-    try:
-        drawing_data = onshape_get(
-            f"/api/v6/drawings/d/{doc_id}/w/{wid}/e/{drawing_eid}/jsonexport"
-        )
-        view_edits = []
-        if isinstance(drawing_data, dict):
-            for sheet in drawing_data.get("sheets", []):
-                for view in sheet.get("views", []):
-                    vid = view.get("viewId") or view.get("id", "")
-                    if vid:
-                        view_edits.append({"viewId": vid, "showViewLabel": True})
-        if view_edits:
-            log(f"Enabling labels on {len(view_edits)} views")
-            edit_body = {
-                "description": "Enable view labels",
-                "jsonRequests": [{
-                    "messageName": "onshapeEditViews",
-                    "formatVersion": "2021-01-01",
-                    "views": view_edits,
-                }],
-            }
-            r = requests.post(
-                f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{drawing_eid}/modify",
-                headers=HEADERS, json=edit_body, auth=next_auth(), timeout=20,
-            )
-            if r.status_code in (200, 201):
-                mid = r.json().get("id", "")
-                if mid:
-                    ok = poll_modify_status(doc_id, wid, drawing_eid, mid)
-                    log(f"View labels {'enabled' if ok else 'edit failed'}")
-            else:
-                log(f"View labels edit failed ({r.status_code}): {r.text[:300]}")
-        else:
-            log(f"No views found for label editing; JSON keys: "
-                f"{list(drawing_data.keys()) if isinstance(drawing_data, dict) else 'non-dict'}")
-    except Exception as e:
-        log(f"View labels edit skipped: {e}")
+    log(f"Drawing content complete for '{part_name}'")
 
 
 # ============================================================
