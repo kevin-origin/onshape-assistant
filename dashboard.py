@@ -298,7 +298,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             "views": [
                 {
                     "viewType": "TopLevel",
-                    "position": {"x": 120, "y": 170},
+                    "position": {"x": 120, "y": 200},
                     "orientation": "front",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},
@@ -307,7 +307,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                 },
                 {
                     "viewType": "TopLevel",
-                    "position": {"x": 320, "y": 170},
+                    "position": {"x": 320, "y": 200},
                     "orientation": "isometric",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},
@@ -376,7 +376,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             "formatVersion": "2021-01-01",
             "views": [{
                 "viewType": "TopLevel",
-                "position": {"x": 200, "y": 170},
+                "position": {"x": 200, "y": 200},
                 "orientation": "flatPattern",
                 "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                 "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},

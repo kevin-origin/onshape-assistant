@@ -204,7 +204,7 @@ async function createDrawingsForUrl(url) {
           views: [
             {
               viewType: "TopLevel",
-              position: { x: 120, y: 170 },
+              position: { x: 120, y: 200 },
               orientation: "front",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
@@ -213,7 +213,7 @@ async function createDrawingsForUrl(url) {
             },
             {
               viewType: "TopLevel",
-              position: { x: 320, y: 170 },
+              position: { x: 320, y: 200 },
               orientation: "isometric",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
@@ -239,8 +239,8 @@ async function createDrawingsForUrl(url) {
       if (viewList.length > 0) {
         // Units confirmed: millimeters. A3 landscape = 420 x 297 mm
         const targetPositions = [
-          { x: 120, y: 170 },  // front: left third, above title block
-          { x: 320, y: 170 },  // iso: right third, above title block
+          { x: 120, y: 200 },  // front: left third, above title block
+          { x: 320, y: 200 },  // iso: right third, above title block
         ];
         // Only reposition the 2 views we created (skip template/auto views)
         const editViews = viewList.slice(0, 2).map((v, idx) => ({
@@ -290,7 +290,7 @@ async function createDrawingsForUrl(url) {
           formatVersion: "2021-01-01",
           views: [{
             viewType: "TopLevel",
-            position: { x: 200, y: 170 },
+            position: { x: 200, y: 200 },
             orientation: "flatPattern",
             scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
             reference: ref,
