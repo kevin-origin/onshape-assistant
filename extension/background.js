@@ -232,13 +232,36 @@ async function createDrawingsForUrl(url) {
       continue;
     }
 
-    // 2d2. DEBUG: Read back views to learn coordinate system + view IDs
+    // 2d2. Reposition views via onshapeEditViews (create ignores position)
     try {
       const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
-      console.log("[Drawing] GET /views full response:", JSON.stringify(viewsResp, null, 2));
-      broadcastDrawLog(`  GET /views response logged to console (check service worker devtools)`);
+      const viewList = viewsResp.items || [];
+      if (viewList.length > 0) {
+        // Positions in normalized 0-1 coords (hypothesis: 0.12,0.19 = bottom-left)
+        // A3 landscape: front at left-center, iso at right-center
+        const targetPositions = [
+          { x: 0.30, y: 0.55 },  // front: 30% from left, 55% up
+          { x: 0.70, y: 0.55 },  // iso: 70% from left, 55% up
+        ];
+        const editViews = viewList.map((v, idx) => ({
+          viewId: v.viewId,
+          position: targetPositions[idx] || targetPositions[0],
+        }));
+        broadcastDrawLog(`  repositioning ${editViews.length} views`);
+        const editBody = {
+          description: "Reposition views",
+          jsonRequests: [{
+            messageName: "onshapeEditViews",
+            formatVersion: "2021-01-01",
+            views: editViews,
+          }],
+        };
+        const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
+        const editMid = editResp.id || "";
+        if (editMid) await pollModify(docId, wid, drawingEid, editMid);
+      }
     } catch (e) {
-      broadcastDrawLog(`  GET /views failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  reposition failed: ${e.message}`, "log-err");
     }
 
     // 2e. Phase 2: add Sheet 2
