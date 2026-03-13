@@ -192,6 +192,15 @@ def poll_modify_status(doc_id, wid, eid, mid, timeout=30):
     return False
 
 
+def _bg_populate_drawing(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
+    """Background thread: computes scale, adds views + labels to a drawing."""
+    try:
+        scale = get_part_scale(doc_id, wid, ps_eid, part_id)
+        add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, scale)
+    except Exception as e:
+        log(f"Background drawing error for '{part_name}': {e}")
+
+
 def get_part_scale(doc_id, wid, ps_eid, part_id):
     """Returns (numerator, denominator) for a scale that fits the part on the sheet."""
     try:
@@ -1360,13 +1369,16 @@ def create_drawing(doc_id):
                     created.append(part_name)
                     log(f"Drawing created for part '{part_name}', eid={drawing_eid}")
                     if drawing_eid:
-                        scale = get_part_scale(doc_id, workspace_id, ps_eid, part_id)
-                        add_drawing_content(doc_id, workspace_id, drawing_eid, ps_eid, part_id, part_name, scale)
+                        threading.Thread(
+                            target=_bg_populate_drawing,
+                            args=(doc_id, workspace_id, drawing_eid, ps_eid, part_id, part_name),
+                            daemon=True,
+                        ).start()
                 else:
                     log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
 
         if created:
-            msg = f"Drawings created for: {', '.join(created)}"
+            msg = f"Drawings created for: {', '.join(created)} (views adding in background)"
         else:
             msg = "No drawings created — check terminal for errors"
         return redirect("/?msg=" + quote_plus(msg))
@@ -1436,8 +1448,11 @@ def generate_drawings():
                     created.append(part_name)
                     log(f"Drawing created for part '{part_name}', eid={drawing_eid}")
                     if drawing_eid:
-                        scale = get_part_scale(doc_id, wid, ps_eid, part_id)
-                        add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, scale)
+                        threading.Thread(
+                            target=_bg_populate_drawing,
+                            args=(doc_id, wid, drawing_eid, ps_eid, part_id, part_name),
+                            daemon=True,
+                        ).start()
                 else:
                     log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
             except Exception as e:
@@ -1445,7 +1460,7 @@ def generate_drawings():
                 traceback.print_exc()
 
         if created:
-            msg = f"Drawings created for: {', '.join(created)}"
+            msg = f"Drawings created for: {', '.join(created)} (views adding in background)"
         else:
             msg = "No drawings created — check terminal for errors"
         return redirect("/?msg=" + quote_plus(msg))
