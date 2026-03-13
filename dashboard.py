@@ -230,6 +230,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"elementId": ps_eid, "partId": part_id},
                     "showViewLabel": True,
+                    "name": "Front",
                 },
                 {
                     "viewType": "TopLevel",
@@ -238,6 +239,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"elementId": ps_eid, "partId": part_id},
                     "showViewLabel": True,
+                    "name": "Isometric",
                 },
             ],
         }],
@@ -306,6 +308,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                 "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                 "reference": {"elementId": ps_eid, "partId": part_id},
                 "showViewLabel": True,
+                "name": "Flat Pattern",
                 "sheetIndex": 1,
             }],
         }],
