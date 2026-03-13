@@ -261,17 +261,23 @@ def _bg_create_doc_drawings(doc_id, wid, ps_elements):
 def get_part_scale(doc_id, wid, ps_eid, part_id):
     """Returns (numerator, denominator) for a scale that fits the part on the sheet."""
     try:
-        bb = onshape_get(
-            f"/api/v10/parts/d/{doc_id}/w/{wid}/e/{ps_eid}/partid/{part_id}/boundingboxes"
-        )
+        url = f"/api/v10/parts/d/{doc_id}/w/{wid}/e/{ps_eid}/partid/{part_id}/boundingboxes"
+        log(f"Bounding box GET: {url}")
+        bb = onshape_get(url)
+        log(f"Bounding box raw: lowX={bb.get('lowX')}, highX={bb.get('highX')}, "
+            f"lowY={bb.get('lowY')}, highY={bb.get('highY')}, "
+            f"lowZ={bb.get('lowZ')}, highZ={bb.get('highZ')}")
         dx = (bb["highX"] - bb["lowX"]) * 1000  # metres → mm
         dy = (bb["highY"] - bb["lowY"]) * 1000
         dz = (bb["highZ"] - bb["lowZ"]) * 1000
         largest = max(dx, dy, dz)
-        log(f"Bounding box: {dx:.1f} x {dy:.1f} x {dz:.1f} mm, largest={largest:.1f} mm")
+        log(f"Bounding box mm: {dx:.1f} x {dy:.1f} x {dz:.1f}, largest={largest:.1f}")
+        if largest < 0.1:
+            log(f"Bounding box is zero/tiny — defaulting to 1:5")
+            return 1, 5
     except Exception as e:
-        log(f"Bounding box fetch failed ({e}); defaulting to 1:1")
-        return 1, 1
+        log(f"Bounding box fetch failed ({e}); defaulting to 1:5")
+        return 1, 5
 
     AVAILABLE = 50.0  # mm per view slot (accounts for isometric projection + two views)
     standards = [(2,1),(1,1),(1,2),(1,3),(1,5),(1,7),(1,10),(1,15),(1,20),(1,50)]
