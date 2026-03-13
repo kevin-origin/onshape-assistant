@@ -173,6 +173,7 @@ def poll_modify_status(doc_id, wid, eid, mid, timeout=30):
     """Polls modification status until DONE/FAILED or timeout. Returns True on DONE."""
     url = f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/e/{eid}/modificationstatus/{mid}"
     deadline = time.time() + timeout
+    not_found = 0
     while time.time() < deadline:
         try:
             r = requests.get(url, headers=HEADERS, auth=_poll_auth(), timeout=15)
@@ -184,6 +185,16 @@ def poll_modify_status(doc_id, wid, eid, mid, timeout=30):
             if state == "FAILED":
                 log(f"Modify FAILED: {result}")
                 return False
+        except requests.exceptions.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 0
+            if code == 404:
+                not_found += 1
+                if not_found >= 3:
+                    log(f"Poll 404 x{not_found} — assuming modification completed")
+                    return True
+            else:
+                log(f"Status poll HTTP {code}")
+                return False
         except Exception as e:
             log(f"Status poll error: {e}")
             return False
@@ -192,13 +203,59 @@ def poll_modify_status(doc_id, wid, eid, mid, timeout=30):
     return False
 
 
-def _bg_populate_drawing(doc_id, wid, drawing_eid, ps_eid, part_id, part_name):
-    """Background thread: computes scale, adds views + labels to a drawing."""
+def _create_one_drawing(doc_id, wid, ps_eid, part):
+    """Create a single drawing element and populate it with views. Blocks until done."""
+    part_id = part.get("partId", "")
+    part_name = part.get("name", "Part")
+    if not part_id:
+        return
+    body = {
+        "drawingName": f"Drawing - {part_name}",
+        "elementId": ps_eid,
+        "partId": part_id,
+        "templateDocumentId": "e4ecea9df80b53b39ab4fa38",
+        "templateWorkspaceId": "038996d814574f1d1d3b774a",
+        "templateElementId": "4a80b03c1485e714f587fb61",
+    }
     try:
-        scale = get_part_scale(doc_id, wid, ps_eid, part_id)
-        add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, scale)
+        r = requests.post(
+            f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/create",
+            headers=HEADERS, json=body, auth=next_auth(), timeout=20,
+        )
+        if r.status_code in (200, 201):
+            drawing_eid = r.json().get("id", "")
+            log(f"Drawing created for '{part_name}', eid={drawing_eid}")
+            if drawing_eid:
+                time.sleep(3)  # Let drawing initialize before modifying
+                scale = get_part_scale(doc_id, wid, ps_eid, part_id)
+                add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, scale)
+        else:
+            log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
     except Exception as e:
-        log(f"Background drawing error for '{part_name}': {e}")
+        log(f"Drawing error for '{part_name}': {e}")
+
+
+def _bg_generate_drawings(doc_id, wid, ps_eid, parts):
+    """Background: create and populate drawings for parts from a PS URL."""
+    for part in parts:
+        _create_one_drawing(doc_id, wid, ps_eid, part)
+    log("Background drawing generation complete")
+
+
+def _bg_create_doc_drawings(doc_id, wid, ps_elements):
+    """Background: create and populate drawings for all parts in Part Studios."""
+    for ps in ps_elements:
+        ps_eid = ps.get("id", "")
+        try:
+            parts = onshape_get(f"/api/v10/parts/d/{doc_id}/w/{wid}/e/{ps_eid}")
+        except Exception as e:
+            log(f"Parts fetch error for PS {ps_eid}: {e}")
+            continue
+        if not parts:
+            continue
+        for part in parts:
+            _create_one_drawing(doc_id, wid, ps_eid, part)
+    log("Background drawing generation complete")
 
 
 def get_part_scale(doc_id, wid, ps_eid, part_id):
@@ -262,7 +319,9 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
         if r.status_code not in (200, 201):
             log(f"View modify failed ({r.status_code}): {r.text[:300]}")
             return
-        mid = r.json().get("id", "")
+        resp = r.json()
+        log(f"View modify accepted: {json.dumps(resp)[:300]}")
+        mid = resp.get("id", "")
         if not mid:
             log("View modify: no modification ID in response")
             return
@@ -1341,47 +1400,12 @@ def create_drawing(doc_id):
         if not ps_elements:
             return redirect("/?err=" + quote_plus("No Part Studio found in document"))
 
-        created = []
-        for ps in ps_elements:
-            ps_eid = ps.get("id", "")
-            parts = onshape_get(f"/api/v10/parts/d/{doc_id}/w/{workspace_id}/e/{ps_eid}")
-            if not parts:
-                continue
-            for part in parts:
-                part_id   = part.get("partId", "")
-                part_name = part.get("name", "Part")
-                if not part_id:
-                    continue
-                body = {
-                    "drawingName": f"Drawing - {part_name}",
-                    "elementId":   ps_eid,
-                    "partId":      part_id,
-                    "templateDocumentId":  "e4ecea9df80b53b39ab4fa38",
-                    "templateWorkspaceId": "038996d814574f1d1d3b774a",
-                    "templateElementId":   "4a80b03c1485e714f587fb61",
-                }
-                r = requests.post(
-                    f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{workspace_id}/create",
-                    headers=HEADERS, json=body, auth=next_auth(), timeout=20,
-                )
-                if r.status_code in (200, 201):
-                    drawing_eid = r.json().get("id", "")
-                    created.append(part_name)
-                    log(f"Drawing created for part '{part_name}', eid={drawing_eid}")
-                    if drawing_eid:
-                        threading.Thread(
-                            target=_bg_populate_drawing,
-                            args=(doc_id, workspace_id, drawing_eid, ps_eid, part_id, part_name),
-                            daemon=True,
-                        ).start()
-                else:
-                    log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
-
-        if created:
-            msg = f"Drawings created for: {', '.join(created)} (views adding in background)"
-        else:
-            msg = "No drawings created — check terminal for errors"
-        return redirect("/?msg=" + quote_plus(msg))
+        threading.Thread(
+            target=_bg_create_doc_drawings,
+            args=(doc_id, workspace_id, ps_elements),
+            daemon=True,
+        ).start()
+        return redirect("/?msg=" + quote_plus("Drawing generation started — check Onshape in ~1 min"))
 
     except requests.exceptions.HTTPError as e:
         status = e.response.status_code if e.response is not None else "?"
@@ -1423,52 +1447,13 @@ def generate_drawings():
         log(f"Parts response unexpected or empty: {str(parts)[:200]}")
         return redirect("/?err=" + quote_plus("No parts found in that Part Studio"))
 
-    try:
-        created = []
-        for part in parts:
-            part_id   = part.get("partId", "")
-            part_name = part.get("name", "Part")
-            if not part_id:
-                continue
-            body = {
-                "drawingName": f"Drawing - {part_name}",
-                "elementId":   ps_eid,
-                "partId":      part_id,
-                "templateDocumentId":  "e4ecea9df80b53b39ab4fa38",
-                "templateWorkspaceId": "038996d814574f1d1d3b774a",
-                "templateElementId":   "4a80b03c1485e714f587fb61",
-            }
-            try:
-                r = requests.post(
-                    f"{BASE_URL}/api/v6/drawings/d/{doc_id}/w/{wid}/create",
-                    headers=HEADERS, json=body, auth=next_auth(), timeout=20,
-                )
-                if r.status_code in (200, 201):
-                    drawing_eid = r.json().get("id", "")
-                    created.append(part_name)
-                    log(f"Drawing created for part '{part_name}', eid={drawing_eid}")
-                    if drawing_eid:
-                        threading.Thread(
-                            target=_bg_populate_drawing,
-                            args=(doc_id, wid, drawing_eid, ps_eid, part_id, part_name),
-                            daemon=True,
-                        ).start()
-                else:
-                    log(f"Drawing failed for '{part_name}': {r.status_code} {r.text[:200]}")
-            except Exception as e:
-                log(f"Drawing error for '{part_name}': {e}")
-                traceback.print_exc()
-
-        if created:
-            msg = f"Drawings created for: {', '.join(created)} (views adding in background)"
-        else:
-            msg = "No drawings created — check terminal for errors"
-        return redirect("/?msg=" + quote_plus(msg))
-
-    except Exception as e:
-        log(f"Generate-drawings error: {e}")
-        traceback.print_exc()
-        return redirect("/?err=" + quote_plus(str(e)[:200]))
+    n = len([p for p in parts if p.get("partId")])
+    threading.Thread(
+        target=_bg_generate_drawings,
+        args=(doc_id, wid, ps_eid, parts),
+        daemon=True,
+    ).start()
+    return redirect("/?msg=" + quote_plus(f"Generating drawings for {n} parts — check Onshape in ~1 min"))
 
 
 def _workspace_id_for(doc_id):
