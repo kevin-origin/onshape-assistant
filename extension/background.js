@@ -54,6 +54,7 @@ const DRAWING_TEMPLATE = {
 };
 
 function broadcastDrawLog(message, cls) {
+  console.log(`[Drawing] ${message}`);
   chrome.runtime.sendMessage({ type: "draw-log", message, cls }).catch(() => {});
 }
 
@@ -189,6 +190,10 @@ async function createDrawingsForUrl(url) {
 
     const ref = { documentId: docId, workspaceId: wid, elementId: eid, partId: partId };
 
+    // A3 landscape sheet: 0.420 x 0.297m
+    // Title block ~60mm at bottom, usable area roughly y: 0.070 to 0.280
+    // Center views vertically at y=0.155, spread horizontally
+
     // 2d. Phase 1: front + isometric views
     try {
       const viewBody = {
@@ -199,7 +204,7 @@ async function createDrawingsForUrl(url) {
           views: [
             {
               viewType: "TopLevel",
-              position: { x: 0.06, y: 0.50 },
+              position: { x: 0.120, y: 0.155 },
               orientation: "front",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
@@ -208,7 +213,7 @@ async function createDrawingsForUrl(url) {
             },
             {
               viewType: "TopLevel",
-              position: { x: 0.20, y: 0.50 },
+              position: { x: 0.300, y: 0.155 },
               orientation: "isometric",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
@@ -221,55 +226,10 @@ async function createDrawingsForUrl(url) {
       const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, viewBody);
       const mid = resp.id || "";
       if (mid) await pollModify(docId, wid, drawingEid, mid);
-      broadcastDrawLog("  front + iso views added");
     } catch (e) {
       broadcastDrawLog(`  views failed: ${e.message}`, "log-err");
       failed++;
       continue;
-    }
-
-    // 2d2. Move views upward via onshapeEditViews
-    try {
-      const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
-      // Log all keys of first view so we can find the correct ID field
-      const viewList = Array.isArray(viewsResp) ? viewsResp : (viewsResp.views || viewsResp.items || []);
-      if (viewList.length > 0) {
-        const firstView = viewList[0];
-        const keys = Object.keys(firstView);
-        broadcastDrawLog(`  view keys: ${keys.join(", ")}`);
-        broadcastDrawLog(`  view[0] sample: ${JSON.stringify(firstView).slice(0, 400)}`);
-
-        // Try every possible ID field
-        const editViews = [];
-        for (let idx = 0; idx < viewList.length; idx++) {
-          const v = viewList[idx];
-          const vid = v.viewId || v.id || v.uniqueId || v.viewIdentity || v.drawingViewId;
-          // A3 landscape: 0.420 x 0.297m
-          // Front view: left third, upper half. Iso: right third, upper half.
-          const x = idx === 0 ? 0.12 : 0.30;
-          const y = 0.19;
-          broadcastDrawLog(`  view ${idx}: id=${vid}, type=${v.viewType || v.type || "?"}, orient=${v.orientation || "?"} -> (${x}, ${y})`);
-          editViews.push({ viewId: vid, position: { x, y } });
-        }
-
-        const editBody = {
-          description: "Move views upward",
-          jsonRequests: [{
-            messageName: "onshapeEditViews",
-            formatVersion: "2021-01-01",
-            views: editViews,
-          }],
-        };
-        const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
-        broadcastDrawLog(`  editViews resp: ${JSON.stringify(editResp).slice(0, 200)}`);
-        const editMid = editResp.id || "";
-        if (editMid) await pollModify(docId, wid, drawingEid, editMid);
-        broadcastDrawLog("  views repositioned", "log-ok");
-      } else {
-        broadcastDrawLog("  no views found from GET /views", "log-err");
-      }
-    } catch (e) {
-      broadcastDrawLog(`  move views failed: ${e.message}`, "log-err");
     }
 
     // 2e. Phase 2: add Sheet 2
@@ -285,7 +245,6 @@ async function createDrawingsForUrl(url) {
       const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, sheetBody);
       const mid = resp.id || "";
       if (mid) await pollModify(docId, wid, drawingEid, mid);
-      broadcastDrawLog("  sheet 2 added");
     } catch (e) {
       broadcastDrawLog(`  sheet 2 failed: ${e.message}`, "log-err");
     }
@@ -299,7 +258,7 @@ async function createDrawingsForUrl(url) {
           formatVersion: "2021-01-01",
           views: [{
             viewType: "TopLevel",
-            position: { x: 0.13, y: 0.50 },
+            position: { x: 0.200, y: 0.155 },
             orientation: "flatPattern",
             scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
             reference: ref,
@@ -312,7 +271,6 @@ async function createDrawingsForUrl(url) {
       const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
       const mid = resp.id || "";
       if (mid) await pollModify(docId, wid, drawingEid, mid);
-      broadcastDrawLog("  flat pattern added");
     } catch (e) {
       broadcastDrawLog(`  flat pattern failed (likely not sheet metal)`, "log-err");
     }

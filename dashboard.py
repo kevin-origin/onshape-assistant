@@ -298,7 +298,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             "views": [
                 {
                     "viewType": "TopLevel",
-                    "position": {"x": 0.06, "y": 0.25},
+                    "position": {"x": 0.120, "y": 0.155},
                     "orientation": "front",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},
@@ -307,7 +307,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
                 },
                 {
                     "viewType": "TopLevel",
-                    "position": {"x": 0.20, "y": 0.25},
+                    "position": {"x": 0.300, "y": 0.155},
                     "orientation": "isometric",
                     "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                     "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},
@@ -335,7 +335,6 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
         if not ok:
             log("Views did not complete successfully")
             return
-        log(f"Views added to drawing for '{part_name}'")
     except Exception as e:
         log(f"View creation error: {e}")
         return
@@ -365,7 +364,6 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
         if not ok:
             log("Sheet 2 creation did not complete successfully")
             return
-        log(f"Sheet 2 added for '{part_name}'")
     except Exception as e:
         log(f"Sheet 2 creation error: {e}")
         return
@@ -378,7 +376,7 @@ def add_drawing_content(doc_id, wid, drawing_eid, ps_eid, part_id, part_name, sc
             "formatVersion": "2021-01-01",
             "views": [{
                 "viewType": "TopLevel",
-                "position": {"x": 0.13, "y": 0.25},
+                "position": {"x": 0.200, "y": 0.155},
                 "orientation": "flatPattern",
                 "scale": {"scaleSource": "Custom", "numerator": scale[0], "denominator": scale[1]},
                 "reference": {"documentId": doc_id, "workspaceId": wid, "elementId": ps_eid, "partId": part_id},
