@@ -199,7 +199,7 @@ async function createDrawingsForUrl(url) {
           views: [
             {
               viewType: "TopLevel",
-              position: { x: 0.06, y: 0.25 },
+              position: { x: 0.06, y: 0.50 },
               orientation: "front",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
@@ -208,7 +208,7 @@ async function createDrawingsForUrl(url) {
             },
             {
               viewType: "TopLevel",
-              position: { x: 0.20, y: 0.25 },
+              position: { x: 0.20, y: 0.50 },
               orientation: "isometric",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
@@ -255,7 +255,7 @@ async function createDrawingsForUrl(url) {
           formatVersion: "2021-01-01",
           views: [{
             viewType: "TopLevel",
-            position: { x: 0.13, y: 0.25 },
+            position: { x: 0.13, y: 0.50 },
             orientation: "flatPattern",
             scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
             reference: ref,
