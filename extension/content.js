@@ -22,6 +22,11 @@
     return m ? m[1] : null;
   }
 
+  function getWidFromUrl() {
+    const m = window.location.pathname.match(/\/w\/([a-f0-9]+)/);
+    return m ? m[1] : null;
+  }
+
   function getDocName() {
     // Onshape sets document name in the page title: "DocName | Onshape"
     const title = document.title || "";
@@ -177,12 +182,13 @@
   // Small delay to let Onshape fully initialize
   setTimeout(() => autoScan(), 3000);
 
-  // Check version count for release tracker
+  // Check violations (versions, parts, features, tabs) for release tracker
   setTimeout(() => {
     const docId = getDocIdFromUrl();
+    const wid = getWidFromUrl();
     const docName = getDocName();
     if (docId) {
-      chrome.runtime.sendMessage({ type: "check-versions", docId, docName });
+      chrome.runtime.sendMessage({ type: "check-versions", docId, docName, wid });
     }
   }, 3000);
 })();

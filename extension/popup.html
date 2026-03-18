@@ -172,6 +172,10 @@
       Tab Folder Scanner
       <div class="menu-desc">Scan documents and report folder structure</div>
     </button>
+    <button class="btn-menu" id="btnGoViolations">
+      Violations
+      <div class="menu-desc">Documents exceeding best practice limits</div>
+    </button>
   </div>
 
   <!-- ============ Drawing Creator ============ -->
@@ -207,6 +211,15 @@
     <div id="results">
       <div class="summary" id="summaryText"></div>
       <div id="resultList"></div>
+    </div>
+  </div>
+
+  <!-- ============ Violations ============ -->
+  <div id="sectionViolations" class="section">
+    <h3><button class="btn-back" id="btnBackFromViolations">Back</button> Violations</h3>
+    <div id="violationsList"></div>
+    <div id="noViolations" style="color:#666;font-size:11px;padding:10px 0;">
+      No violations detected. Open Onshape documents to check.
     </div>
   </div>
 

@@ -597,6 +597,94 @@ function trySendScan(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Violation checker — runs on every doc open
+// ---------------------------------------------------------------------------
+
+const PARTS_LIMIT = 25;
+const FEATURES_LIMIT = 250;
+const TABS_LIMIT = 5;
+
+async function checkDocViolations(docId, docName, wid) {
+  const violations = [];
+
+  try {
+    // Parallel fetch: versions always, elements + parts if wid available
+    const promises = [
+      onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(() => null),
+    ];
+    if (wid) {
+      promises.push(
+        onshapeFetch(`/api/v10/documents/d/${docId}/w/${wid}/elements`).catch(() => null),
+        onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}`).catch(() => null),
+      );
+    }
+
+    const [versions, elements, parts] = await Promise.all(promises);
+
+    // 1. Versions without release
+    const versionCount = Array.isArray(versions) ? versions.length : 0;
+    if (versionCount >= VERSION_RELEASE_THRESHOLD) {
+      violations.push(`${versionCount} versions without release (limit: ${VERSION_RELEASE_THRESHOLD})`);
+    }
+
+    // 2. Parts > 25
+    const partCount = Array.isArray(parts) ? parts.length : 0;
+    if (partCount > PARTS_LIMIT) {
+      violations.push(`${partCount} parts (limit: ${PARTS_LIMIT})`);
+    }
+
+    if (Array.isArray(elements)) {
+      // 3. Features > 250 in any Part Studio
+      const partStudios = elements.filter(e => e.elementType === "PARTSTUDIO");
+      for (const ps of partStudios) {
+        try {
+          const resp = await onshapeFetch(
+            `/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`
+          );
+          const featureCount = Array.isArray(resp.features) ? resp.features.length : 0;
+          if (featureCount > FEATURES_LIMIT) {
+            violations.push(`"${ps.name}" has ${featureCount} features (limit: ${FEATURES_LIMIT})`);
+          }
+        } catch (_) { /* skip */ }
+      }
+
+      // 4. Tabs > 5
+      if (elements.length > TABS_LIMIT) {
+        violations.push(`${elements.length} tabs (limit: ${TABS_LIMIT})`);
+      }
+    }
+  } catch (e) {
+    console.error("[Violations] Error checking doc:", e);
+    return;
+  }
+
+  // Store violations
+  const storageData = await chrome.storage.local.get("violations");
+  const all = storageData.violations || {};
+
+  if (violations.length > 0) {
+    all[docId] = {
+      docName: docName || docId,
+      timestamp: new Date().toLocaleTimeString("en-IN", {
+        hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
+      }),
+      items: violations,
+    };
+    chrome.notifications.create(`violations-${docId}`, {
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: `Violations: ${docName || docId}`,
+      message: violations.join("\n"),
+    });
+  } else {
+    delete all[docId];
+  }
+
+  await chrome.storage.local.set({ violations: all });
+  chrome.runtime.sendMessage({ type: "violations-updated" }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -628,26 +716,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
 
   } else if (msg.type === "check-versions") {
-    const { docId, docName } = msg;
-    onshapeFetch(`/api/v10/documents/d/${docId}/versions`)
-      .then(versions => {
-        const count = Array.isArray(versions) ? versions.length : 0;
-        if (count >= VERSION_RELEASE_THRESHOLD) {
-          chrome.action.setBadgeText({ text: String(count) });
-          chrome.action.setBadgeBackgroundColor({ color: "#e53e3e" });
-          chrome.notifications.create(`version-check-${docId}`, {
-            type: "basic",
-            iconUrl: "icons/icon128.png",
-            title: "Release Tracker",
-            message: `"${docName || docId}" has ${count} versions without a release.`,
-          });
-        } else {
-          chrome.action.setBadgeText({ text: "" });
-        }
-      })
-      .catch(err => {
-        console.error("[ReleaseTracker] Failed to check versions:", err);
-      });
+    const { docId, docName, wid } = msg;
+    checkDocViolations(docId, docName, wid);
 
   } else if (msg.type === "rescan-active-tab") {
     // Re-scan the current active tab. If content script isn't injected, inject it first.

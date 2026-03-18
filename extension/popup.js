@@ -11,8 +11,13 @@ function showSection(id) {
 
 document.getElementById("btnGoDrawing").addEventListener("click", () => showSection("sectionDrawing"));
 document.getElementById("btnGoScanner").addEventListener("click", () => showSection("sectionScanner"));
+document.getElementById("btnGoViolations").addEventListener("click", () => {
+  showSection("sectionViolations");
+  loadViolations();
+});
 document.getElementById("btnBackFromDrawing").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnBackFromScanner").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnBackFromViolations").addEventListener("click", () => showSection("sectionMenu"));
 
 // ---------------------------------------------------------------------------
 
@@ -193,6 +198,10 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (msg.error) {
       appendDrawLog("Error: " + msg.error, "log-err");
     }
+  } else if (msg.type === "violations-updated") {
+    if (document.getElementById("sectionViolations").classList.contains("active")) {
+      loadViolations();
+    }
   }
 });
 
@@ -328,4 +337,53 @@ function showSingleResult(result) {
     rootEl.textContent = `Root tabs: ${result.root_tabs.join(", ")}`;
     $resultList.appendChild(rootEl);
   }
+}
+
+// ---------------------------------------------------------------------------
+// Violations display
+// ---------------------------------------------------------------------------
+
+function loadViolations() {
+  chrome.storage.local.get("violations", (data) => {
+    const violations = data.violations || {};
+    const $list = document.getElementById("violationsList");
+    const $none = document.getElementById("noViolations");
+    $list.innerHTML = "";
+
+    const docIds = Object.keys(violations);
+    if (docIds.length === 0) {
+      $none.style.display = "block";
+      return;
+    }
+    $none.style.display = "none";
+
+    for (const docId of docIds) {
+      const v = violations[docId];
+      const header = document.createElement("div");
+      header.className = "result-item";
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "result-name";
+      nameSpan.textContent = v.docName;
+      header.appendChild(nameSpan);
+      const badge = document.createElement("span");
+      badge.className = "badge badge-err";
+      badge.textContent = v.items.length;
+      header.appendChild(badge);
+      const ts = document.createElement("span");
+      ts.style.cssText = "font-size:9px;color:#666;margin-left:6px;";
+      ts.textContent = v.timestamp;
+      header.appendChild(ts);
+      $list.appendChild(header);
+
+      for (const item of v.items) {
+        const line = document.createElement("div");
+        line.className = "result-item";
+        line.style.paddingLeft = "20px";
+        line.style.fontSize = "10px";
+        line.style.color = "#ff6b6b";
+        line.textContent = item;
+        $list.appendChild(line);
+      }
+    }
+  });
 }
