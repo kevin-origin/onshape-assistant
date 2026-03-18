@@ -241,15 +241,17 @@ async function createDrawingsForUrl(url) {
         // Bottom row (y=250): front + left. Top row (y=300): top + iso.
         const targetPositions = [
           { x: 120, y: 250 },  // front
-          { x: 320, y: 150 },  // iso (below left)
+          { x: 370, y: 150 },  // iso (below left, shifted right)
           { x: 320, y: 250 },  // left/right
-          { x: 120, y: 150 },  // top (below front)
+          { x: 120, y: 100 },  // top (below front, shifted down)
         ];
         const editViews = viewList.map((v, idx) => ({
           viewId: v.viewId,
           position: targetPositions[idx] || targetPositions[0],
           showViewLabel: true,
           breakAlignment: true,
+          isAligned: false,
+          parentViewId: "",
         }));
         broadcastDrawLog(`  repositioning ${editViews.length} views`);
         const editBody = {
