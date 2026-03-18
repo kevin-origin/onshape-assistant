@@ -241,9 +241,9 @@ async function createDrawingsForUrl(url) {
         // Bottom row (y=250): front + left. Top row (y=300): top + iso.
         const targetPositions = [
           { x: 120, y: 250 },  // front
-          { x: 320, y: 300 },  // iso
+          { x: 320, y: 150 },  // iso (below left)
           { x: 320, y: 250 },  // left/right
-          { x: 120, y: 300 },  // top
+          { x: 120, y: 150 },  // top (below front)
         ];
         const editViews = viewList.map((v, idx) => ({
           viewId: v.viewId,
