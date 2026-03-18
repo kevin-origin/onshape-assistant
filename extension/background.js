@@ -204,7 +204,6 @@ async function createDrawingsForUrl(url) {
           views: [
             {
               viewType: "TopLevel",
-              position: { x: 120, y: 200 },
               orientation: "front",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
@@ -213,7 +212,6 @@ async function createDrawingsForUrl(url) {
             },
             {
               viewType: "TopLevel",
-              position: { x: 320, y: 200 },
               orientation: "isometric",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
