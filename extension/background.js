@@ -283,12 +283,12 @@ async function createDrawingsForUrl(url) {
           const m = v.viewMatrix || [];
           // Isometric: matrix has non-integer values (e.g. 0.577, 0.707)
           if (m.some(val => val !== 0 && val !== 1 && val !== -1)) return "Isometric";
-          // Front: axis-aligned, no parent
-          if (m[0] === 1 && !v.parentViewId) return "Front";
-          // Top: projected from front, same X axis (m[0]===1)
-          if (m[0] === 1 && v.parentViewId) return "Top";
-          // Left/Right: projected, different X axis
-          if (v.parentViewId) return "Left";
+          // Front: screenX=modelX (m[0]=1), screenY=modelZ (m[6]=1)
+          if (m[0] === 1 && m[6] === 1) return "Front";
+          // Top: screenX=modelX (m[0]=1), screenY=modelY (m[5]=1)
+          if (m[0] === 1 && m[5] === 1) return "Top";
+          // Left/Right: screenX involves modelY (m[1])
+          if (m[1] === -1 || m[1] === 1) return "Left";
           return "View";
         }
         const editViews = viewList.map((v) => ({

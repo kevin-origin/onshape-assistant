@@ -19,6 +19,25 @@
       border-bottom: 1px solid #333;
       padding-bottom: 6px;
     }
+    h3 {
+      font-size: 13px;
+      color: #fff;
+      margin-bottom: 8px;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .btn-back {
+      background: none;
+      border: 1px solid #444;
+      color: #7ec8e3;
+      padding: 2px 8px;
+      border-radius: 3px;
+      font-size: 11px;
+      cursor: pointer;
+      flex: none;
+    }
+    .btn-back:hover { border-color: #7ec8e3; }
     label {
       display: block;
       font-size: 11px;
@@ -56,6 +75,23 @@
     }
     button:hover { opacity: 0.85; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
+    .btn-menu {
+      background: #16213e;
+      color: #e0e0e0;
+      border: 1px solid #333;
+      padding: 12px 10px;
+      text-align: left;
+      font-size: 13px;
+      margin-bottom: 6px;
+      border-radius: 6px;
+    }
+    .btn-menu:hover { border-color: #7ec8e3; color: #fff; }
+    .btn-menu .menu-desc {
+      font-size: 10px;
+      color: #666;
+      margin-top: 3px;
+      font-weight: 400;
+    }
     .btn-draw { background: #1b4332; color: #95d5b2; }
     .btn-scan { background: #0f3460; color: #fff; }
     .btn-rescan { background: #1a1a40; color: #7ec8e3; border: 1px solid #333; }
@@ -118,52 +154,66 @@
     }
     #drawLog .log-ok { color: #95d5b2; }
     #drawLog .log-err { color: #ff6b6b; }
-    .section-sep {
-      border-top: 1px solid #333;
-      margin-top: 14px;
-      padding-top: 4px;
-    }
-    h3 {
-      font-size: 12px;
-      color: #aaa;
-      margin-bottom: 6px;
-    }
+    .section { display: none; }
+    .section.active { display: block; }
   </style>
 </head>
 <body>
-  <h2>Onshape Tools</h2>
+  <!-- ============ Main Menu ============ -->
+  <div id="sectionMenu" class="section active">
+    <h2>Onshape Tools</h2>
+    <button class="btn-menu" onclick="showSection('sectionDrawing')">
+      Drawing Creator
+      <div class="menu-desc">Generate drawings for all parts in a Part Studio</div>
+    </button>
+    <button class="btn-menu" onclick="showSection('sectionScanner')">
+      Tab Folder Scanner
+      <div class="menu-desc">Scan documents and report folder structure</div>
+    </button>
+  </div>
 
   <!-- ============ Drawing Creator ============ -->
-  <label>Part Studio URL</label>
-  <input type="text" id="partStudioUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
+  <div id="sectionDrawing" class="section">
+    <h3><button class="btn-back" onclick="showSection('sectionMenu')">Back</button> Drawing Creator</h3>
 
-  <div class="btn-row">
-    <button class="btn-draw" id="btnCreateDrawings">Create Drawings</button>
+    <label>Part Studio URL</label>
+    <input type="text" id="partStudioUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
+
+    <div class="btn-row">
+      <button class="btn-draw" id="btnCreateDrawings">Create Drawings</button>
+    </div>
+
+    <div id="drawLog"></div>
   </div>
-
-  <div id="drawLog"></div>
 
   <!-- ============ Tab Folder Scanner ============ -->
-  <div class="section-sep"></div>
-  <h3>Tab Folder Scanner</h3>
+  <div id="sectionScanner" class="section">
+    <h3><button class="btn-back" onclick="showSection('sectionMenu')">Back</button> Tab Folder Scanner</h3>
 
-  <label>Folder IDs (one per line)</label>
-  <textarea id="folderIds" placeholder="e.g. 0e6a83bfe36bbb4968b747fb"></textarea>
+    <label>Folder IDs (one per line)</label>
+    <textarea id="folderIds" placeholder="e.g. 0e6a83bfe36bbb4968b747fb"></textarea>
 
-  <label>Dashboard URL</label>
-  <input type="text" id="dashboardUrl" placeholder="https://your-dashboard.onrender.com">
+    <label>Dashboard URL</label>
+    <input type="text" id="dashboardUrl" placeholder="https://your-dashboard.onrender.com">
 
-  <div class="btn-row">
-    <button class="btn-scan" id="btnScan">Scan All</button>
-    <button class="btn-rescan" id="btnRescan">Re-scan This Doc</button>
+    <div class="btn-row">
+      <button class="btn-scan" id="btnScan">Scan All</button>
+      <button class="btn-rescan" id="btnRescan">Re-scan This Doc</button>
+    </div>
+
+    <div id="status"></div>
+    <div id="results">
+      <div class="summary" id="summaryText"></div>
+      <div id="resultList"></div>
+    </div>
   </div>
 
-  <div id="status"></div>
-  <div id="results">
-    <div class="summary" id="summaryText"></div>
-    <div id="resultList"></div>
-  </div>
-
+  <script>
+    function showSection(id) {
+      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+      document.getElementById(id).classList.add('active');
+    }
+  </script>
   <script src="popup.js"></script>
 </body>
 </html>
