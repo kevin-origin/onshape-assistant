@@ -76,7 +76,7 @@ function computeScale(bb) {
     return [1, 5];
   }
   const AVAILABLE = 50.0;
-  const standards = [[2,1],[1,1],[1,2],[1,3],[1,5],[1,7],[1,10],[1,15],[1,20],[1,50]];
+  const standards = [[2,1],[1,1],[1,2],[1,3],[1,4],[1,5],[1,7],[1,10],[1,15],[1,20],[1,50]];
   for (const [num, den] of standards) {
     if (largest * num / den <= AVAILABLE) return [num, den];
   }
@@ -278,13 +278,24 @@ async function createDrawingsForUrl(url) {
     try {
       const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
       const viewList = viewsResp.items || [];
-      const labelNames = ["Front", "Isometric", "Flat Pattern"];
       if (viewList.length > 0) {
-        const editViews = viewList.map((v, idx) => ({
+        function identifyView(v) {
+          const m = v.viewMatrix || [];
+          // Isometric: matrix has non-integer values (e.g. 0.577, 0.707)
+          if (m.some(val => val !== 0 && val !== 1 && val !== -1)) return "Isometric";
+          // Front: axis-aligned, no parent
+          if (m[0] === 1 && !v.parentViewId) return "Front";
+          // Top: projected from front, same X axis (m[0]===1)
+          if (m[0] === 1 && v.parentViewId) return "Top";
+          // Left/Right: projected, different X axis
+          if (v.parentViewId) return "Left";
+          return "View";
+        }
+        const editViews = viewList.map((v) => ({
           viewId: v.viewId,
           showViewLabel: true,
-          label: labelNames[idx] || "",
-          name: labelNames[idx] || "",
+          label: identifyView(v),
+          name: identifyView(v),
         }));
         const editBody = {
           description: "Enable view labels",
