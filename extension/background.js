@@ -194,61 +194,84 @@ async function createDrawingsForUrl(url) {
     // Title block ~60mm at bottom, usable area roughly y: 0.070 to 0.280
     // Center views vertically at y=0.155, spread horizontally
 
-    // Single /modify call with all content — avoids multiple editor reloads
-    // TODO: Add positions to dashboard later
+    // Step 1: Create front + iso views
+    // TODO: Add to dashboard later
     try {
-      const modifyBody = {
-        description: "Add views, sheet, and flat pattern",
-        jsonRequests: [
-          {
-            messageName: "onshapeCreateViews",
-            formatVersion: "2021-01-01",
-            views: [
-              {
-                viewType: "TopLevel",
-                orientation: "front",
-                scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
-                reference: ref,
-                showViewLabel: true,
-                name: "Front",
-              },
-              {
-                viewType: "TopLevel",
-                orientation: "isometric",
-                scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
-                reference: ref,
-                showViewLabel: true,
-                name: "Isometric",
-              },
-            ],
-          },
-          {
-            messageName: "onshapeCreateSheets",
-            formatVersion: "2021-01-01",
-            sheets: [{ name: "Flat Pattern" }],
-          },
-          {
-            messageName: "onshapeCreateViews",
-            formatVersion: "2021-01-01",
-            views: [{
+      const viewBody = {
+        description: "Add views",
+        jsonRequests: [{
+          messageName: "onshapeCreateViews",
+          formatVersion: "2021-01-01",
+          views: [
+            {
               viewType: "TopLevel",
-              orientation: "flatPattern",
+              orientation: "front",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
-              showViewLabel: true,
-              name: "Flat Pattern",
-              sheetIndex: 1,
-            }],
-          },
-        ],
+            },
+            {
+              viewType: "TopLevel",
+              orientation: "isometric",
+              scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+              reference: ref,
+            },
+          ],
+        }],
       };
-      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, modifyBody);
+      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, viewBody);
       const mid = resp.id || "";
       if (mid) await pollModify(docId, wid, drawingEid, mid);
     } catch (e) {
-      broadcastDrawLog(`  modify failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  views failed: ${e.message}`, "log-err");
       failed++;
       continue;
+    }
+
+    // Step 2: Create Sheet 2 (separate call)
+    try {
+      const sheetBody = {
+        description: "Add flat pattern sheet",
+        jsonRequests: [{
+          messageName: "onshapeCreateSheets",
+          formatVersion: "2021-01-01",
+          sheets: [{ name: "Flat Pattern" }],
+        }],
+      };
+      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, sheetBody);
+      console.log("[Drawing] Sheet create response:", JSON.stringify(resp));
+      const mid = resp.id || "";
+      if (mid) {
+        const ok = await pollModify(docId, wid, drawingEid, mid);
+        broadcastDrawLog(`  sheet 2: ${ok ? "created" : "failed"}`);
+      } else {
+        broadcastDrawLog(`  sheet 2: no modification ID returned`, "log-err");
+      }
+    } catch (e) {
+      broadcastDrawLog(`  sheet 2 failed: ${e.message}`, "log-err");
+    }
+
+    // Step 3: Add flat pattern view on Sheet 2
+    try {
+      const flatBody = {
+        description: "Add flat pattern view",
+        jsonRequests: [{
+          messageName: "onshapeCreateViews",
+          formatVersion: "2021-01-01",
+          views: [{
+            viewType: "TopLevel",
+            orientation: "flatPattern",
+            scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+            reference: ref,
+            sheetIndex: 1,
+          }],
+        }],
+      };
+      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
+      console.log("[Drawing] Flat pattern response:", JSON.stringify(resp));
+      const mid = resp.id || "";
+      if (mid) await pollModify(docId, wid, drawingEid, mid);
+    } catch (e) {
+      broadcastDrawLog(`  flat pattern failed: ${e.message}`, "log-err");
     }
 
     // Enable view labels via onshapeEditViews (showViewLabel ignored in create)
