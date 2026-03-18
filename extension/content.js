@@ -176,4 +176,13 @@
 
   // Small delay to let Onshape fully initialize
   setTimeout(() => autoScan(), 3000);
+
+  // Check version count for release tracker
+  setTimeout(() => {
+    const docId = getDocIdFromUrl();
+    const docName = getDocName();
+    if (docId) {
+      chrome.runtime.sendMessage({ type: "check-versions", docId, docName });
+    }
+  }, 3000);
 })();

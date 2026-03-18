@@ -8,6 +8,9 @@ const COMPANY_ID   = "6810c247e7c40668c32816a6";
 // Scan timeout per document (ms) — if content.js doesn't respond in time
 const DOC_SCAN_TIMEOUT = 30000;
 
+// Release tracker — alert when versions exceed this without a release
+const VERSION_RELEASE_THRESHOLD = 2;
+
 // ---------------------------------------------------------------------------
 // Onshape API via session cookies (no API keys, zero quota cost)
 // ---------------------------------------------------------------------------
@@ -623,6 +626,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         postResultsToDashboard(dashboardUrl, [msg.data]);
       }
     });
+
+  } else if (msg.type === "check-versions") {
+    const { docId, docName } = msg;
+    onshapeFetch(`/api/v10/documents/d/${docId}/versions`)
+      .then(versions => {
+        const count = Array.isArray(versions) ? versions.length : 0;
+        if (count >= VERSION_RELEASE_THRESHOLD) {
+          chrome.action.setBadgeText({ text: String(count) });
+          chrome.action.setBadgeBackgroundColor({ color: "#e53e3e" });
+          chrome.notifications.create(`version-check-${docId}`, {
+            type: "basic",
+            iconUrl: "icons/icon128.png",
+            title: "Release Tracker",
+            message: `"${docName || docId}" has ${count} versions without a release.`,
+          });
+        } else {
+          chrome.action.setBadgeText({ text: "" });
+        }
+      })
+      .catch(err => {
+        console.error("[ReleaseTracker] Failed to check versions:", err);
+      });
 
   } else if (msg.type === "rescan-active-tab") {
     // Re-scan the current active tab. If content script isn't injected, inject it first.
