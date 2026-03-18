@@ -9,7 +9,7 @@ const COMPANY_ID   = "6810c247e7c40668c32816a6";
 const DOC_SCAN_TIMEOUT = 30000;
 
 // Release tracker — alert when versions exceed this without a release
-const VERSION_RELEASE_THRESHOLD = 2;
+const VERSION_RELEASE_THRESHOLD = 15;
 
 // ---------------------------------------------------------------------------
 // Onshape API via session cookies (no API keys, zero quota cost)
@@ -549,7 +549,7 @@ function trySendScan(tabId) {
 
 const PARTS_LIMIT = 25;
 const FEATURES_LIMIT = 250;
-const TABS_LIMIT = 5;
+const TABS_LIMIT = 40;
 
 async function checkDocViolations(docId, docName, wid) {
   const violations = [];
@@ -567,10 +567,28 @@ async function checkDocViolations(docId, docName, wid) {
 
     const [versions, rawElements] = await Promise.all(promises);
 
-    // 1. Versions without release
-    const versionCount = Array.isArray(versions) ? versions.length : 0;
-    if (versionCount >= VERSION_RELEASE_THRESHOLD) {
-      violations.push(`${versionCount} versions without release (limit: ${VERSION_RELEASE_THRESHOLD})`);
+    // 1. Versions since last release
+    if (Array.isArray(versions) && versions.length > 0) {
+      // Sort by createdAt ascending
+      const sorted = [...versions].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+
+      // Find the last release version (purpose field: non-zero = release)
+      let lastReleaseIdx = -1;
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        if (sorted[i].purpose && sorted[i].purpose !== 0) {
+          lastReleaseIdx = i;
+          break;
+        }
+      }
+
+      // Count only versions created after the last release
+      const versionsSinceRelease = lastReleaseIdx >= 0
+        ? sorted.length - 1 - lastReleaseIdx
+        : sorted.length; // no releases at all — count everything
+
+      if (versionsSinceRelease >= VERSION_RELEASE_THRESHOLD) {
+        violations.push(`${versionsSinceRelease} versions since last release (limit: ${VERSION_RELEASE_THRESHOLD})`);
+      }
     }
 
     // Unwrap elements (API may return array or { items: [...] })
