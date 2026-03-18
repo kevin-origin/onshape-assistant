@@ -84,6 +84,8 @@
       font-size: 13px;
       margin-bottom: 6px;
       border-radius: 6px;
+      display: block;
+      width: 100%;
     }
     .btn-menu:hover { border-color: #7ec8e3; color: #fff; }
     .btn-menu .menu-desc {
@@ -162,11 +164,11 @@
   <!-- ============ Main Menu ============ -->
   <div id="sectionMenu" class="section active">
     <h2>Onshape Tools</h2>
-    <button class="btn-menu" onclick="showSection('sectionDrawing')">
+    <button class="btn-menu" id="btnGoDrawing">
       Drawing Creator
       <div class="menu-desc">Generate drawings for all parts in a Part Studio</div>
     </button>
-    <button class="btn-menu" onclick="showSection('sectionScanner')">
+    <button class="btn-menu" id="btnGoScanner">
       Tab Folder Scanner
       <div class="menu-desc">Scan documents and report folder structure</div>
     </button>
@@ -174,7 +176,7 @@
 
   <!-- ============ Drawing Creator ============ -->
   <div id="sectionDrawing" class="section">
-    <h3><button class="btn-back" onclick="showSection('sectionMenu')">Back</button> Drawing Creator</h3>
+    <h3><button class="btn-back" id="btnBackFromDrawing">Back</button> Drawing Creator</h3>
 
     <label>Part Studio URL</label>
     <input type="text" id="partStudioUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
@@ -188,7 +190,7 @@
 
   <!-- ============ Tab Folder Scanner ============ -->
   <div id="sectionScanner" class="section">
-    <h3><button class="btn-back" onclick="showSection('sectionMenu')">Back</button> Tab Folder Scanner</h3>
+    <h3><button class="btn-back" id="btnBackFromScanner">Back</button> Tab Folder Scanner</h3>
 
     <label>Folder IDs (one per line)</label>
     <textarea id="folderIds" placeholder="e.g. 0e6a83bfe36bbb4968b747fb"></textarea>
@@ -208,12 +210,6 @@
     </div>
   </div>
 
-  <script>
-    function showSection(id) {
-      document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
-      document.getElementById(id).classList.add('active');
-    }
-  </script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -1,4 +1,20 @@
-// popup.js — Onshape Tab Folder Scanner popup logic
+// popup.js — Onshape Tools popup logic
+
+// ---------------------------------------------------------------------------
+// Section navigation
+// ---------------------------------------------------------------------------
+
+function showSection(id) {
+  document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
+  document.getElementById(id).classList.add('active');
+}
+
+document.getElementById("btnGoDrawing").addEventListener("click", () => showSection("sectionDrawing"));
+document.getElementById("btnGoScanner").addEventListener("click", () => showSection("sectionScanner"));
+document.getElementById("btnBackFromDrawing").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnBackFromScanner").addEventListener("click", () => showSection("sectionMenu"));
+
+// ---------------------------------------------------------------------------
 
 const REQUIRED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports"];
 
