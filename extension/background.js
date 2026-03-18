@@ -639,7 +639,12 @@ async function checkDocViolations(docId, docName, wid) {
       );
 
       // 2 & 3. Per Part Studio: parts > 25, features > 250
-      const partStudios = userElements.filter(e => e.elementType === "PARTSTUDIO");
+      const typeMap = {};
+      for (const e of userElements) typeMap[e.name] = e.elementType || e.type || "unknown";
+      console.log(`[Violations] ${docName}: element types:`, JSON.stringify(typeMap));
+      const partStudios = userElements.filter(e =>
+        (e.elementType || e.type || "") === "PARTSTUDIO"
+      );
       console.log(`[Violations] ${docName}: ${userElements.length} tabs, ${partStudios.length} Part Studios found`);
       for (const ps of partStudios) {
         try {
