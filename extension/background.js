@@ -232,43 +232,9 @@ async function createDrawingsForUrl(url) {
       continue;
     }
 
-    // 2d2. Reposition views via onshapeEditViews (create ignores position)
-    try {
-      const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
-      const viewList = viewsResp.items || [];
-      if (viewList.length > 0) {
-        // Units: mm. A3 landscape = 420 x 297 mm — TODO: Add this to dashboard later
-        // Bottom row (y=250): front + left. Top row (y=300): top + iso.
-        const targetPositions = [
-          { x: 120, y: 250 },  // front
-          { x: 370, y: 150 },  // iso (below left, shifted right)
-          { x: 320, y: 250 },  // left/right
-          { x: 120, y: 100 },  // top (below front, shifted down)
-        ];
-        const editViews = viewList.map((v, idx) => ({
-          viewId: v.viewId,
-          position: targetPositions[idx] || targetPositions[0],
-          showViewLabel: true,
-          breakAlignment: true,
-          isAligned: false,
-          parentViewId: "",
-        }));
-        broadcastDrawLog(`  repositioning ${editViews.length} views`);
-        const editBody = {
-          description: "Reposition views",
-          jsonRequests: [{
-            messageName: "onshapeEditViews",
-            formatVersion: "2021-01-01",
-            views: editViews,
-          }],
-        };
-        const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
-        const editMid = editResp.id || "";
-        if (editMid) await pollModify(docId, wid, drawingEid, editMid);
-      }
-    } catch (e) {
-      broadcastDrawLog(`  reposition failed: ${e.message}`, "log-err");
-    }
+    // editViews commented out — onshapeCreateViews positions in mm work directly
+    // Keeping for reference: editViews caused page reloads and alignment issues
+    // TODO: Add positions to dashboard later
 
     // 2e. Phase 2: add Sheet 2
     try {
