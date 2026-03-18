@@ -249,6 +249,7 @@ async function createDrawingsForUrl(url) {
           viewId: v.viewId,
           position: targetPositions[idx] || targetPositions[0],
           showViewLabel: true,
+          breakAlignment: true,
         }));
         broadcastDrawLog(`  repositioning ${editViews.length} views`);
         const editBody = {
