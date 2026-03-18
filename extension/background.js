@@ -230,90 +230,62 @@ async function createDrawingsForUrl(url) {
       continue;
     }
 
-    // Step 2: Create Sheet 2 (separate call)
+    // Step 2: Add Sheet 2 via DOM automation, then add flat pattern view
     try {
-      const sheetBody = {
-        description: "Add flat pattern sheet",
-        jsonRequests: [{
-          messageName: "onshapeCreateSheets",
-          formatVersion: "2021-01-01",
-          sheets: [{ name: "Flat Pattern" }],
-        }],
-      };
-      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, sheetBody);
-      console.log("[Drawing] Sheet create response:", JSON.stringify(resp));
-      const mid = resp.id || "";
-      if (mid) {
-        const ok = await pollModify(docId, wid, drawingEid, mid);
-        broadcastDrawLog(`  sheet 2: ${ok ? "created" : "failed"}`);
+      const drawingUrl = `${ONSHAPE_BASE}/documents/${docId}/w/${wid}/e/${drawingEid}`;
+      broadcastDrawLog(`  opening drawing tab for DOM sheet creation...`);
+
+      // Open drawing in background tab
+      const drawTab = await chrome.tabs.create({ url: drawingUrl, active: false });
+      await waitForTabLoad(drawTab.id);
+      // Extra wait for Onshape drawing editor to fully render
+      await new Promise(r => setTimeout(r, 5000));
+
+      // Ask content script to click "Add Sheet" in the DOM
+      const sheetResult = await new Promise((resolve) => {
+        const timeout = setTimeout(() => resolve({ error: "Sheet DOM automation timed out" }), 30000);
+        chrome.tabs.sendMessage(drawTab.id, { type: "add-drawing-sheet" }, (resp) => {
+          clearTimeout(timeout);
+          if (chrome.runtime.lastError) {
+            resolve({ error: chrome.runtime.lastError.message });
+          } else {
+            resolve(resp || { error: "No response from content script" });
+          }
+        });
+      });
+
+      if (sheetResult.error) {
+        broadcastDrawLog(`  sheet 2 DOM failed: ${sheetResult.error}`, "log-err");
       } else {
-        broadcastDrawLog(`  sheet 2: no modification ID returned`, "log-err");
+        broadcastDrawLog(`  sheet 2 created via DOM`);
       }
-    } catch (e) {
-      broadcastDrawLog(`  sheet 2 failed: ${e.message}`, "log-err");
-    }
 
-    // Step 3: Add flat pattern view on Sheet 2
-    try {
-      const flatBody = {
-        description: "Add flat pattern view",
-        jsonRequests: [{
-          messageName: "onshapeCreateViews",
-          formatVersion: "2021-01-01",
-          views: [{
-            viewType: "TopLevel",
-            orientation: "flatPattern",
-            scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
-            reference: ref,
-            sheetIndex: 1,
-          }],
-        }],
-      };
-      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
-      console.log("[Drawing] Flat pattern response:", JSON.stringify(resp));
-      const mid = resp.id || "";
-      if (mid) await pollModify(docId, wid, drawingEid, mid);
-    } catch (e) {
-      broadcastDrawLog(`  flat pattern failed: ${e.message}`, "log-err");
-    }
+      // Close the background tab
+      try { await chrome.tabs.remove(drawTab.id); } catch (_) {}
 
-    // Enable view labels via onshapeEditViews (showViewLabel ignored in create)
-    try {
-      const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
-      const viewList = viewsResp.items || [];
-      if (viewList.length > 0) {
-        function identifyView(v) {
-          const m = v.viewMatrix || [];
-          // Isometric: matrix has non-integer values (e.g. 0.577, 0.707)
-          if (m.some(val => val !== 0 && val !== 1 && val !== -1)) return "Isometric";
-          // Front: screenX=modelX (m[0]=1), screenY=modelZ (m[6]=1)
-          if (m[0] === 1 && m[6] === 1) return "Front";
-          // Top: screenX=modelX (m[0]=1), screenY=modelY (m[5]=1)
-          if (m[0] === 1 && m[5] === 1) return "Top";
-          // Left/Right: screenX involves modelY (m[1])
-          if (m[1] === -1 || m[1] === 1) return "Left";
-          return "View";
-        }
-        const editViews = viewList.map((v) => ({
-          viewId: v.viewId,
-          showViewLabel: true,
-          label: identifyView(v),
-          name: identifyView(v),
-        }));
-        const editBody = {
-          description: "Enable view labels",
+      // Now add flat pattern view on Sheet 2 via API (sheetIndex: 1)
+      if (!sheetResult.error) {
+        const flatBody = {
+          description: "Add flat pattern view",
           jsonRequests: [{
-            messageName: "onshapeEditViews",
+            messageName: "onshapeCreateViews",
             formatVersion: "2021-01-01",
-            views: editViews,
+            views: [{
+              viewType: "TopLevel",
+              orientation: "flatPattern",
+              scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+              reference: ref,
+              sheetIndex: 1,
+            }],
           }],
         };
-        const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
-        const editMid = editResp.id || "";
-        if (editMid) await pollModify(docId, wid, drawingEid, editMid);
+        const flatResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
+        const flatMid = flatResp.id || "";
+        if (flatMid) await pollModify(docId, wid, drawingEid, flatMid);
+        broadcastDrawLog(`  flat pattern added to sheet 2`);
       }
     } catch (e) {
-      broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  sheet 2 / flat pattern failed: ${e.message}`, "log-err");
     }
 
     created++;

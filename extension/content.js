@@ -165,10 +165,158 @@
   // Message handler — background.js can trigger a scan on demand
   // ---------------------------------------------------------------------------
 
+  // ---------------------------------------------------------------------------
+  // DOM automation: add a new drawing sheet
+  // ---------------------------------------------------------------------------
+
+  async function addDrawingSheet() {
+    // Log the drawing sheet area DOM for debugging selectors
+    const sheetBar = document.querySelector(".os-drawing-sheet-tabs, .os-sheet-bar, .os-sheets-bar");
+    console.log("[DrawSheet] Sheet bar element:", sheetBar);
+    console.log("[DrawSheet] All elements with 'sheet' in class:",
+      Array.from(document.querySelectorAll("[class*='sheet']")).map(el => ({
+        tag: el.tagName,
+        class: el.className,
+        text: el.textContent.trim().slice(0, 80),
+      }))
+    );
+
+    // Strategy 1: Look for a "+" button or "Add sheet" button near the sheet tabs
+    const addBtn = document.querySelector(
+      ".os-add-sheet-button, .os-sheet-add, [data-tooltip*='sheet' i], [aria-label*='sheet' i], [aria-label*='Insert' i]"
+    );
+    if (addBtn) {
+      console.log("[DrawSheet] Found add-sheet button:", addBtn.className, addBtn.textContent.trim());
+      addBtn.click();
+      await sleep(2000);
+      return { ok: true, method: "add-button" };
+    }
+
+    // Strategy 2: Right-click on the first sheet tab to get context menu
+    // Find sheet tab elements (Sheet 1 tab)
+    const sheetTabs = document.querySelectorAll(
+      ".os-drawing-sheet-tab, .os-sheet-tab, [class*='sheet-tab'], [class*='SheetTab']"
+    );
+    console.log("[DrawSheet] Sheet tabs found:", sheetTabs.length,
+      Array.from(sheetTabs).map(el => ({ class: el.className, text: el.textContent.trim() }))
+    );
+
+    // Also try finding by text content "Sheet 1"
+    let sheetTabEl = null;
+    if (sheetTabs.length > 0) {
+      sheetTabEl = sheetTabs[0];
+    } else {
+      // Broader search: any element containing "Sheet 1" text near bottom of page
+      const allEls = document.querySelectorAll("span, div, li, button, a");
+      for (const el of allEls) {
+        if (el.textContent.trim() === "Sheet 1" && el.offsetHeight > 0) {
+          sheetTabEl = el;
+          console.log("[DrawSheet] Found 'Sheet 1' element by text:", el.tagName, el.className);
+          break;
+        }
+      }
+    }
+
+    if (sheetTabEl) {
+      console.log("[DrawSheet] Right-clicking sheet tab:", sheetTabEl.tagName, sheetTabEl.className);
+      // Dispatch right-click (contextmenu event)
+      const rect = sheetTabEl.getBoundingClientRect();
+      const rightClick = new MouseEvent("contextmenu", {
+        bubbles: true,
+        cancelable: true,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+        button: 2,
+      });
+      sheetTabEl.dispatchEvent(rightClick);
+      await sleep(1000);
+
+      // Look for context menu items
+      const menuItems = document.querySelectorAll(
+        ".os-context-menu-item, .context-menu-item, [class*='context-menu'] [class*='item'], [class*='ContextMenu'] [class*='Item'], .os-menu-item"
+      );
+      console.log("[DrawSheet] Context menu items:", menuItems.length,
+        Array.from(menuItems).map(el => el.textContent.trim())
+      );
+
+      // Find "Insert new sheet after" or similar
+      let insertItem = null;
+      for (const item of menuItems) {
+        const text = item.textContent.trim().toLowerCase();
+        if (text.includes("insert") && text.includes("sheet")) {
+          insertItem = item;
+          break;
+        }
+      }
+
+      // Fallback: "Add sheet", "New sheet"
+      if (!insertItem) {
+        for (const item of menuItems) {
+          const text = item.textContent.trim().toLowerCase();
+          if ((text.includes("add") || text.includes("new")) && text.includes("sheet")) {
+            insertItem = item;
+            break;
+          }
+        }
+      }
+
+      if (insertItem) {
+        console.log("[DrawSheet] Clicking menu item:", insertItem.textContent.trim());
+        insertItem.click();
+        await sleep(2000);
+
+        // Verify second sheet appeared
+        const newTabs = document.querySelectorAll(
+          ".os-drawing-sheet-tab, .os-sheet-tab, [class*='sheet-tab'], [class*='SheetTab']"
+        );
+        // Also check by text
+        let sheet2Found = false;
+        const allSpans = document.querySelectorAll("span, div, li, button, a");
+        for (const el of allSpans) {
+          if (el.textContent.trim() === "Sheet 2" && el.offsetHeight > 0) {
+            sheet2Found = true;
+            break;
+          }
+        }
+        console.log("[DrawSheet] After insert — sheet tabs:", newTabs.length, "Sheet 2 found:", sheet2Found);
+        return { ok: true, method: "context-menu", sheet2Found };
+      } else {
+        // Dismiss context menu by clicking elsewhere
+        document.body.click();
+        await sleep(300);
+        console.log("[DrawSheet] No 'Insert sheet' item found in context menu");
+        return { error: "No 'Insert sheet' menu item found. Check console for DOM details." };
+      }
+    }
+
+    // Strategy 3: Log everything we can find for debugging
+    console.log("[DrawSheet] Could not find sheet tabs or add button. DOM dump of bottom area:");
+    const bottomEls = Array.from(document.querySelectorAll("*")).filter(el => {
+      const rect = el.getBoundingClientRect();
+      return rect.bottom > window.innerHeight - 100 && rect.height > 5 && rect.height < 60;
+    });
+    console.log("[DrawSheet] Bottom-area elements:",
+      bottomEls.slice(0, 30).map(el => ({
+        tag: el.tagName,
+        class: el.className.toString().slice(0, 80),
+        text: el.textContent.trim().slice(0, 50),
+        rect: el.getBoundingClientRect(),
+      }))
+    );
+
+    return { error: "Could not find sheet tab area. Check console for DOM dump." };
+  }
+
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === "scan-tab-folders") {
       waitForTabBar()
         .then(() => scanTabFolders())
+        .then(result => sendResponse(result))
+        .catch(err => sendResponse({ error: err.message }));
+      return true; // keep channel open for async response
+
+    } else if (msg.type === "add-drawing-sheet") {
+      addDrawingSheet()
         .then(result => sendResponse(result))
         .catch(err => sendResponse({ error: err.message }));
       return true; // keep channel open for async response
