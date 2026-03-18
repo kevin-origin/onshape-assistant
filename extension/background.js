@@ -383,7 +383,7 @@ let scanState = {
   scannerTabId: null,
 };
 
-async function runBulkScan(folderIds, dashboardUrl) {
+async function runBulkScan(folderIds) {
   if (scanState.running) {
     return { error: "Scan already in progress" };
   }
@@ -458,11 +458,6 @@ async function runBulkScan(folderIds, dashboardUrl) {
     try {
       await chrome.tabs.remove(scanState.scannerTabId);
     } catch (_) { /* tab may already be closed */ }
-
-    // 5. POST results to dashboard
-    if (dashboardUrl && scanState.results.length > 0) {
-      await postResultsToDashboard(dashboardUrl, scanState.results);
-    }
 
     scanState.scanned = docs.length;
     const summary = {
@@ -550,26 +545,6 @@ function scanDocInTab(tabId) {
 }
 
 // ---------------------------------------------------------------------------
-// Dashboard POST
-// ---------------------------------------------------------------------------
-
-async function postResultsToDashboard(dashboardUrl, results) {
-  const url = dashboardUrl.replace(/\/+$/, "") + "/api/report-tab-folders";
-
-  for (const result of results) {
-    try {
-      await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(result),
-      });
-    } catch (err) {
-      console.error(`[Scanner] Failed to POST result for ${result.doc_id}:`, err);
-    }
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Progress broadcast to popup
 // ---------------------------------------------------------------------------
 
@@ -639,13 +614,9 @@ async function checkDocViolations(docId, docName, wid) {
       );
 
       // 2 & 3. Per Part Studio: parts > 25, features > 250
-      const typeMap = {};
-      for (const e of userElements) typeMap[e.name] = e.elementType || e.type || "unknown";
-      console.log(`[Violations] ${docName}: element types:`, JSON.stringify(typeMap));
       const partStudios = userElements.filter(e =>
         (e.elementType || e.type || "") === "PARTSTUDIO"
       );
-      console.log(`[Violations] ${docName}: ${userElements.length} tabs, ${partStudios.length} Part Studios found`);
       for (const ps of partStudios) {
         try {
           const [partsResp, featResp] = await Promise.all([
@@ -654,7 +625,6 @@ async function checkDocViolations(docId, docName, wid) {
           ]);
           const partCount = Array.isArray(partsResp) ? partsResp.length : 0;
           const featureCount = Array.isArray(featResp?.features) ? featResp.features.length : 0;
-          console.log(`[Violations]   "${ps.name}": ${partCount} parts, ${featureCount} features`);
           if (partCount > PARTS_LIMIT) {
             violations.push(`"${ps.name}" has ${partCount} parts (limit: ${PARTS_LIMIT})`);
           }
@@ -711,8 +681,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
 
   } else if (msg.type === "start-bulk-scan") {
-    const { folderIds, dashboardUrl } = msg;
-    runBulkScan(folderIds, dashboardUrl).then(sendResponse);
+    runBulkScan(msg.folderIds).then(sendResponse);
     return true; // async response
 
   } else if (msg.type === "get-scan-status") {
@@ -723,13 +692,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
 
   } else if (msg.type === "tab-folder-result") {
-    // Auto-scan result from content.js — forward to dashboard
-    chrome.storage.local.get("dashboardUrl", (data) => {
-      const dashboardUrl = data.dashboardUrl || "";
-      if (dashboardUrl) {
-        postResultsToDashboard(dashboardUrl, [msg.data]);
-      }
-    });
+    // Auto-scan result from content.js — store locally
+    // (previously forwarded to dashboard, now extension-only)
 
   } else if (msg.type === "check-versions") {
     const { docId, docName, wid } = msg;
@@ -761,11 +725,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       if (result.error) return sendResponse(result);
-
-      // POST to dashboard
-      chrome.storage.local.get("dashboardUrl", (data) => {
-        if (data.dashboardUrl) postResultsToDashboard(data.dashboardUrl, [result]);
-      });
       sendResponse(result);
     });
     return true;

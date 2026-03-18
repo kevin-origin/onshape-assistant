@@ -47,7 +47,6 @@ const $drawLog         = document.getElementById("drawLog");
 
 // Scanner elements
 const $folderIds    = document.getElementById("folderIds");
-const $dashboardUrl = document.getElementById("dashboardUrl");
 const $btnScan      = document.getElementById("btnScan");
 const $btnRescan    = document.getElementById("btnRescan");
 const $status       = document.getElementById("status");
@@ -59,9 +58,8 @@ const $resultList   = document.getElementById("resultList");
 // Load saved config
 // ---------------------------------------------------------------------------
 
-chrome.storage.local.get(["folderIds", "dashboardUrl", "lastScanSummary", "partStudioUrl"], (data) => {
+chrome.storage.local.get(["folderIds", "lastScanSummary", "partStudioUrl"], (data) => {
   $folderIds.value    = (data.folderIds || []).join("\n");
-  $dashboardUrl.value = data.dashboardUrl || "";
   $partStudioUrl.value = data.partStudioUrl || "";
 
   if (data.lastScanSummary) {
@@ -80,13 +78,11 @@ function saveConfig() {
     .filter(Boolean);
   chrome.storage.local.set({
     folderIds: ids,
-    dashboardUrl: $dashboardUrl.value.trim(),
     partStudioUrl: $partStudioUrl.value.trim(),
   });
 }
 
 $folderIds.addEventListener("change", saveConfig);
-$dashboardUrl.addEventListener("change", saveConfig);
 $partStudioUrl.addEventListener("change", saveConfig);
 
 // ---------------------------------------------------------------------------
@@ -149,12 +145,6 @@ $btnScan.addEventListener("click", () => {
     return;
   }
 
-  const dashboardUrl = $dashboardUrl.value.trim();
-  if (!dashboardUrl) {
-    showStatus("Enter a dashboard URL");
-    return;
-  }
-
   $btnScan.disabled = true;
   $btnRescan.disabled = true;
   showStatus("Starting bulk scan...");
@@ -163,7 +153,6 @@ $btnScan.addEventListener("click", () => {
     {
       type: "start-bulk-scan",
       folderIds: ids,
-      dashboardUrl: dashboardUrl,
     },
     (response) => {
       $btnScan.disabled = false;
