@@ -240,9 +240,9 @@ async function createDrawingsForUrl(url) {
         // Units: mm. A3 landscape = 420 x 297 mm — TODO: Add this to dashboard later
         // Bottom row (y=250): front + left. Top row (y=300): top + iso.
         const targetPositions = [
-          { x: 120, y: 250 },  // front
+          { x: 120, y: 200 },  // front
           { x: 320, y: 300 },  // iso
-          { x: 320, y: 250 },  // left/right
+          { x: 320, y: 200 },  // left/right
           { x: 120, y: 300 },  // top
         ];
         const editViews = viewList.map((v, idx) => ({
