@@ -606,20 +606,20 @@ const TABS_LIMIT = 5;
 
 async function checkDocViolations(docId, docName, wid) {
   const violations = [];
+  let tabNames = [];
 
   try {
-    // Parallel fetch: versions always, elements + parts if wid available
+    // Parallel fetch: versions always, elements if wid available
     const promises = [
       onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(() => null),
     ];
     if (wid) {
       promises.push(
         onshapeFetch(`/api/v10/documents/d/${docId}/w/${wid}/elements`).catch(() => null),
-        onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}`).catch(() => null),
       );
     }
 
-    const [versions, elements, parts] = await Promise.all(promises);
+    const [versions, elements] = await Promise.all(promises);
 
     // 1. Versions without release
     const versionCount = Array.isArray(versions) ? versions.length : 0;
@@ -627,28 +627,28 @@ async function checkDocViolations(docId, docName, wid) {
       violations.push(`${versionCount} versions without release (limit: ${VERSION_RELEASE_THRESHOLD})`);
     }
 
-    // 2. Parts > 25
-    const partCount = Array.isArray(parts) ? parts.length : 0;
-    if (partCount > PARTS_LIMIT) {
-      violations.push(`${partCount} parts (limit: ${PARTS_LIMIT})`);
-    }
-
     if (Array.isArray(elements)) {
-      // 3. Features > 250 in any Part Studio
+      // 2 & 3. Per Part Studio: parts > 25, features > 250
       const partStudios = elements.filter(e => e.elementType === "PARTSTUDIO");
       for (const ps of partStudios) {
         try {
-          const resp = await onshapeFetch(
-            `/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`
-          );
-          const featureCount = Array.isArray(resp.features) ? resp.features.length : 0;
+          const [partsResp, featResp] = await Promise.all([
+            onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${ps.id}`).catch(() => null),
+            onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`).catch(() => null),
+          ]);
+          const partCount = Array.isArray(partsResp) ? partsResp.length : 0;
+          if (partCount > PARTS_LIMIT) {
+            violations.push(`"${ps.name}" has ${partCount} parts (limit: ${PARTS_LIMIT})`);
+          }
+          const featureCount = Array.isArray(featResp?.features) ? featResp.features.length : 0;
           if (featureCount > FEATURES_LIMIT) {
             violations.push(`"${ps.name}" has ${featureCount} features (limit: ${FEATURES_LIMIT})`);
           }
         } catch (_) { /* skip */ }
       }
 
-      // 4. Tabs > 5
+      // 4. Tabs > 5 — store all tab names for display
+      tabNames = elements.map(e => e.name || e.id);
       if (elements.length > TABS_LIMIT) {
         violations.push(`${elements.length} tabs (limit: ${TABS_LIMIT})`);
       }
@@ -669,6 +669,7 @@ async function checkDocViolations(docId, docName, wid) {
         hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
       }),
       items: violations,
+      tabNames,
     };
     chrome.notifications.create(`violations-${docId}`, {
       type: "basic",

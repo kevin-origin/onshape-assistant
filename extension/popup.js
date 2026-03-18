@@ -384,6 +384,15 @@ function loadViolations() {
         line.textContent = item;
         $list.appendChild(line);
       }
+
+      // Show tab names
+      if (v.tabNames && v.tabNames.length > 0) {
+        const tabHeader = document.createElement("div");
+        tabHeader.className = "result-item";
+        tabHeader.style.cssText = "padding-left:20px;font-size:10px;color:#aaa;margin-top:2px;";
+        tabHeader.textContent = `Tabs: ${v.tabNames.join(", ")}`;
+        $list.appendChild(tabHeader);
+      }
     }
   });
 }
