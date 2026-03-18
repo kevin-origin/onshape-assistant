@@ -251,6 +251,34 @@ async function createDrawingsForUrl(url) {
       continue;
     }
 
+    // Enable view labels via onshapeEditViews (showViewLabel ignored in create)
+    try {
+      const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
+      const viewList = viewsResp.items || [];
+      const labelNames = ["Front", "Isometric", "Flat Pattern"];
+      if (viewList.length > 0) {
+        const editViews = viewList.map((v, idx) => ({
+          viewId: v.viewId,
+          showViewLabel: true,
+          label: labelNames[idx] || "",
+          name: labelNames[idx] || "",
+        }));
+        const editBody = {
+          description: "Enable view labels",
+          jsonRequests: [{
+            messageName: "onshapeEditViews",
+            formatVersion: "2021-01-01",
+            views: editViews,
+          }],
+        };
+        const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
+        const editMid = editResp.id || "";
+        if (editMid) await pollModify(docId, wid, drawingEid, editMid);
+      }
+    } catch (e) {
+      broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
+    }
+
     created++;
     broadcastDrawLog(`  done`, "log-ok");
   }
