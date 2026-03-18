@@ -606,7 +606,6 @@ const TABS_LIMIT = 5;
 
 async function checkDocViolations(docId, docName, wid) {
   const violations = [];
-  let tabNames = [];
 
   try {
     // Parallel fetch: versions always, elements if wid available
@@ -619,7 +618,7 @@ async function checkDocViolations(docId, docName, wid) {
       );
     }
 
-    const [versions, elements] = await Promise.all(promises);
+    const [versions, rawElements] = await Promise.all(promises);
 
     // 1. Versions without release
     const versionCount = Array.isArray(versions) ? versions.length : 0;
@@ -627,9 +626,21 @@ async function checkDocViolations(docId, docName, wid) {
       violations.push(`${versionCount} versions without release (limit: ${VERSION_RELEASE_THRESHOLD})`);
     }
 
-    if (Array.isArray(elements)) {
+    // Unwrap elements (API may return array or { items: [...] })
+    let elements = rawElements;
+    if (rawElements && !Array.isArray(rawElements)) {
+      elements = rawElements.items || rawElements.elements || [];
+    }
+
+    if (Array.isArray(elements) && elements.length > 0) {
+      // Filter out BOMs — they're auto-generated, not user-created tabs
+      const userElements = elements.filter(
+        e => e.elementType !== "BILLOFMATERIALS" && !(e.name || "").startsWith("BOM :")
+      );
+
       // 2 & 3. Per Part Studio: parts > 25, features > 250
-      const partStudios = elements.filter(e => e.elementType === "PARTSTUDIO");
+      const partStudios = userElements.filter(e => e.elementType === "PARTSTUDIO");
+      console.log(`[Violations] ${docName}: ${userElements.length} tabs, ${partStudios.length} Part Studios found`);
       for (const ps of partStudios) {
         try {
           const [partsResp, featResp] = await Promise.all([
@@ -637,20 +648,20 @@ async function checkDocViolations(docId, docName, wid) {
             onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`).catch(() => null),
           ]);
           const partCount = Array.isArray(partsResp) ? partsResp.length : 0;
+          const featureCount = Array.isArray(featResp?.features) ? featResp.features.length : 0;
+          console.log(`[Violations]   "${ps.name}": ${partCount} parts, ${featureCount} features`);
           if (partCount > PARTS_LIMIT) {
             violations.push(`"${ps.name}" has ${partCount} parts (limit: ${PARTS_LIMIT})`);
           }
-          const featureCount = Array.isArray(featResp?.features) ? featResp.features.length : 0;
           if (featureCount > FEATURES_LIMIT) {
             violations.push(`"${ps.name}" has ${featureCount} features (limit: ${FEATURES_LIMIT})`);
           }
         } catch (_) { /* skip */ }
       }
 
-      // 4. Tabs > 5 — store all tab names for display
-      tabNames = elements.map(e => e.name || e.id);
-      if (elements.length > TABS_LIMIT) {
-        violations.push(`${elements.length} tabs (limit: ${TABS_LIMIT})`);
+      // 4. Tabs > 5 (excluding BOMs)
+      if (userElements.length > TABS_LIMIT) {
+        violations.push(`${userElements.length} tabs (limit: ${TABS_LIMIT})`);
       }
     }
   } catch (e) {
@@ -669,7 +680,6 @@ async function checkDocViolations(docId, docName, wid) {
         hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
       }),
       items: violations,
-      tabNames,
     };
     chrome.notifications.create(`violations-${docId}`, {
       type: "basic",
