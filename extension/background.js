@@ -708,14 +708,23 @@ async function addSheetViaIframe(tabId) {
     func: async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
 
+      // Wait for the Add Sheet button to appear (drawing editor loads async)
+      let addBtn = null;
+      for (let i = 0; i < 20; i++) {
+        addBtn = document.querySelector(".xenon-dialog-addSheet");
+        if (addBtn) break;
+        await sleep(1000);
+      }
+      if (!addBtn) {
+        // Dump what sheet-related elements exist for debugging
+        const sheetEls = Array.from(document.querySelectorAll("[class*='sheet' i]"))
+          .filter(el => el.offsetHeight > 0)
+          .map(el => ({ cls: el.className.toString().slice(0, 100), text: el.textContent.trim().slice(0, 40) }));
+        return { error: "Add Sheet button not found after 20s", sheetEls };
+      }
+
       // Count sheets before clicking
       const sheetsBefore = document.querySelectorAll(".xenon-onshape-sheet-ele, .xenon-onshape-sheet-activeEle").length;
-
-      // Click the "Add Sheet" button (+ icon in sheet bar)
-      const addBtn = document.querySelector(".xenon-dialog-addSheet");
-      if (!addBtn) {
-        return { error: "Add Sheet button (.xenon-dialog-addSheet) not found" };
-      }
 
       addBtn.click();
       await sleep(3000);
