@@ -312,8 +312,18 @@ async function createDrawingsForUrl(url) {
             }],
           };
           const flatResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
+          console.log("[Drawing] Flat pattern response:", JSON.stringify(flatResp));
           const flatMid = flatResp.id || "";
           if (flatMid) await pollModify(docId, wid, drawingEid, flatMid);
+
+          // Check what views exist now
+          try {
+            const allViews = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
+            const items = allViews.items || [];
+            console.log("[Drawing] Views after flat pattern:", items.length, items.map(v => ({
+              viewId: v.viewId, sheetIndex: v.sheetIndex, label: v.label, viewType: v.viewType,
+            })));
+          } catch (_) {}
           broadcastDrawLog(`  flat pattern added to sheet 2`);
         }
       }
