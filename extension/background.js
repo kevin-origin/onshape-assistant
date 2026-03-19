@@ -694,6 +694,55 @@ async function checkDocViolations(docId, docName, wid) {
 }
 
 // ---------------------------------------------------------------------------
+// TEST: Try different messageName candidates for sheet creation
+// ---------------------------------------------------------------------------
+
+async function testSheetCreation() {
+  const docId = "02355889d1a545fc8c1b4978";
+  const wid = "6dbe6080b6b51389fe698ee5";
+  const eid = "ba247a802f31f2697a8db952";
+
+  const candidates = [
+    { messageName: "onshapeCreateLayout", payload: { sheets: [{ name: "Test Sheet" }] } },
+    { messageName: "onshapeInsertSheet", payload: { sheets: [{ name: "Test Sheet" }] } },
+    { messageName: "onshapeAddSheet", payload: { sheets: [{ name: "Test Sheet" }] } },
+    { messageName: "onshapeCreateSheet", payload: { sheet: { name: "Test Sheet" } } },
+    { messageName: "onshapeCreateSheets", payload: { sheets: [{ name: "Test Sheet" }] } },
+    { messageName: "onshapeInsertLayout", payload: { position: "after", referenceSheetIndex: 0 } },
+    { messageName: "onshapeCreateLayout", payload: { position: "after", referenceSheetIndex: 0 } },
+    { messageName: "onshapeInsertNewSheetAfter", payload: { sheetIndex: 0 } },
+  ];
+
+  console.log(`[SheetTest] Testing ${candidates.length} messageName candidates...`);
+
+  for (const c of candidates) {
+    const body = {
+      description: `Test: ${c.messageName}`,
+      jsonRequests: [{
+        messageName: c.messageName,
+        formatVersion: "2021-01-01",
+        ...c.payload,
+      }],
+    };
+
+    try {
+      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${eid}/modify`, body);
+      const mid = resp.id || "";
+      console.log(`[SheetTest] ${c.messageName} -> OK, modificationId=${mid}`);
+
+      if (mid) {
+        const status = await pollModify(docId, wid, eid, mid, 10);
+        console.log(`[SheetTest] ${c.messageName} -> poll result: ${status}`);
+      }
+    } catch (e) {
+      console.log(`[SheetTest] ${c.messageName} -> ERROR: ${e.message}`);
+    }
+  }
+
+  console.log("[SheetTest] Done. Check the drawing for new sheets.");
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -717,6 +766,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.type === "tab-folder-result") {
     // Auto-scan result from content.js — store locally
     // (previously forwarded to dashboard, now extension-only)
+
+  } else if (msg.type === "test-sheet-creation") {
+    testSheetCreation().then(sendResponse);
+    return true;
 
   } else if (msg.type === "check-versions") {
     const { docId, docName, wid } = msg;
