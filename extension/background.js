@@ -278,10 +278,12 @@ async function createDrawingsForUrl(url) {
       } else {
         const activeTab = tabs[0];
 
+        // Ensure tab is focused (Onshape won't fully init an unfocused editor)
+        await chrome.tabs.update(activeTab.id, { active: true });
+        await chrome.windows.update(activeTab.windowId, { focused: true });
+
         // Navigate the active tab to the drawing
         await navigateTab(activeTab.id, drawingUrl);
-        // Wait for drawing editor iframe to fully render
-        await new Promise(r => setTimeout(r, 5000));
 
         // Inject into drawing iframe and click Add Sheet
         const sheetResult = await addSheetViaIframe(activeTab.id);
