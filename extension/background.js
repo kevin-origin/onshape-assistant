@@ -728,8 +728,12 @@ async function addSheetViaIframe(tabId) {
         return { error: "Add Sheet button not found after 20s", sheetEls };
       }
 
-      // Extra wait after button appears — editor needs time to become interactive
-      await sleep(5000);
+      // Wait until editor is fully interactive (active_sheet_label populated)
+      for (let i = 0; i < 30; i++) {
+        const label = document.querySelector(".active_sheet_label")?.textContent.trim();
+        if (label) break;
+        await sleep(1000);
+      }
 
       // Read active sheet before click
       const before = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
