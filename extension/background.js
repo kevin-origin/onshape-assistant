@@ -230,6 +230,42 @@ async function createDrawingsForUrl(url) {
       continue;
     }
 
+    // Step 1b: Enable view labels on Sheet 1 (showViewLabel ignored in create)
+    try {
+      const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
+      const viewList = viewsResp.items || [];
+      if (viewList.length > 0) {
+        function identifyView(v) {
+          const m = v.viewMatrix || [];
+          if (m.some(val => val !== 0 && val !== 1 && val !== -1)) return "Isometric";
+          if (m[0] === 1 && m[6] === 1) return "Front";
+          if (m[0] === 1 && m[5] === 1) return "Top";
+          if (m[1] === -1 || m[1] === 1) return "Left";
+          return "View";
+        }
+        const editViews = viewList.map((v) => ({
+          viewId: v.viewId,
+          showViewLabel: true,
+          label: identifyView(v),
+          name: identifyView(v),
+        }));
+        const editBody = {
+          description: "Enable view labels",
+          jsonRequests: [{
+            messageName: "onshapeEditViews",
+            formatVersion: "2021-01-01",
+            views: editViews,
+          }],
+        };
+        const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
+        const editMid = editResp.id || "";
+        if (editMid) await pollModify(docId, wid, drawingEid, editMid);
+        broadcastDrawLog(`  labels applied`);
+      }
+    } catch (e) {
+      broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
+    }
+
     // Step 2: Add Sheet 2 via DOM automation, then add flat pattern view
     try {
       const drawingUrl = `${ONSHAPE_BASE}/documents/${docId}/w/${wid}/e/${drawingEid}`;
@@ -634,29 +670,26 @@ async function checkDocViolations(docId, docName, wid) {
     return;
   }
 
-  // Store violations
-  const storageData = await chrome.storage.local.get("violations");
-  const all = storageData.violations || {};
-
+  // Store only current doc's violations (no history)
+  const current = {};
   if (violations.length > 0) {
-    all[docId] = {
+    current[docId] = {
       docName: docName || docId,
       timestamp: new Date().toLocaleTimeString("en-IN", {
         hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
       }),
       items: violations,
     };
-    chrome.notifications.create(`violations-${docId}`, {
+    // Unique notification ID so it fires every time the doc is opened
+    chrome.notifications.create(`violations-${docId}-${Date.now()}`, {
       type: "basic",
       iconUrl: "icons/icon128.png",
-      title: `Violations: ${docName || docId}`,
-      message: violations.join("\n"),
+      title: `${docName || docId}`,
+      message: `${violations.length} violation${violations.length > 1 ? "s" : ""} detected, please take action.`,
     });
-  } else {
-    delete all[docId];
   }
 
-  await chrome.storage.local.set({ violations: all });
+  await chrome.storage.local.set({ violations: current });
   chrome.runtime.sendMessage({ type: "violations-updated" }).catch(() => {});
 }
 
