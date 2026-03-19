@@ -266,49 +266,57 @@ async function createDrawingsForUrl(url) {
       broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
     }
 
-    // Step 2: Add Sheet 2 via DOM automation (inject into drawing iframe)
+    // Step 2: Add Sheet 2 via DOM automation (navigate active tab to drawing)
     try {
       const drawingUrl = `${ONSHAPE_BASE}/documents/${docId}/w/${wid}/e/${drawingEid}`;
-      broadcastDrawLog(`  opening drawing tab for sheet creation...`);
+      broadcastDrawLog(`  navigating to drawing for sheet creation...`);
 
-      // Open drawing in background tab
-      const drawTab = await chrome.tabs.create({ url: drawingUrl, active: false });
-      await waitForTabLoad(drawTab.id);
-      // Extra wait for drawing editor iframe to fully render
-      await new Promise(r => setTimeout(r, 8000));
-
-      // Inject into drawing iframe and create sheet
-      const sheetResult = await addSheetViaIframe(drawTab.id);
-
-      if (sheetResult.error) {
-        broadcastDrawLog(`  sheet 2 DOM failed: ${sheetResult.error}`, "log-err");
+      // Find the active Onshape tab (the one the user triggered from)
+      const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
+      if (tabs.length === 0) {
+        broadcastDrawLog(`  no Onshape tab found for DOM automation`, "log-err");
       } else {
-        broadcastDrawLog(`  sheet 2 created via DOM (sheet2Found: ${sheetResult.sheet2Found})`);
-      }
+        const activeTab = tabs[0];
+        const originalUrl = activeTab.url;
 
-      // Close the background tab
-      try { await chrome.tabs.remove(drawTab.id); } catch (_) {}
+        // Navigate the active tab to the drawing
+        await navigateTab(activeTab.id, drawingUrl);
+        // Wait for drawing editor iframe to fully render
+        await new Promise(r => setTimeout(r, 5000));
 
-      // Add flat pattern view on Sheet 2 via API (sheetIndex: 1)
-      if (!sheetResult.error) {
-        const flatBody = {
-          description: "Add flat pattern view",
-          jsonRequests: [{
-            messageName: "onshapeCreateViews",
-            formatVersion: "2021-01-01",
-            views: [{
-              viewType: "TopLevel",
-              orientation: "flatPattern",
-              scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
-              reference: ref,
-              sheetIndex: 1,
+        // Inject into drawing iframe and click Add Sheet
+        const sheetResult = await addSheetViaIframe(activeTab.id);
+
+        if (sheetResult.error) {
+          broadcastDrawLog(`  sheet 2 DOM failed: ${sheetResult.error}`, "log-err");
+        } else {
+          broadcastDrawLog(`  sheet 2 created (sheets: ${sheetResult.sheetsBefore} -> ${sheetResult.sheetsAfter})`);
+        }
+
+        // Navigate back to the original page
+        await navigateTab(activeTab.id, originalUrl);
+
+        // Add flat pattern view on Sheet 2 via API (sheetIndex: 1)
+        if (!sheetResult.error && sheetResult.ok) {
+          const flatBody = {
+            description: "Add flat pattern view",
+            jsonRequests: [{
+              messageName: "onshapeCreateViews",
+              formatVersion: "2021-01-01",
+              views: [{
+                viewType: "TopLevel",
+                orientation: "flatPattern",
+                scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+                reference: ref,
+                sheetIndex: 1,
+              }],
             }],
-          }],
-        };
-        const flatResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
-        const flatMid = flatResp.id || "";
-        if (flatMid) await pollModify(docId, wid, drawingEid, flatMid);
-        broadcastDrawLog(`  flat pattern added to sheet 2`);
+          };
+          const flatResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
+          const flatMid = flatResp.id || "";
+          if (flatMid) await pollModify(docId, wid, drawingEid, flatMid);
+          broadcastDrawLog(`  flat pattern added to sheet 2`);
+        }
       }
     } catch (e) {
       broadcastDrawLog(`  sheet 2 / flat pattern failed: ${e.message}`, "log-err");
