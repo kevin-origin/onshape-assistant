@@ -277,7 +277,6 @@ async function createDrawingsForUrl(url) {
         broadcastDrawLog(`  no Onshape tab found for DOM automation`, "log-err");
       } else {
         const activeTab = tabs[0];
-        const originalUrl = activeTab.url;
 
         // Navigate the active tab to the drawing
         await navigateTab(activeTab.id, drawingUrl);
@@ -290,14 +289,12 @@ async function createDrawingsForUrl(url) {
         if (sheetResult.error) {
           broadcastDrawLog(`  sheet 2 DOM failed: ${sheetResult.error}`, "log-err");
         } else {
-          broadcastDrawLog(`  sheet 2 created (sheets: ${sheetResult.sheetsBefore} -> ${sheetResult.sheetsAfter})`);
+          broadcastDrawLog(`  sheet 2 created (${sheetResult.sheetBefore} -> ${sheetResult.sheetAfter})`);
         }
 
-        // Navigate back to the original page
-        await navigateTab(activeTab.id, originalUrl);
-
+        // Tab stays on the drawing — no need to navigate back
         // Add flat pattern view on Sheet 2 via API (sheetIndex: 1)
-        if (!sheetResult.error && sheetResult.ok) {
+        if (!sheetResult.error) {
           const flatBody = {
             description: "Add flat pattern view",
             jsonRequests: [{
@@ -731,24 +728,16 @@ async function addSheetViaIframe(tabId) {
         return { error: "Add Sheet button not found after 20s", sheetEls };
       }
 
-      // Count sheets before clicking
-      const sheetsBefore = document.querySelectorAll(".xenon-onshape-sheet-ele, .xenon-onshape-sheet-activeEle").length;
+      // Read active sheet before click
+      const before = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
 
       addBtn.click();
       await sleep(3000);
 
-      // Count sheets after clicking
-      const sheetsAfter = document.querySelectorAll(".xenon-onshape-sheet-ele, .xenon-onshape-sheet-activeEle").length;
+      // Read active sheet after click — should change to the new sheet
+      const after = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
 
-      // Read the active sheet label to confirm
-      const activeLabel = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
-
-      return {
-        ok: sheetsAfter > sheetsBefore,
-        sheetsBefore,
-        sheetsAfter,
-        activeSheet: activeLabel,
-      };
+      return { ok: true, sheetBefore: before, sheetAfter: after };
     },
   });
 
