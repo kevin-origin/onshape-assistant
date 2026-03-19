@@ -756,23 +756,31 @@ async function addSheetViaIframe(tabId) {
       // Extra buffer after canvas renders
       await sleep(3000);
 
-      // Read active sheet before click
       const before = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
 
-      // Simulate realistic click: mousedown -> mouseup -> click
-      const rect = addBtn.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
-      addBtn.dispatchEvent(new MouseEvent("mousedown", evtOpts));
-      await sleep(50);
-      addBtn.dispatchEvent(new MouseEvent("mouseup", evtOpts));
-      await sleep(50);
-      addBtn.dispatchEvent(new MouseEvent("click", evtOpts));
-      await sleep(4000);
+      // Retry click up to 5 times — editor may not be interactive on first attempt
+      let after = before;
+      for (let attempt = 0; attempt < 5; attempt++) {
+        // Re-query button each attempt (DOM may rebuild)
+        const btn = document.querySelector(".xenon-dialog-addSheet");
+        if (!btn) break;
 
-      // Read active sheet after click
-      const after = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
+        const rect = btn.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+        btn.dispatchEvent(new MouseEvent("mousedown", evtOpts));
+        await sleep(50);
+        btn.dispatchEvent(new MouseEvent("mouseup", evtOpts));
+        await sleep(50);
+        btn.dispatchEvent(new MouseEvent("click", evtOpts));
+        await sleep(4000);
+
+        after = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
+        if (after !== before) break;
+        // Wait longer before next retry
+        await sleep(3000);
+      }
 
       return { ok: before !== after, sheetBefore: before, sheetAfter: after };
     },
