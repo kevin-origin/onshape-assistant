@@ -693,16 +693,21 @@ async function checkDocViolations(docId, docName, wid) {
 // ---------------------------------------------------------------------------
 
 async function addSheetViaIframe(tabId) {
-  // Find the drawing editor iframe (production-drawing-*.onshape.com)
-  const frames = await chrome.webNavigation.getAllFrames({ tabId });
-  const drawingFrame = frames.find(f =>
-    f.url.includes("onshape.com/editor") || f.url.includes("onshape.com/drawing")
-  );
+  // Poll for the drawing editor iframe (it loads after the parent page)
+  let drawingFrame = null;
+  for (let i = 0; i < 30; i++) {
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    drawingFrame = frames.find(f =>
+      f.url.includes("onshape.com/editor") || f.url.includes("onshape.com/drawing")
+    );
+    if (drawingFrame) break;
+    await new Promise(r => setTimeout(r, 1000));
+  }
 
   if (!drawingFrame) {
-    // Log all frame URLs for debugging
-    console.log("[AddSheet] No drawing iframe found. Frames:", frames.map(f => f.url.slice(0, 120)));
-    return { error: "Drawing editor iframe not found. Check service worker console for frame URLs." };
+    const frames = await chrome.webNavigation.getAllFrames({ tabId });
+    console.log("[AddSheet] No drawing iframe found after 30s. Frames:", frames.map(f => f.url.slice(0, 120)));
+    return { error: "Drawing editor iframe not found after 30s." };
   }
 
   console.log("[AddSheet] Found drawing iframe:", drawingFrame.url.slice(0, 120), "frameId:", drawingFrame.frameId);
