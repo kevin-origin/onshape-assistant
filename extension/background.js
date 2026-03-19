@@ -728,12 +728,16 @@ async function addSheetViaIframe(tabId) {
         return { error: "Add Sheet button not found after 20s", sheetEls };
       }
 
-      // Wait until editor is fully interactive (active_sheet_label populated)
+      // Wait for editor to become fully interactive
+      // The button appears in DOM before the editor is ready to handle clicks.
+      // Wait for the drawing canvas to render (indicates editor is interactive).
       for (let i = 0; i < 30; i++) {
-        const label = document.querySelector(".active_sheet_label")?.textContent.trim();
-        if (label) break;
+        const canvas = document.querySelector("canvas");
+        if (canvas && canvas.offsetHeight > 100) break;
         await sleep(1000);
       }
+      // Extra buffer after canvas renders
+      await sleep(3000);
 
       // Read active sheet before click
       const before = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
