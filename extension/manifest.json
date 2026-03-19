@@ -3,9 +3,10 @@
   "name": "Onshape Tools",
   "version": "1.1",
   "description": "Onshape tab folder scanner + drawing creator",
-  "permissions": ["activeTab", "storage", "tabs", "scripting", "cookies", "notifications"],
+  "permissions": ["activeTab", "storage", "tabs", "scripting", "cookies", "notifications", "webNavigation"],
   "host_permissions": [
     "https://cad.onshape.com/*",
+    "https://*.onshape.com/*",
     "http://localhost/*",
     "https://*.onrender.com/*"
   ],

@@ -266,40 +266,30 @@ async function createDrawingsForUrl(url) {
       broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
     }
 
-    // Step 2: Add Sheet 2 via DOM automation, then add flat pattern view
+    // Step 2: Add Sheet 2 via DOM automation (inject into drawing iframe)
     try {
       const drawingUrl = `${ONSHAPE_BASE}/documents/${docId}/w/${wid}/e/${drawingEid}`;
-      broadcastDrawLog(`  opening drawing tab for DOM sheet creation...`);
+      broadcastDrawLog(`  opening drawing tab for sheet creation...`);
 
       // Open drawing in background tab
       const drawTab = await chrome.tabs.create({ url: drawingUrl, active: false });
       await waitForTabLoad(drawTab.id);
-      // Extra wait for Onshape drawing editor to fully render
-      await new Promise(r => setTimeout(r, 5000));
+      // Extra wait for drawing editor iframe to fully render
+      await new Promise(r => setTimeout(r, 8000));
 
-      // Ask content script to click "Add Sheet" in the DOM
-      const sheetResult = await new Promise((resolve) => {
-        const timeout = setTimeout(() => resolve({ error: "Sheet DOM automation timed out" }), 30000);
-        chrome.tabs.sendMessage(drawTab.id, { type: "add-drawing-sheet" }, (resp) => {
-          clearTimeout(timeout);
-          if (chrome.runtime.lastError) {
-            resolve({ error: chrome.runtime.lastError.message });
-          } else {
-            resolve(resp || { error: "No response from content script" });
-          }
-        });
-      });
+      // Inject into drawing iframe and create sheet
+      const sheetResult = await addSheetViaIframe(drawTab.id);
 
       if (sheetResult.error) {
         broadcastDrawLog(`  sheet 2 DOM failed: ${sheetResult.error}`, "log-err");
       } else {
-        broadcastDrawLog(`  sheet 2 created via DOM`);
+        broadcastDrawLog(`  sheet 2 created via DOM (sheet2Found: ${sheetResult.sheet2Found})`);
       }
 
       // Close the background tab
       try { await chrome.tabs.remove(drawTab.id); } catch (_) {}
 
-      // Now add flat pattern view on Sheet 2 via API (sheetIndex: 1)
+      // Add flat pattern view on Sheet 2 via API (sheetIndex: 1)
       if (!sheetResult.error) {
         const flatBody = {
           description: "Add flat pattern view",
@@ -694,52 +684,179 @@ async function checkDocViolations(docId, docName, wid) {
 }
 
 // ---------------------------------------------------------------------------
-// TEST: Try different messageName candidates for sheet creation
+// DOM automation: add drawing sheet via iframe injection
 // ---------------------------------------------------------------------------
 
-async function testSheetCreation() {
-  const docId = "02355889d1a545fc8c1b4978";
-  const wid = "6dbe6080b6b51389fe698ee5";
-  const eid = "ba247a802f31f2697a8db952";
+async function addSheetViaIframe(tabId) {
+  // Find the drawing editor iframe (production-drawing-*.onshape.com)
+  const frames = await chrome.webNavigation.getAllFrames({ tabId });
+  const drawingFrame = frames.find(f =>
+    f.url.includes("onshape.com/editor") || f.url.includes("onshape.com/drawing")
+  );
 
-  const candidates = [
-    { messageName: "onshapeCreateLayout", payload: { sheets: [{ name: "Test Sheet" }] } },
-    { messageName: "onshapeInsertSheet", payload: { sheets: [{ name: "Test Sheet" }] } },
-    { messageName: "onshapeAddSheet", payload: { sheets: [{ name: "Test Sheet" }] } },
-    { messageName: "onshapeCreateSheet", payload: { sheet: { name: "Test Sheet" } } },
-    { messageName: "onshapeCreateSheets", payload: { sheets: [{ name: "Test Sheet" }] } },
-    { messageName: "onshapeInsertLayout", payload: { position: "after", referenceSheetIndex: 0 } },
-    { messageName: "onshapeCreateLayout", payload: { position: "after", referenceSheetIndex: 0 } },
-    { messageName: "onshapeInsertNewSheetAfter", payload: { sheetIndex: 0 } },
-  ];
-
-  console.log(`[SheetTest] Testing ${candidates.length} messageName candidates...`);
-
-  for (const c of candidates) {
-    const body = {
-      description: `Test: ${c.messageName}`,
-      jsonRequests: [{
-        messageName: c.messageName,
-        formatVersion: "2021-01-01",
-        ...c.payload,
-      }],
-    };
-
-    try {
-      const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${eid}/modify`, body);
-      const mid = resp.id || "";
-      console.log(`[SheetTest] ${c.messageName} -> OK, modificationId=${mid}`);
-
-      if (mid) {
-        const status = await pollModify(docId, wid, eid, mid, 10);
-        console.log(`[SheetTest] ${c.messageName} -> poll result: ${status}`);
-      }
-    } catch (e) {
-      console.log(`[SheetTest] ${c.messageName} -> ERROR: ${e.message}`);
-    }
+  if (!drawingFrame) {
+    // Log all frame URLs for debugging
+    console.log("[AddSheet] No drawing iframe found. Frames:", frames.map(f => f.url.slice(0, 120)));
+    return { error: "Drawing editor iframe not found. Check service worker console for frame URLs." };
   }
 
-  console.log("[SheetTest] Done. Check the drawing for new sheets.");
+  console.log("[AddSheet] Found drawing iframe:", drawingFrame.url.slice(0, 120), "frameId:", drawingFrame.frameId);
+
+  // Inject DOM exploration + sheet creation script into the iframe
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [drawingFrame.frameId] },
+    func: async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+      const log = [];
+
+      // Step 1: Explore the DOM for sheet-related elements
+      log.push("=== DOM Exploration ===");
+
+      // Elements with 'sheet' in class
+      const sheetEls = Array.from(document.querySelectorAll("[class*='sheet' i]"))
+        .filter(el => el.offsetHeight > 0)
+        .map(el => ({ tag: el.tagName, cls: el.className.toString().slice(0, 100), text: el.textContent.trim().slice(0, 60) }));
+      log.push("sheet-class elements: " + JSON.stringify(sheetEls));
+
+      // Leaf elements containing "Sheet 1" text
+      const sheetTextEls = Array.from(document.querySelectorAll("*"))
+        .filter(el => el.children.length === 0 && el.offsetHeight > 0 && /^Sheet\s*\d+$/i.test(el.textContent.trim()))
+        .map(el => ({
+          tag: el.tagName, cls: el.className.toString().slice(0, 100), text: el.textContent.trim(),
+          parentTag: el.parentElement?.tagName, parentCls: el.parentElement?.className.toString().slice(0, 100),
+        }));
+      log.push("sheet-text elements: " + JSON.stringify(sheetTextEls));
+
+      // Add/insert/plus buttons
+      const addBtns = Array.from(document.querySelectorAll(
+        "[aria-label*='add' i], [aria-label*='insert' i], [aria-label*='sheet' i], [data-tooltip*='add' i], [data-tooltip*='insert' i], [data-tooltip*='sheet' i], [title*='add' i], [title*='insert' i], [title*='sheet' i]"
+      )).map(el => ({
+        tag: el.tagName, cls: el.className.toString().slice(0, 100), text: el.textContent.trim().slice(0, 40),
+        ariaLabel: el.getAttribute("aria-label"), tooltip: el.getAttribute("data-tooltip"), title: el.getAttribute("title"),
+      }));
+      log.push("add/insert buttons: " + JSON.stringify(addBtns));
+
+      // Bottom 100px elements (sheet tab bar area)
+      const bottomEls = Array.from(document.querySelectorAll("*"))
+        .filter(el => {
+          const r = el.getBoundingClientRect();
+          return r.bottom > window.innerHeight - 100 && r.height > 3 && r.height < 60 && el.children.length < 5 && el.offsetWidth > 10;
+        })
+        .slice(0, 30)
+        .map(el => ({
+          tag: el.tagName, cls: el.className.toString().slice(0, 100), text: el.textContent.trim().slice(0, 50),
+          w: Math.round(el.offsetWidth), h: Math.round(el.offsetHeight),
+        }));
+      log.push("bottom-bar elements: " + JSON.stringify(bottomEls));
+
+      // Step 2: Try to find and right-click Sheet 1 tab
+      let sheetTab = null;
+
+      // Try class-based selectors first
+      const candidates = document.querySelectorAll("[class*='sheet' i]");
+      for (const el of candidates) {
+        if (el.offsetHeight > 0 && /Sheet\s*1/i.test(el.textContent.trim()) && el.textContent.trim().length < 20) {
+          sheetTab = el;
+          break;
+        }
+      }
+
+      // Fallback: text search
+      if (!sheetTab) {
+        const allEls = document.querySelectorAll("span, div, li, button, a, td, th, p");
+        for (const el of allEls) {
+          if (el.textContent.trim() === "Sheet 1" && el.offsetHeight > 0 && el.children.length === 0) {
+            sheetTab = el;
+            break;
+          }
+        }
+      }
+
+      if (!sheetTab) {
+        log.push("FAILED: Could not find Sheet 1 tab element");
+        return { error: "Sheet 1 tab not found in drawing iframe DOM", log };
+      }
+
+      log.push("Found Sheet 1: tag=" + sheetTab.tagName + " cls=" + sheetTab.className.toString().slice(0, 100));
+
+      // Right-click it
+      const rect = sheetTab.getBoundingClientRect();
+      sheetTab.dispatchEvent(new MouseEvent("contextmenu", {
+        bubbles: true, cancelable: true, button: 2,
+        clientX: rect.left + rect.width / 2,
+        clientY: rect.top + rect.height / 2,
+      }));
+      await sleep(1500);
+
+      // Look for context menu
+      const menus = document.querySelectorAll("[class*='context-menu' i], [class*='contextmenu' i], [class*='popup' i], [class*='dropdown' i], [class*='menu' i], [role='menu'], [role='menuitem']");
+      const menuInfo = Array.from(menus).map(el => ({
+        tag: el.tagName, cls: el.className.toString().slice(0, 100),
+        items: Array.from(el.querySelectorAll("*")).filter(c => c.children.length === 0 && c.textContent.trim()).map(c => c.textContent.trim()).slice(0, 20),
+      }));
+      log.push("menus after right-click: " + JSON.stringify(menuInfo));
+
+      // Find "Insert" menu item
+      let insertItem = null;
+      const allMenuItems = document.querySelectorAll("[role='menuitem'], [class*='menu-item' i], [class*='menuitem' i], [class*='menu'] > *, [class*='popup'] > *");
+      for (const item of allMenuItems) {
+        const t = item.textContent.trim().toLowerCase();
+        if (t.includes("insert") && t.includes("sheet")) { insertItem = item; break; }
+      }
+      if (!insertItem) {
+        for (const item of allMenuItems) {
+          const t = item.textContent.trim().toLowerCase();
+          if ((t.includes("add") || t.includes("new")) && t.includes("sheet")) { insertItem = item; break; }
+        }
+      }
+      // Broader fallback: any clickable element with "insert" text that appeared after right-click
+      if (!insertItem) {
+        const allVisible = document.querySelectorAll("div, span, li, button, a");
+        for (const el of allVisible) {
+          const t = el.textContent.trim().toLowerCase();
+          if (el.offsetHeight > 0 && t.includes("insert") && t.includes("sheet") && t.length < 40) {
+            insertItem = el;
+            break;
+          }
+        }
+      }
+
+      if (!insertItem) {
+        // Dismiss context menu
+        document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+        await sleep(300);
+        log.push("FAILED: No 'Insert sheet' menu item found");
+        return { error: "Context menu appeared but no 'Insert sheet' item found", log };
+      }
+
+      log.push("Clicking: " + insertItem.textContent.trim());
+      insertItem.click();
+      await sleep(3000);
+
+      // Verify Sheet 2 appeared
+      let sheet2 = false;
+      const allAfter = document.querySelectorAll("*");
+      for (const el of allAfter) {
+        if (el.children.length === 0 && el.offsetHeight > 0 && el.textContent.trim() === "Sheet 2") {
+          sheet2 = true;
+          break;
+        }
+      }
+      log.push("Sheet 2 found: " + sheet2);
+
+      return { ok: true, sheet2Found: sheet2, log };
+    },
+  });
+
+  const result = results?.[0]?.result || { error: "No result from injected script" };
+  console.log("[AddSheet] Result:", JSON.stringify(result));
+  // Log the exploration details
+  if (result.log) {
+    for (const line of result.log) {
+      console.log("[AddSheet]", line);
+    }
+  }
+  return result;
 }
 
 // ---------------------------------------------------------------------------
@@ -767,8 +884,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Auto-scan result from content.js — store locally
     // (previously forwarded to dashboard, now extension-only)
 
-  } else if (msg.type === "test-sheet-creation") {
-    testSheetCreation().then(sendResponse);
+  } else if (msg.type === "test-add-sheet") {
+    // Manual test: run on the active tab's drawing
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs.length === 0) return sendResponse({ error: "No active tab" });
+      const result = await addSheetViaIframe(tabs[0].id);
+      sendResponse(result);
+    });
     return true;
 
   } else if (msg.type === "check-versions") {
