@@ -728,16 +728,28 @@ async function addSheetViaIframe(tabId) {
         return { error: "Add Sheet button not found after 20s", sheetEls };
       }
 
+      // Extra wait after button appears — editor needs time to become interactive
+      await sleep(5000);
+
       // Read active sheet before click
       const before = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
 
-      addBtn.click();
-      await sleep(3000);
+      // Simulate realistic click: mousedown -> mouseup -> click
+      const rect = addBtn.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+      addBtn.dispatchEvent(new MouseEvent("mousedown", evtOpts));
+      await sleep(50);
+      addBtn.dispatchEvent(new MouseEvent("mouseup", evtOpts));
+      await sleep(50);
+      addBtn.dispatchEvent(new MouseEvent("click", evtOpts));
+      await sleep(4000);
 
-      // Read active sheet after click — should change to the new sheet
+      // Read active sheet after click
       const after = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
 
-      return { ok: true, sheetBefore: before, sheetAfter: after };
+      return { ok: before !== after, sheetBefore: before, sheetAfter: after };
     },
   });
 
