@@ -702,160 +702,41 @@ async function addSheetViaIframe(tabId) {
 
   console.log("[AddSheet] Found drawing iframe:", drawingFrame.url.slice(0, 120), "frameId:", drawingFrame.frameId);
 
-  // Inject DOM exploration + sheet creation script into the iframe
+  // Inject script into the drawing iframe to click "Add Sheet"
   const results = await chrome.scripting.executeScript({
     target: { tabId, frameIds: [drawingFrame.frameId] },
     func: async () => {
       const sleep = ms => new Promise(r => setTimeout(r, ms));
-      const log = [];
 
-      // Step 1: Explore the DOM for sheet-related elements
-      log.push("=== DOM Exploration ===");
+      // Count sheets before clicking
+      const sheetsBefore = document.querySelectorAll(".xenon-onshape-sheet-ele, .xenon-onshape-sheet-activeEle").length;
 
-      // Elements with 'sheet' in class
-      const sheetEls = Array.from(document.querySelectorAll("[class*='sheet' i]"))
-        .filter(el => el.offsetHeight > 0)
-        .map(el => ({ tag: el.tagName, cls: el.className.toString().slice(0, 100), text: el.textContent.trim().slice(0, 60) }));
-      log.push("sheet-class elements: " + JSON.stringify(sheetEls));
-
-      // Leaf elements containing "Sheet 1" text
-      const sheetTextEls = Array.from(document.querySelectorAll("*"))
-        .filter(el => el.children.length === 0 && el.offsetHeight > 0 && /^Sheet\s*\d+$/i.test(el.textContent.trim()))
-        .map(el => ({
-          tag: el.tagName, cls: el.className.toString().slice(0, 100), text: el.textContent.trim(),
-          parentTag: el.parentElement?.tagName, parentCls: el.parentElement?.className.toString().slice(0, 100),
-        }));
-      log.push("sheet-text elements: " + JSON.stringify(sheetTextEls));
-
-      // Add/insert/plus buttons
-      const addBtns = Array.from(document.querySelectorAll(
-        "[aria-label*='add' i], [aria-label*='insert' i], [aria-label*='sheet' i], [data-tooltip*='add' i], [data-tooltip*='insert' i], [data-tooltip*='sheet' i], [title*='add' i], [title*='insert' i], [title*='sheet' i]"
-      )).map(el => ({
-        tag: el.tagName, cls: el.className.toString().slice(0, 100), text: el.textContent.trim().slice(0, 40),
-        ariaLabel: el.getAttribute("aria-label"), tooltip: el.getAttribute("data-tooltip"), title: el.getAttribute("title"),
-      }));
-      log.push("add/insert buttons: " + JSON.stringify(addBtns));
-
-      // Bottom 100px elements (sheet tab bar area)
-      const bottomEls = Array.from(document.querySelectorAll("*"))
-        .filter(el => {
-          const r = el.getBoundingClientRect();
-          return r.bottom > window.innerHeight - 100 && r.height > 3 && r.height < 60 && el.children.length < 5 && el.offsetWidth > 10;
-        })
-        .slice(0, 30)
-        .map(el => ({
-          tag: el.tagName, cls: el.className.toString().slice(0, 100), text: el.textContent.trim().slice(0, 50),
-          w: Math.round(el.offsetWidth), h: Math.round(el.offsetHeight),
-        }));
-      log.push("bottom-bar elements: " + JSON.stringify(bottomEls));
-
-      // Step 2: Try to find and right-click Sheet 1 tab
-      let sheetTab = null;
-
-      // Try class-based selectors first
-      const candidates = document.querySelectorAll("[class*='sheet' i]");
-      for (const el of candidates) {
-        if (el.offsetHeight > 0 && /Sheet\s*1/i.test(el.textContent.trim()) && el.textContent.trim().length < 20) {
-          sheetTab = el;
-          break;
-        }
+      // Click the "Add Sheet" button (+ icon in sheet bar)
+      const addBtn = document.querySelector(".xenon-dialog-addSheet");
+      if (!addBtn) {
+        return { error: "Add Sheet button (.xenon-dialog-addSheet) not found" };
       }
 
-      // Fallback: text search
-      if (!sheetTab) {
-        const allEls = document.querySelectorAll("span, div, li, button, a, td, th, p");
-        for (const el of allEls) {
-          if (el.textContent.trim() === "Sheet 1" && el.offsetHeight > 0 && el.children.length === 0) {
-            sheetTab = el;
-            break;
-          }
-        }
-      }
-
-      if (!sheetTab) {
-        log.push("FAILED: Could not find Sheet 1 tab element");
-        return { error: "Sheet 1 tab not found in drawing iframe DOM", log };
-      }
-
-      log.push("Found Sheet 1: tag=" + sheetTab.tagName + " cls=" + sheetTab.className.toString().slice(0, 100));
-
-      // Right-click it
-      const rect = sheetTab.getBoundingClientRect();
-      sheetTab.dispatchEvent(new MouseEvent("contextmenu", {
-        bubbles: true, cancelable: true, button: 2,
-        clientX: rect.left + rect.width / 2,
-        clientY: rect.top + rect.height / 2,
-      }));
-      await sleep(1500);
-
-      // Look for context menu
-      const menus = document.querySelectorAll("[class*='context-menu' i], [class*='contextmenu' i], [class*='popup' i], [class*='dropdown' i], [class*='menu' i], [role='menu'], [role='menuitem']");
-      const menuInfo = Array.from(menus).map(el => ({
-        tag: el.tagName, cls: el.className.toString().slice(0, 100),
-        items: Array.from(el.querySelectorAll("*")).filter(c => c.children.length === 0 && c.textContent.trim()).map(c => c.textContent.trim()).slice(0, 20),
-      }));
-      log.push("menus after right-click: " + JSON.stringify(menuInfo));
-
-      // Find "Insert" menu item
-      let insertItem = null;
-      const allMenuItems = document.querySelectorAll("[role='menuitem'], [class*='menu-item' i], [class*='menuitem' i], [class*='menu'] > *, [class*='popup'] > *");
-      for (const item of allMenuItems) {
-        const t = item.textContent.trim().toLowerCase();
-        if (t.includes("insert") && t.includes("sheet")) { insertItem = item; break; }
-      }
-      if (!insertItem) {
-        for (const item of allMenuItems) {
-          const t = item.textContent.trim().toLowerCase();
-          if ((t.includes("add") || t.includes("new")) && t.includes("sheet")) { insertItem = item; break; }
-        }
-      }
-      // Broader fallback: any clickable element with "insert" text that appeared after right-click
-      if (!insertItem) {
-        const allVisible = document.querySelectorAll("div, span, li, button, a");
-        for (const el of allVisible) {
-          const t = el.textContent.trim().toLowerCase();
-          if (el.offsetHeight > 0 && t.includes("insert") && t.includes("sheet") && t.length < 40) {
-            insertItem = el;
-            break;
-          }
-        }
-      }
-
-      if (!insertItem) {
-        // Dismiss context menu
-        document.body.dispatchEvent(new MouseEvent("click", { bubbles: true }));
-        await sleep(300);
-        log.push("FAILED: No 'Insert sheet' menu item found");
-        return { error: "Context menu appeared but no 'Insert sheet' item found", log };
-      }
-
-      log.push("Clicking: " + insertItem.textContent.trim());
-      insertItem.click();
+      addBtn.click();
       await sleep(3000);
 
-      // Verify Sheet 2 appeared
-      let sheet2 = false;
-      const allAfter = document.querySelectorAll("*");
-      for (const el of allAfter) {
-        if (el.children.length === 0 && el.offsetHeight > 0 && el.textContent.trim() === "Sheet 2") {
-          sheet2 = true;
-          break;
-        }
-      }
-      log.push("Sheet 2 found: " + sheet2);
+      // Count sheets after clicking
+      const sheetsAfter = document.querySelectorAll(".xenon-onshape-sheet-ele, .xenon-onshape-sheet-activeEle").length;
 
-      return { ok: true, sheet2Found: sheet2, log };
+      // Read the active sheet label to confirm
+      const activeLabel = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
+
+      return {
+        ok: sheetsAfter > sheetsBefore,
+        sheetsBefore,
+        sheetsAfter,
+        activeSheet: activeLabel,
+      };
     },
   });
 
   const result = results?.[0]?.result || { error: "No result from injected script" };
   console.log("[AddSheet] Result:", JSON.stringify(result));
-  // Log the exploration details
-  if (result.log) {
-    for (const line of result.log) {
-      console.log("[AddSheet]", line);
-    }
-  }
   return result;
 }
 
