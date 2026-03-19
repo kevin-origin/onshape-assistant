@@ -685,7 +685,7 @@ async function checkDocViolations(docId, docName, wid) {
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: `${docName || docId}`,
-      message: violations.join("\n"),
+      message: `${violations.length} violation${violations.length > 1 ? "s" : ""} detected, please take action.`,
     });
   }
 
