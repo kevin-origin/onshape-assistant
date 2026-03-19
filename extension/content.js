@@ -169,17 +169,68 @@
   // DOM automation: add a new drawing sheet
   // ---------------------------------------------------------------------------
 
+  async function exploreDrawingDom() {
+    const results = {};
+
+    // 1. Elements with 'sheet' in class name
+    results.sheetClassEls = Array.from(document.querySelectorAll("[class*='sheet' i]")).map(el => ({
+      tag: el.tagName,
+      class: el.className.toString().slice(0, 120),
+      text: el.textContent.trim().slice(0, 60),
+      visible: el.offsetHeight > 0,
+    }));
+
+    // 2. Elements with 'Sheet' in text content (exact word)
+    results.sheetTextEls = Array.from(document.querySelectorAll("*")).filter(el =>
+      el.textContent.trim().match(/^Sheet\s*\d+$/i) && el.children.length === 0 && el.offsetHeight > 0
+    ).map(el => ({
+      tag: el.tagName,
+      class: el.className.toString().slice(0, 120),
+      text: el.textContent.trim(),
+      parent: el.parentElement ? { tag: el.parentElement.tagName, class: el.parentElement.className.toString().slice(0, 120) } : null,
+    }));
+
+    // 3. Bottom 120px of viewport — likely sheet tab bar area
+    results.bottomBar = Array.from(document.querySelectorAll("*")).filter(el => {
+      const r = el.getBoundingClientRect();
+      return r.bottom > window.innerHeight - 120 && r.height > 3 && r.height < 80 && el.children.length < 5;
+    }).slice(0, 40).map(el => ({
+      tag: el.tagName,
+      class: el.className.toString().slice(0, 120),
+      text: el.textContent.trim().slice(0, 60),
+      h: Math.round(el.getBoundingClientRect().height),
+    }));
+
+    // 4. Any add/insert/plus buttons or icons
+    results.addButtons = Array.from(document.querySelectorAll(
+      "[aria-label*='add' i], [aria-label*='insert' i], [aria-label*='new' i], [data-tooltip*='add' i], [data-tooltip*='insert' i], [data-tooltip*='sheet' i], [title*='add' i], [title*='insert' i], [title*='sheet' i]"
+    )).map(el => ({
+      tag: el.tagName,
+      class: el.className.toString().slice(0, 120),
+      text: el.textContent.trim().slice(0, 60),
+      ariaLabel: el.getAttribute("aria-label"),
+      tooltip: el.getAttribute("data-tooltip"),
+      title: el.getAttribute("title"),
+    }));
+
+    // 5. Right-click context menu (if any already visible)
+    results.contextMenus = Array.from(document.querySelectorAll(
+      "[class*='context-menu' i], [class*='contextmenu' i], [class*='popup-menu' i], [class*='dropdown-menu' i], [role='menu']"
+    )).map(el => ({
+      tag: el.tagName,
+      class: el.className.toString().slice(0, 120),
+      childCount: el.children.length,
+      items: Array.from(el.children).slice(0, 10).map(c => c.textContent.trim().slice(0, 60)),
+    }));
+
+    console.log("[DrawSheet DOM Explorer]", JSON.stringify(results, null, 2));
+    return results;
+  }
+
   async function addDrawingSheet() {
-    // Log the drawing sheet area DOM for debugging selectors
-    const sheetBar = document.querySelector(".os-drawing-sheet-tabs, .os-sheet-bar, .os-sheets-bar");
-    console.log("[DrawSheet] Sheet bar element:", sheetBar);
-    console.log("[DrawSheet] All elements with 'sheet' in class:",
-      Array.from(document.querySelectorAll("[class*='sheet']")).map(el => ({
-        tag: el.tagName,
-        class: el.className,
-        text: el.textContent.trim().slice(0, 80),
-      }))
-    );
+    // First, log DOM structure for debugging
+    const domInfo = await exploreDrawingDom();
+    console.log("[DrawSheet] DOM exploration complete, attempting sheet creation...");
 
     // Strategy 1: Look for a "+" button or "Add sheet" button near the sheet tabs
     const addBtn = document.querySelector(
@@ -319,7 +370,13 @@
       addDrawingSheet()
         .then(result => sendResponse(result))
         .catch(err => sendResponse({ error: err.message }));
-      return true; // keep channel open for async response
+      return true;
+
+    } else if (msg.type === "explore-drawing-dom") {
+      exploreDrawingDom()
+        .then(result => sendResponse(result))
+        .catch(err => sendResponse({ error: err.message }));
+      return true;
     }
   });
 
