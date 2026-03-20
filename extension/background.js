@@ -792,6 +792,26 @@ async function addSheetViaIframe(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: check if /sheets endpoint exists and what it returns
+async function testSheets() {
+  const did = "02355889d1a545fc8c1b4978";
+  const wid = "6dbe6080b6b51389fe698ee5";
+  const eid = "3317e354e885877d7fab0315";
+  const endpoints = [
+    `/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/sheets`,
+    `/api/v6/drawings/d/${did}/w/${wid}/e/${eid}`,
+    `/api/v10/drawings/d/${did}/w/${wid}/e/${eid}/sheets`,
+  ];
+  for (const ep of endpoints) {
+    try {
+      const r = await onshapeFetch(ep);
+      console.log(ep, "->", JSON.stringify(r).slice(0, 500));
+    } catch (e) {
+      console.log(ep, "-> ERR:", e.message);
+    }
+  }
+}
+
 // Test: add a simple front view to Sheet 2 — does sheetIndex work?
 async function testViewOnSheet2() {
   const did = "02355889d1a545fc8c1b4978";
