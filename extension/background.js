@@ -792,6 +792,35 @@ async function addSheetViaIframe(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Test: add a simple front view to Sheet 2 — does sheetIndex work?
+async function testViewOnSheet2() {
+  const did = "02355889d1a545fc8c1b4978";
+  const wid = "6dbe6080b6b51389fe698ee5";
+  const eid = "3317e354e885877d7fab0315";
+  const psEid = "4525923a27b4c34acc628a93";
+  const body = {
+    description: "Test front view on sheet 2",
+    jsonRequests: [{
+      messageName: "onshapeCreateViews",
+      formatVersion: "2021-01-01",
+      views: [{
+        viewType: "TopLevel",
+        orientation: "front",
+        scale: { scaleSource: "Custom", numerator: 1, denominator: 3 },
+        reference: { documentId: did, workspaceId: wid, elementId: psEid, partId: "RZCD" },
+        sheetIndex: 1,
+      }],
+    }],
+  };
+  try {
+    const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+    console.log("Response:", JSON.stringify(r));
+    if (r.id) await pollModify(did, wid, eid, r.id);
+  } catch (e) {
+    console.log("ERR:", e.message);
+  }
+}
+
 // Temporary test helper — call testFlatPattern() in service worker console
 async function testFlatPattern() {
   const did = "02355889d1a545fc8c1b4978";
