@@ -792,6 +792,41 @@ async function addSheetViaIframe(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Temporary test helper — call testFlatPattern() in service worker console
+async function testFlatPattern() {
+  const did = "02355889d1a545fc8c1b4978";
+  const wid = "6dbe6080b6b51389fe698ee5";
+  const eid = "3317e354e885877d7fab0315";
+  const psEid = "4525923a27b4c34acc628a93";
+  const partId = "RZCD";
+  const body = {
+    description: "Add flat pattern",
+    jsonRequests: [{
+      messageName: "onshapeCreateViews",
+      formatVersion: "2021-01-01",
+      views: [{
+        viewType: "TopLevel",
+        orientation: "flatPattern",
+        scale: { scaleSource: "Custom", numerator: 1, denominator: 3 },
+        reference: { documentId: did, workspaceId: wid, elementId: psEid, partId: partId },
+        sheetIndex: 1,
+      }],
+    }],
+  };
+  try {
+    const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+    console.log("Response:", JSON.stringify(r));
+    if (r.id) {
+      const ok = await pollModify(did, wid, eid, r.id);
+      console.log("Poll result:", ok);
+    }
+    const views = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views`);
+    console.log("Views:", JSON.stringify((views.items||[]).map(v => ({id:v.viewId,sheet:v.sheetIndex,label:v.label,type:v.viewType}))));
+  } catch (e) {
+    console.log("ERR:", e.message);
+  }
+}
+
 // Message handler
 // ---------------------------------------------------------------------------
 
