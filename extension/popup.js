@@ -27,17 +27,14 @@ document.getElementById("btnBackFromViolations").addEventListener("click", () =>
 const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
 
 // Returns { ok, badgeClass, badgeText, detail } for a scan result
-// Missing folders = OK (subset is fine). Flags:
-// 1. Extra/unknown folders (not in ALLOWED_FOLDERS)
-// 2. Root-level tabs (nothing should be at root except folders)
+// Missing folders = OK (subset is fine). Flags any items that shouldn't be
+// at root: extra/unknown folders + root-level tabs (collectively "illegal tabs").
 function validateFolders(result) {
   const folders = Object.keys(result.folders || {});
   const rootTabs = result.root_tabs || [];
   const extra = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
-  const issues = [];
-  if (extra.length > 0) issues.push("extra folders: " + extra.join(", "));
-  if (rootTabs.length > 0) issues.push("root-level tabs: " + rootTabs.join(", "));
-  if (issues.length === 0) {
+  const illegal = [...extra, ...rootTabs];
+  if (illegal.length === 0) {
     const label = folders.length > 0
       ? `${folders.length} folder${folders.length > 1 ? "s" : ""}`
       : "no folders";
@@ -46,8 +43,8 @@ function validateFolders(result) {
   return {
     ok: false,
     badgeClass: "badge-warn",
-    badgeText: `${issues.length} issue${issues.length > 1 ? "s" : ""}`,
-    detail: issues.join(" | "),
+    badgeText: `${illegal.length} illegal`,
+    detail: "Illegal tabs: " + illegal.join(", "),
   };
 }
 

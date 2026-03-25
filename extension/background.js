@@ -396,12 +396,30 @@ function trySendScan(tabId) {
 // Store scan result per doc in chrome.storage.local
 // ---------------------------------------------------------------------------
 
+const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
+
 async function storeDocScanResult(result) {
   if (!result || !result.doc_id) return;
   const data = await chrome.storage.local.get("docScanResults");
   const results = data.docScanResults || {};
   results[result.doc_id] = result;
   await chrome.storage.local.set({ docScanResults: results });
+
+  // Check for illegal tabs and notify after 10s delay
+  const folders = Object.keys(result.folders || {});
+  const rootTabs = result.root_tabs || [];
+  const extra = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
+  const illegal = [...extra, ...rootTabs];
+  if (illegal.length > 0) {
+    setTimeout(() => {
+      chrome.notifications.create(`folder-scan-${result.doc_id}-${Date.now()}`, {
+        type: "basic",
+        iconUrl: "icons/icon128.png",
+        title: result.doc_name || result.doc_id,
+        message: "Incorrect folder structure, please take action.",
+      });
+    }, 10000);
+  }
 }
 
 // ---------------------------------------------------------------------------
