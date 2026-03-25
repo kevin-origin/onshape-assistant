@@ -582,11 +582,10 @@ async function checkDocViolations(docId, docName, wid) {
     return;
   }
 
-  // Merge violations across docs (preserve other docs' violations)
-  const stored = await chrome.storage.local.get("violations");
-  const allViolations = stored.violations || {};
+  // Store only current doc's violations (replaces previous doc)
+  const current = {};
   if (violations.length > 0) {
-    allViolations[docId] = {
+    current[docId] = {
       docName: docName || docId,
       timestamp: new Date().toLocaleTimeString("en-IN", {
         hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
@@ -599,12 +598,9 @@ async function checkDocViolations(docId, docName, wid) {
       title: `${docName || docId}`,
       message: `${violations.length} violation${violations.length > 1 ? "s" : ""} detected, please take action.`,
     });
-  } else {
-    // Doc has no violations — clear its entry (but keep other docs)
-    delete allViolations[docId];
   }
 
-  await chrome.storage.local.set({ violations: allViolations });
+  await chrome.storage.local.set({ violations: current });
   chrome.runtime.sendMessage({ type: "violations-updated" }).catch(() => {});
 }
 
