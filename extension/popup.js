@@ -27,22 +27,27 @@ document.getElementById("btnBackFromViolations").addEventListener("click", () =>
 const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
 
 // Returns { ok, badgeClass, badgeText, detail } for a scan result
-// Missing folders = OK (subset is fine). Only flag EXTRA/unknown folders.
+// Missing folders = OK (subset is fine). Flags:
+// 1. Extra/unknown folders (not in ALLOWED_FOLDERS)
+// 2. Root-level tabs (nothing should be at root except folders)
 function validateFolders(result) {
   const folders = Object.keys(result.folders || {});
-  if (folders.length === 0) {
-    // No folders at all — that's fine (root-level tabs only)
-    return { ok: true, badgeClass: "badge-ok", badgeText: "no folders", detail: null };
-  }
+  const rootTabs = result.root_tabs || [];
   const extra = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
-  if (extra.length === 0) {
-    return { ok: true, badgeClass: "badge-ok", badgeText: `${folders.length} folder${folders.length > 1 ? "s" : ""}`, detail: null };
+  const issues = [];
+  if (extra.length > 0) issues.push("extra folders: " + extra.join(", "));
+  if (rootTabs.length > 0) issues.push("root-level tabs: " + rootTabs.join(", "));
+  if (issues.length === 0) {
+    const label = folders.length > 0
+      ? `${folders.length} folder${folders.length > 1 ? "s" : ""}`
+      : "no folders";
+    return { ok: true, badgeClass: "badge-ok", badgeText: label, detail: null };
   }
   return {
     ok: false,
     badgeClass: "badge-warn",
-    badgeText: `${extra.length} extra`,
-    detail: "extra: " + extra.join(", "),
+    badgeText: `${issues.length} issue${issues.length > 1 ? "s" : ""}`,
+    detail: issues.join(" | "),
   };
 }
 
