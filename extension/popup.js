@@ -219,7 +219,6 @@ function showSingleResult(result) {
     const detailEl = document.createElement("div");
     detailEl.className = "result-item";
     detailEl.style.paddingLeft = "20px";
-    detailEl.style.fontSize = "10px";
     detailEl.style.color = "#f0c040";
     detailEl.textContent = v.detail;
     $resultList.appendChild(detailEl);
