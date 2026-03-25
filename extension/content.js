@@ -47,15 +47,11 @@
 
   function getTabNames() {
     return Array.from(document.querySelectorAll(".os-tab-name")).map(el => {
-      // Walk up to the tab container to check for folder indicators
-      const tab = el.closest(".os-document-tab") || el.parentElement;
-      const classes = (tab.className || "").toString().toLowerCase();
-      // Onshape uses different element types; folders have folder-related classes
-      // or a folder icon child. Check multiple indicators.
-      const hasFolder = classes.includes("folder") ||
-        !!tab.querySelector("[class*='folder']") ||
-        !!tab.querySelector("svg[class*='folder']");
-      return { text: el.textContent.trim(), el: el, tab: tab, isFolder: hasFolder };
+      // TAB-LIST-ITEM.os-tab-bar-tab is the real tab container
+      // Folders have additional class: os-tab-bar-tab-group
+      const tab = el.closest(".os-tab-bar-tab") || el.parentElement;
+      const isFolder = tab.classList?.contains("os-tab-bar-tab-group") || false;
+      return { text: el.textContent.trim(), el: el, tab: tab, isFolder: isFolder };
     });
   }
 
@@ -116,28 +112,15 @@
       const rootItems = getTabNames();
       if (rootItems.length === 0) return result;
 
-      // Debug: dump DOM ancestry of each tab name to find the right selectors
+      // Debug: log detected items
       console.log("[Scanner] Root items:", rootItems.map(r => {
-        // Walk up 5 ancestors from .os-tab-name
-        const ancestors = [];
-        let node = r.el;
-        for (let a = 0; a < 6 && node; a++) {
-          ancestors.push({
-            tag: node.tagName,
-            cls: (node.className || "").toString().slice(0, 150),
-            childCount: node.children?.length || 0,
-          });
-          node = node.parentElement;
-        }
-        // Sibling elements of .os-tab-name (icons, arrows, etc.)
-        const siblings = Array.from(r.el.parentElement?.children || [])
-          .filter(c => c !== r.el)
-          .map(c => ({
-            tag: c.tagName,
-            cls: (c.className || "").toString().slice(0, 100),
-            text: c.textContent?.trim().slice(0, 30) || "",
-          }));
-        return { text: r.text, ancestors, siblings };
+        // Also log tab-content-wrapper children to find the right click target
+        const wrapper = r.tab.querySelector?.(".tab-content-wrapper") ||
+          r.el.closest?.(".tab-content-wrapper");
+        const wrapperChildren = wrapper ? Array.from(wrapper.children).map(c => ({
+          tag: c.tagName, cls: (c.className || "").toString().slice(0, 100),
+        })) : [];
+        return { text: r.text, isFolder: r.isFolder, wrapperChildren };
       }));
 
       const depthBefore = getBreadcrumbDepth();
