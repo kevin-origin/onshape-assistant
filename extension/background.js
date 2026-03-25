@@ -400,6 +400,8 @@ const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feat
 
 async function storeDocScanResult(result) {
   if (!result || !result.doc_id) return;
+  console.log("[Scanner] storeDocScanResult called, wid=" + (result.wid || "none") +
+    ", folders=" + Object.keys(result.folders || {}).join(","));
 
   // Enrich with assembly count from API
   // Onshape API doesn't expose tab group membership, so we count total
@@ -412,23 +414,28 @@ async function storeDocScanResult(result) {
       );
       const elements = Array.isArray(rawElements) ? rawElements : (rawElements.items || []);
       const assemblies = elements.filter(e => e.elementType === "ASSEMBLY");
-      console.log(`[Scanner] ${assemblies.length} assemblies in doc:`,
+      console.log(`[Scanner] ${assemblies.length} assembly(s) found:`,
         assemblies.map(a => a.name));
 
-      // Attribute all assemblies to "Assemblies" folder (best heuristic —
-      // API has no tab group mapping, DOM click navigation doesn't work)
       if (result.folders["Assemblies"]) {
         result.folders["Assemblies"].assemblies = assemblies.length;
+        console.log("[Scanner] Set Assemblies folder count to " + assemblies.length);
+      } else {
+        console.log("[Scanner] No 'Assemblies' folder in scan result to enrich");
       }
     } catch (e) {
       console.error("[Scanner] Elements API error:", e.message);
     }
+  } else {
+    console.log("[Scanner] Skipping API enrichment: wid=" + (result.wid || "none") +
+      ", folderCount=" + folders.length);
   }
 
   const data = await chrome.storage.local.get("docScanResults");
   const results = data.docScanResults || {};
   results[result.doc_id] = result;
   await chrome.storage.local.set({ docScanResults: results });
+  console.log("[Scanner] Stored enriched result for " + result.doc_id);
 }
 
 // ---------------------------------------------------------------------------
@@ -461,12 +468,24 @@ async function checkDocViolations(docId, docName, wid) {
       // Sort by createdAt ascending
       const sorted = [...versions].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
+      // Debug: log ALL fields of the last 3 versions to discover release indicator
+      console.log(`[Violations] ${docName}: ${versions.length} versions, last 3 =` +
+        JSON.stringify(sorted.slice(-3).map(v => {
+          const o = {};
+          for (const k of Object.keys(v)) o[k] = v[k];
+          return o;
+        }), null, 0));
+
       // Find the last release version
-      // Onshape purpose field: 0/null = regular version, non-zero or string = release
+      // Try multiple fields: purpose, type, description, releasePackageId
       let lastReleaseIdx = -1;
       for (let i = sorted.length - 1; i >= 0; i--) {
-        const p = sorted[i].purpose;
-        if (p && p !== 0 && p !== "0") {
+        const v = sorted[i];
+        const p = v.purpose;
+        const hasReleasePkg = !!v.releasePackageId;
+        const nameHint = (v.name || "").toLowerCase().startsWith("release");
+        const descHint = (v.description || "").toLowerCase().includes("release");
+        if ((p && p !== 0 && p !== "0") || hasReleasePkg || nameHint || descHint) {
           lastReleaseIdx = i;
           break;
         }
@@ -477,7 +496,7 @@ async function checkDocViolations(docId, docName, wid) {
         ? sorted.length - 1 - lastReleaseIdx
         : sorted.length; // no releases at all — count everything
 
-      console.log(`[Violations] ${docName}: ${versions.length} versions total, lastReleaseIdx=${lastReleaseIdx}, sinceRelease=${versionsSinceRelease}, purposes=` + JSON.stringify(sorted.slice(-3).map(v => ({ name: v.name, purpose: v.purpose }))));
+      console.log(`[Violations] ${docName}: lastReleaseIdx=${lastReleaseIdx}, sinceRelease=${versionsSinceRelease}`);
 
       if (versionsSinceRelease >= VERSION_RELEASE_THRESHOLD) {
         violations.push(`${versionsSinceRelease} versions since last release (limit: ${VERSION_RELEASE_THRESHOLD})`);
