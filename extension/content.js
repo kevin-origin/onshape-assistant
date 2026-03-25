@@ -46,10 +46,17 @@
   }
 
   function getTabNames() {
-    return Array.from(document.querySelectorAll(".os-tab-name")).map(el => ({
-      text: el.textContent.trim(),
-      el: el,
-    }));
+    return Array.from(document.querySelectorAll(".os-tab-name")).map(el => {
+      // Walk up to the tab container to check for folder indicators
+      const tab = el.closest(".os-document-tab") || el.parentElement;
+      const classes = (tab.className || "").toString().toLowerCase();
+      // Onshape uses different element types; folders have folder-related classes
+      // or a folder icon child. Check multiple indicators.
+      const hasFolder = classes.includes("folder") ||
+        !!tab.querySelector("[class*='folder']") ||
+        !!tab.querySelector("svg[class*='folder']");
+      return { text: el.textContent.trim(), el: el, tab: tab, isFolder: hasFolder };
+    });
   }
 
   function getBreadcrumbDepth() {
@@ -109,6 +116,12 @@
       const rootItems = getTabNames();
       if (rootItems.length === 0) return result;
 
+      // Debug: log what we found at root so console shows DOM structure
+      console.log("[Scanner] Root items:", rootItems.map(r => ({
+        text: r.text, isFolder: r.isFolder,
+        tabClass: (r.tab.className || "").toString().slice(0, 120),
+      })));
+
       const depthBefore = getBreadcrumbDepth();
 
       for (let i = 0; i < rootItems.length; i++) {
@@ -119,23 +132,27 @@
         const item = currentItems[i];
         const itemName = item.text;
 
-        // Double-click to open folders (single-click just selects the tab)
-        item.el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
+        // If DOM class indicates this is a folder, or try click to check
+        // Click the tab container (not text span) — more likely to trigger navigation
+        item.tab.click();
         await sleep(CLICK_DELAY);
 
         const depthAfter = getBreadcrumbDepth();
 
-        if (depthAfter > depthBefore) {
-          // This was a FOLDER — breadcrumb depth increased
-          const children = getTabNames().map(c => c.text);
-          result.folders[itemName] = children;
-
-          // Return to root
-          await clickAllTabs();
+        if (depthAfter > depthBefore || item.isFolder) {
+          if (depthAfter > depthBefore) {
+            // Breadcrumb increased — we navigated into a folder
+            const children = getTabNames().map(c => c.text);
+            result.folders[itemName] = children;
+            await clickAllTabs();
+          } else if (item.isFolder) {
+            // DOM says it's a folder but click didn't navigate — record as
+            // empty folder (can't read children without navigation)
+            result.folders[itemName] = [];
+          }
         } else {
-          // Regular tab — not a folder (dblclick opened it in workspace, no nav)
+          // Regular tab — not a folder
           result.root_tabs.push(itemName);
-          // Return to root to keep position consistent
           await clickAllTabs();
         }
       }
@@ -178,8 +195,13 @@
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
     if (msg.type === "scan-tab-folders") {
-      waitForTabBar()
-        .then(() => scanTabFolders())
+      // If auto-scan is running, wait for it to finish then scan fresh
+      const waitThenScan = async () => {
+        for (let i = 0; i < 60 && _scanning; i++) await sleep(500); // up to 30s
+        await waitForTabBar();
+        return scanTabFolders();
+      };
+      waitThenScan()
         .then(result => sendResponse(result))
         .catch(err => sendResponse({ error: err.message }));
       return true; // keep channel open for async response
