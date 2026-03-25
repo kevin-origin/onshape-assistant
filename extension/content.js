@@ -57,11 +57,30 @@
   }
 
   async function clickAllTabs() {
-    const btn = getAllTabsBreadcrumb();
-    if (btn) {
-      btn.click();
-      await sleep(ROOT_DELAY);
+    // Onshape may start inside a folder (remembers last view).
+    // Breadcrumbs may not have rendered yet when waitForTabBar() returns,
+    // so poll for them briefly before giving up.
+    for (let attempt = 0; attempt < 6; attempt++) {
+      const btn = getAllTabsBreadcrumb();
+      if (btn) {
+        btn.click();
+        await sleep(ROOT_DELAY);
+        return;
+      }
+      // No breadcrumb found — either we're at root already, or it hasn't rendered.
+      // Check: if breadcrumb depth > 0 but none say "All tabs", try the first one.
+      const crumbs = document.querySelectorAll(".os-tab-bar-breadcrumb");
+      if (crumbs.length > 0) {
+        // Click the first (leftmost) breadcrumb — that's the root
+        crumbs[0].click();
+        await sleep(ROOT_DELAY);
+        return;
+      }
+      // No breadcrumbs at all — likely at root. But on first few attempts,
+      // wait a bit in case they haven't loaded yet.
+      if (attempt < 5) await sleep(300);
     }
+    // No breadcrumbs after polling — we're at root
   }
 
   // ---------------------------------------------------------------------------
