@@ -22,6 +22,25 @@ document.getElementById("btnBackFromDrawing").addEventListener("click", () => sh
 document.getElementById("btnBackFromScanner").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnBackFromViolations").addEventListener("click", () => showSection("sectionMenu"));
 
+// Check if opened via notification click — navigate to target section
+chrome.storage.local.get("popupTargetSection", (data) => {
+  if (data.popupTargetSection) {
+    chrome.storage.local.remove("popupTargetSection");
+    if (data.popupTargetSection === "scanner") {
+      showSection("sectionScanner");
+      loadLastScanForCurrentDoc();
+    } else if (data.popupTargetSection === "violations") {
+      showSection("sectionViolations");
+      loadViolations();
+    }
+  }
+  // Also check URL params (fallback when opened as tab)
+  const params = new URLSearchParams(window.location.search);
+  const section = params.get("section");
+  if (section === "scanner") { showSection("sectionScanner"); loadLastScanForCurrentDoc(); }
+  else if (section === "violations") { showSection("sectionViolations"); loadViolations(); }
+});
+
 // ---------------------------------------------------------------------------
 
 const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];

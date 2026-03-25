@@ -416,15 +416,16 @@ const TABS_LIMIT = 40;
 
 async function checkDocViolations(docId, docName, wid) {
   const violations = [];
+  console.log(`[Violations] Checking ${docName} (${docId}), wid=${wid || "null"}`);
 
   try {
     // Parallel fetch: versions always, elements if wid available
     const promises = [
-      onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(() => null),
+      onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(e => { console.error("[Violations] versions fetch failed:", e.message); return null; }),
     ];
     if (wid) {
       promises.push(
-        onshapeFetch(`/api/v10/documents/d/${docId}/w/${wid}/elements`).catch(() => null),
+        onshapeFetch(`/api/v10/documents/d/${docId}/w/${wid}/elements`).catch(e => { console.error("[Violations] elements fetch failed:", e.message); return null; }),
       );
     }
 
@@ -435,10 +436,12 @@ async function checkDocViolations(docId, docName, wid) {
       // Sort by createdAt ascending
       const sorted = [...versions].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
-      // Find the last release version (purpose field: non-zero = release)
+      // Find the last release version
+      // Onshape purpose field: 0/null = regular version, non-zero or string = release
       let lastReleaseIdx = -1;
       for (let i = sorted.length - 1; i >= 0; i--) {
-        if (sorted[i].purpose && sorted[i].purpose !== 0) {
+        const p = sorted[i].purpose;
+        if (p && p !== 0 && p !== "0") {
           lastReleaseIdx = i;
           break;
         }
@@ -449,9 +452,13 @@ async function checkDocViolations(docId, docName, wid) {
         ? sorted.length - 1 - lastReleaseIdx
         : sorted.length; // no releases at all — count everything
 
+      console.log(`[Violations] ${docName}: ${versions.length} versions total, lastReleaseIdx=${lastReleaseIdx}, sinceRelease=${versionsSinceRelease}, purposes=`, sorted.slice(-3).map(v => ({ name: v.name, purpose: v.purpose })));
+
       if (versionsSinceRelease >= VERSION_RELEASE_THRESHOLD) {
         violations.push(`${versionsSinceRelease} versions since last release (limit: ${VERSION_RELEASE_THRESHOLD})`);
       }
+    } else {
+      console.log(`[Violations] ${docName}: versions response:`, versions);
     }
 
     // Unwrap elements (API may return array or { items: [...] })
@@ -888,4 +895,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
   }
+});
+
+// ---------------------------------------------------------------------------
+// Notification click — open popup to the relevant section
+// ---------------------------------------------------------------------------
+
+chrome.notifications.onClicked.addListener((notificationId) => {
+  let section = "";
+  if (notificationId.startsWith("folder-scan-")) {
+    section = "scanner";
+  } else if (notificationId.startsWith("violations-")) {
+    section = "violations";
+  }
+  if (section) {
+    // Store target section so popup.js can navigate to it on open
+    chrome.storage.local.set({ popupTargetSection: section });
+    // Open the popup (Chrome 99+ Manifest V3)
+    chrome.action.openPopup().catch(() => {
+      // Fallback: open popup.html as a tab if openPopup() unavailable
+      chrome.tabs.create({ url: `popup.html?section=${section}` });
+    });
+  }
+  chrome.notifications.clear(notificationId);
 });
