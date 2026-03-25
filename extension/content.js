@@ -188,6 +188,25 @@
 
     // Send to background for per-doc storage
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
+
+    // Notify after 10s if illegal tabs found (delay lives here in the content
+    // script because the service worker may sleep before a setTimeout fires)
+    const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
+    const folders = Object.keys(result.folders || {});
+    const rootTabs = result.root_tabs || [];
+    const illegal = [
+      ...folders.filter(f => !ALLOWED_FOLDERS.includes(f)),
+      ...rootTabs,
+    ];
+    if (illegal.length > 0) {
+      setTimeout(() => {
+        chrome.runtime.sendMessage({
+          type: "folder-scan-notify",
+          docId: result.doc_id,
+          docName: result.doc_name,
+        });
+      }, 10000);
+    }
   }
 
   async function waitForTabBar() {

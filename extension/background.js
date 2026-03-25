@@ -404,22 +404,6 @@ async function storeDocScanResult(result) {
   const results = data.docScanResults || {};
   results[result.doc_id] = result;
   await chrome.storage.local.set({ docScanResults: results });
-
-  // Check for illegal tabs and notify after 10s delay
-  const folders = Object.keys(result.folders || {});
-  const rootTabs = result.root_tabs || [];
-  const extra = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
-  const illegal = [...extra, ...rootTabs];
-  if (illegal.length > 0) {
-    setTimeout(() => {
-      chrome.notifications.create(`folder-scan-${result.doc_id}-${Date.now()}`, {
-        type: "basic",
-        iconUrl: "icons/icon128.png",
-        title: result.doc_name || result.doc_id,
-        message: "Incorrect folder structure, please take action.",
-      });
-    }, 10000);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -848,6 +832,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.type === "tab-folder-result") {
     // Auto-scan result from content.js — store per doc
     storeDocScanResult(msg.data);
+
+  } else if (msg.type === "folder-scan-notify") {
+    // Delayed notification from content.js (10s after scan found illegal tabs)
+    chrome.notifications.create(`folder-scan-${msg.docId}-${Date.now()}`, {
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: msg.docName || msg.docId,
+      message: "Incorrect folder structure, please take action.",
+    });
 
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
