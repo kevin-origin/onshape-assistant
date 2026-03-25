@@ -133,9 +133,17 @@
         const item = currentItems[i];
         const itemName = item.text;
 
-        // If DOM class indicates this is a folder, or try click to check
-        // Click the tab container (not text span) — more likely to trigger navigation
-        item.tab.click();
+        // Simulate a real mouse click on the tab container (Angular needs
+        // mousedown→mouseup→click with coordinates, not just .click())
+        const rect = item.tab.getBoundingClientRect();
+        const cx = rect.left + rect.width / 2;
+        const cy = rect.top + rect.height / 2;
+        const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+        item.tab.dispatchEvent(new MouseEvent("mousedown", evtOpts));
+        await sleep(50);
+        item.tab.dispatchEvent(new MouseEvent("mouseup", evtOpts));
+        await sleep(50);
+        item.tab.dispatchEvent(new MouseEvent("click", evtOpts));
         await sleep(CLICK_DELAY);
 
         const depthAfter = getBreadcrumbDepth();
