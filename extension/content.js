@@ -125,16 +125,26 @@
 
       const depthBefore = getBreadcrumbDepth();
 
+      // Classify each item as folder or root tab using DOM class detection.
+      // No need to click into folders — we only need names for validation.
+      for (const item of rootItems) {
+        if (item.isFolder) {
+          result.folders[item.text] = [];
+        } else {
+          result.root_tabs.push(item.text);
+        }
+      }
+
+      /* --- Commented out: folder-children reading via click navigation ---
+       * Kept for future use if we need to list folder contents.
+       *
+      const depthBefore = getBreadcrumbDepth();
       for (let i = 0; i < rootItems.length; i++) {
-        // Re-query each iteration because DOM may have changed after navigation
         const currentItems = getTabNames();
         if (i >= currentItems.length) break;
-
         const item = currentItems[i];
         const itemName = item.text;
 
-        // Simulate a real mouse click on the tab container (Angular needs
-        // mousedown→mouseup→click with coordinates, not just .click())
         const rect = item.tab.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
@@ -147,24 +157,20 @@
         await sleep(CLICK_DELAY);
 
         const depthAfter = getBreadcrumbDepth();
-
         if (depthAfter > depthBefore || item.isFolder) {
           if (depthAfter > depthBefore) {
-            // Breadcrumb increased — we navigated into a folder
             const children = getTabNames().map(c => c.text);
             result.folders[itemName] = children;
             await clickAllTabs();
           } else if (item.isFolder) {
-            // DOM says it's a folder but click didn't navigate — record as
-            // empty folder (can't read children without navigation)
             result.folders[itemName] = [];
           }
         } else {
-          // Regular tab — not a folder
           result.root_tabs.push(itemName);
           await clickAllTabs();
         }
       }
+      */
 
       return result;
     } finally {

@@ -225,25 +225,16 @@ function showSingleResult(result) {
     $resultList.appendChild(detailEl);
   }
 
-  // Show folder details
-  for (const [folder, tabs] of Object.entries(result.folders || {})) {
-    const detail = document.createElement("div");
-    detail.className = "result-item";
-    detail.style.paddingLeft = "20px";
-    detail.style.fontSize = "10px";
-    detail.style.color = "#888";
-    detail.textContent = `${folder}: ${tabs.join(", ")}`;
-    $resultList.appendChild(detail);
-  }
-
-  if (result.root_tabs && result.root_tabs.length > 0) {
-    const rootEl = document.createElement("div");
-    rootEl.className = "result-item";
-    rootEl.style.paddingLeft = "20px";
-    rootEl.style.fontSize = "10px";
-    rootEl.style.color = "#888";
-    rootEl.textContent = `Root tabs: ${result.root_tabs.join(", ")}`;
-    $resultList.appendChild(rootEl);
+  // Show legal folders as a single line
+  const folders = Object.keys(result.folders || {});
+  const legalFolders = folders.filter(f => ALLOWED_FOLDERS.includes(f));
+  if (legalFolders.length > 0) {
+    const legalEl = document.createElement("div");
+    legalEl.className = "result-item";
+    legalEl.style.paddingLeft = "20px";
+    legalEl.style.color = "#888";
+    legalEl.textContent = `Legal tabs: ${legalFolders.join(", ")}`;
+    $resultList.appendChild(legalEl);
   }
 }
 
