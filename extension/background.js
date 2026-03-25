@@ -451,9 +451,10 @@ async function checkDocViolations(docId, docName, wid) {
   console.log(`[Violations] Checking ${docName} (${docId}), wid=${wid || "null"}`);
 
   try {
-    // Parallel fetch: versions always, elements if wid available
+    // Parallel fetch: versions + release packages always, elements if wid available
     const promises = [
       onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(e => { console.error("[Violations] versions fetch failed:", e.message); return null; }),
+      onshapeFetch(`/api/v10/releasepackages?documentId=${docId}`).catch(e => { console.log("[Violations] releasepackages fetch:", e.message); return null; }),
     ];
     if (wid) {
       promises.push(
@@ -461,40 +462,73 @@ async function checkDocViolations(docId, docName, wid) {
       );
     }
 
-    const [versions, rawElements] = await Promise.all(promises);
+    const [versions, releasePackages, rawElements] = await Promise.all(promises);
 
     // 1. Versions since last release
     if (Array.isArray(versions) && versions.length > 0) {
       // Sort by createdAt ascending
       const sorted = [...versions].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
-      // Debug: log ALL fields of the last 3 versions to discover release indicator
-      console.log(`[Violations] ${docName}: ${versions.length} versions, last 3 =` +
-        JSON.stringify(sorted.slice(-3).map(v => {
-          const o = {};
-          for (const k of Object.keys(v)) o[k] = v[k];
-          return o;
-        }), null, 0));
+      // Log release packages for debugging
+      const pkgs = Array.isArray(releasePackages) ? releasePackages
+        : (releasePackages?.items || []);
+      console.log(`[Violations] ${docName}: ${versions.length} versions, ${pkgs.length} release packages`);
+      if (pkgs.length > 0) {
+        console.log("[Violations] Release packages:" + JSON.stringify(
+          pkgs.slice(-3).map(p => ({ name: p.name, id: p.id, createdAt: p.createdAt,
+            versionId: p.versionId, status: p.status }))
+        ));
+      }
 
-      // Find the last release version
-      // Try multiple fields: purpose, type, description, releasePackageId
+      // Find last release — use release packages (from Release Management workflow)
+      // Match release package versionId to a version in the sorted list
       let lastReleaseIdx = -1;
-      for (let i = sorted.length - 1; i >= 0; i--) {
-        const v = sorted[i];
-        const p = v.purpose;
-        const hasReleasePkg = !!v.releasePackageId;
-        const nameHint = (v.name || "").toLowerCase().startsWith("release");
-        const descHint = (v.description || "").toLowerCase().includes("release");
-        if ((p && p !== 0 && p !== "0") || hasReleasePkg || nameHint || descHint) {
-          lastReleaseIdx = i;
-          break;
+      if (pkgs.length > 0) {
+        // Collect all version IDs that have a release package
+        const releaseVersionIds = new Set(
+          pkgs.filter(p => p.versionId).map(p => p.versionId)
+        );
+        // If release packages don't have versionId, use createdAt to find nearest version
+        const releaseCreatedAts = pkgs
+          .filter(p => p.createdAt && !p.versionId)
+          .map(p => new Date(p.createdAt).getTime());
+
+        for (let i = sorted.length - 1; i >= 0; i--) {
+          if (releaseVersionIds.has(sorted[i].id)) {
+            lastReleaseIdx = i;
+            break;
+          }
+        }
+
+        // Fallback: match by createdAt if no versionId match
+        if (lastReleaseIdx === -1 && releaseCreatedAts.length > 0) {
+          const latestRelease = Math.max(...releaseCreatedAts);
+          for (let i = sorted.length - 1; i >= 0; i--) {
+            const vTime = new Date(sorted[i].createdAt).getTime();
+            if (vTime <= latestRelease) {
+              lastReleaseIdx = i;
+              break;
+            }
+          }
+        }
+      }
+
+      // Fallback: check version fields directly (purpose, name, description)
+      if (lastReleaseIdx === -1) {
+        for (let i = sorted.length - 1; i >= 0; i--) {
+          const v = sorted[i];
+          const p = v.purpose;
+          if (p && p !== 0 && p !== "0") {
+            lastReleaseIdx = i;
+            break;
+          }
         }
       }
 
       // Count only versions created after the last release
       const versionsSinceRelease = lastReleaseIdx >= 0
         ? sorted.length - 1 - lastReleaseIdx
-        : sorted.length; // no releases at all — count everything
+        : sorted.length;
 
       console.log(`[Violations] ${docName}: lastReleaseIdx=${lastReleaseIdx}, sinceRelease=${versionsSinceRelease}`);
 
@@ -548,26 +582,29 @@ async function checkDocViolations(docId, docName, wid) {
     return;
   }
 
-  // Store only current doc's violations (no history)
-  const current = {};
+  // Merge violations across docs (preserve other docs' violations)
+  const stored = await chrome.storage.local.get("violations");
+  const allViolations = stored.violations || {};
   if (violations.length > 0) {
-    current[docId] = {
+    allViolations[docId] = {
       docName: docName || docId,
       timestamp: new Date().toLocaleTimeString("en-IN", {
         hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
       }),
       items: violations,
     };
-    // Unique notification ID so it fires every time the doc is opened
     chrome.notifications.create(`violations-${docId}-${Date.now()}`, {
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: `${docName || docId}`,
       message: `${violations.length} violation${violations.length > 1 ? "s" : ""} detected, please take action.`,
     });
+  } else {
+    // Doc has no violations — clear its entry (but keep other docs)
+    delete allViolations[docId];
   }
 
-  await chrome.storage.local.set({ violations: current });
+  await chrome.storage.local.set({ violations: allViolations });
   chrome.runtime.sendMessage({ type: "violations-updated" }).catch(() => {});
 }
 
