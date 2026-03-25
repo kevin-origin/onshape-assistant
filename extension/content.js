@@ -51,7 +51,14 @@
       // Folders have additional class: os-tab-bar-tab-group
       const tab = el.closest(".os-tab-bar-tab") || el.parentElement;
       const isFolder = tab.classList?.contains("os-tab-bar-tab-group") || false;
-      return { text: el.textContent.trim(), el: el, tab: tab, isFolder: isFolder };
+      const classes = (tab.className || "").toString().toLowerCase();
+      // Detect element type from tab classes (assembly, partstudio, drawing, etc.)
+      let tabType = "unknown";
+      if (isFolder) tabType = "folder";
+      else if (classes.includes("assembly")) tabType = "assembly";
+      else if (classes.includes("partstudio") || classes.includes("part-studio")) tabType = "partstudio";
+      else if (classes.includes("drawing")) tabType = "drawing";
+      return { text: el.textContent.trim(), el: el, tab: tab, isFolder, tabType, classes };
     });
   }
 
@@ -112,65 +119,62 @@
       const rootItems = getTabNames();
       if (rootItems.length === 0) return result;
 
-      // Debug: log detected items
-      console.log("[Scanner] Root items:", rootItems.map(r => {
-        // Also log tab-content-wrapper children to find the right click target
-        const wrapper = r.tab.querySelector?.(".tab-content-wrapper") ||
-          r.el.closest?.(".tab-content-wrapper");
-        const wrapperChildren = wrapper ? Array.from(wrapper.children).map(c => ({
-          tag: c.tagName, cls: (c.className || "").toString().slice(0, 100),
-        })) : [];
-        return { text: r.text, isFolder: r.isFolder, wrapperChildren };
-      }));
+      // Debug: log detected root items
+      console.log("[Scanner] Root items:", rootItems.map(r => ({
+        text: r.text, isFolder: r.isFolder, tabType: r.tabType, classes: r.classes,
+      })));
 
       const depthBefore = getBreadcrumbDepth();
 
-      // Classify each item as folder or root tab using DOM class detection.
-      // No need to click into folders — we only need names for validation.
+      // First pass: classify root items as folder or root tab
       for (const item of rootItems) {
         if (item.isFolder) {
-          result.folders[item.text] = [];
+          result.folders[item.text] = { children: [], assemblies: 0 };
         } else {
           result.root_tabs.push(item.text);
         }
       }
 
-      /* --- Commented out: folder-children reading via click navigation ---
-       * Kept for future use if we need to list folder contents.
-       *
-      const depthBefore = getBreadcrumbDepth();
+      // Second pass: click into each folder to read children and count assemblies
+      // Uses pointer events (modern Angular/Onshape may use these over mouse events)
       for (let i = 0; i < rootItems.length; i++) {
-        const currentItems = getTabNames();
-        if (i >= currentItems.length) break;
-        const item = currentItems[i];
-        const itemName = item.text;
+        if (!rootItems[i].isFolder) continue;
+        const folderName = rootItems[i].text;
 
-        const rect = item.tab.getBoundingClientRect();
+        // Re-query to get fresh DOM references
+        const freshItems = getTabNames();
+        const folderItem = freshItems.find(f => f.text === folderName && f.isFolder);
+        if (!folderItem) continue;
+
+        // Try pointer events to navigate into the folder
+        const rect = folderItem.el.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
         const cy = rect.top + rect.height / 2;
-        const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
-        item.tab.dispatchEvent(new MouseEvent("mousedown", evtOpts));
+        const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0, pointerId: 1 };
+        folderItem.el.dispatchEvent(new PointerEvent("pointerdown", evtOpts));
         await sleep(50);
-        item.tab.dispatchEvent(new MouseEvent("mouseup", evtOpts));
+        folderItem.el.dispatchEvent(new PointerEvent("pointerup", evtOpts));
         await sleep(50);
-        item.tab.dispatchEvent(new MouseEvent("click", evtOpts));
+        folderItem.el.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 }));
         await sleep(CLICK_DELAY);
 
         const depthAfter = getBreadcrumbDepth();
-        if (depthAfter > depthBefore || item.isFolder) {
-          if (depthAfter > depthBefore) {
-            const children = getTabNames().map(c => c.text);
-            result.folders[itemName] = children;
-            await clickAllTabs();
-          } else if (item.isFolder) {
-            result.folders[itemName] = [];
-          }
-        } else {
-          result.root_tabs.push(itemName);
+        if (depthAfter > depthBefore) {
+          // Successfully navigated into folder — read children
+          const children = getTabNames();
+          const childNames = children.map(c => c.text);
+          const assemblyCount = children.filter(c => c.tabType === "assembly").length;
+
+          // Debug: log children with their types so we can verify detection
+          console.log(`[Scanner] Folder "${folderName}" children:`, children.map(c => ({
+            text: c.text, tabType: c.tabType, classes: c.classes,
+          })));
+
+          result.folders[folderName] = { children: childNames, assemblies: assemblyCount };
           await clickAllTabs();
         }
+        // If click didn't navigate, folder stays with defaults (0 assemblies)
       }
-      */
 
       return result;
     } finally {
@@ -195,16 +199,20 @@
     // Send to background for per-doc storage
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
 
-    // Notify after 10s if illegal tabs found (delay lives here in the content
+    // Notify after 10s if issues found (delay lives here in the content
     // script because the service worker may sleep before a setTimeout fires)
     const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
-    const folders = Object.keys(result.folders || {});
+    const folderData = result.folders || {};
+    const folders = Object.keys(folderData);
     const rootTabs = result.root_tabs || [];
     const illegal = [
       ...folders.filter(f => !ALLOWED_FOLDERS.includes(f)),
       ...rootTabs,
     ];
-    if (illegal.length > 0) {
+    const multiAssembly = Object.entries(folderData).some(
+      ([, data]) => typeof data === "object" && data.assemblies > 1
+    );
+    if (illegal.length > 0 || multiAssembly) {
       setTimeout(() => {
         chrome.runtime.sendMessage({
           type: "folder-scan-notify",

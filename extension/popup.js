@@ -26,25 +26,39 @@ document.getElementById("btnBackFromViolations").addEventListener("click", () =>
 
 const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
 
-// Returns { ok, badgeClass, badgeText, detail } for a scan result
-// Missing folders = OK (subset is fine). Flags any items that shouldn't be
-// at root: extra/unknown folders + root-level tabs (collectively "illegal tabs").
+// Returns { ok, badgeClass, badgeText, details[] } for a scan result
+// Flags: illegal tabs (extra folders + root tabs), >1 assembly per folder
 function validateFolders(result) {
-  const folders = Object.keys(result.folders || {});
+  const folderData = result.folders || {};
+  const folders = Object.keys(folderData);
   const rootTabs = result.root_tabs || [];
   const extra = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
   const illegal = [...extra, ...rootTabs];
-  if (illegal.length === 0) {
+  const details = [];
+
+  if (illegal.length > 0) {
+    details.push({ text: "Illegal tabs: " + illegal.join(", "), color: "#ff6b6b" });
+  }
+
+  // Check assembly counts per folder (>1 not allowed)
+  for (const [name, data] of Object.entries(folderData)) {
+    const count = (typeof data === "object" && data.assemblies) || 0;
+    if (count > 1) {
+      details.push({ text: `${name}: ${count} assemblies (max 1)`, color: "#ff6b6b" });
+    }
+  }
+
+  if (details.length === 0) {
     const label = folders.length > 0
       ? `${folders.length} folder${folders.length > 1 ? "s" : ""}`
       : "no folders";
-    return { ok: true, badgeClass: "badge-ok", badgeText: label, detail: null };
+    return { ok: true, badgeClass: "badge-ok", badgeText: label, details };
   }
   return {
     ok: false,
-    badgeClass: "badge-warn",
-    badgeText: `${illegal.length} illegal`,
-    detail: "Illegal tabs: " + illegal.join(", "),
+    badgeClass: "badge-err",
+    badgeText: `${details.length} issue${details.length > 1 ? "s" : ""}`,
+    details,
   };
 }
 
@@ -215,12 +229,13 @@ function showSingleResult(result) {
 
   $resultList.appendChild(el);
 
-  if (v.detail) {
+  // Show issue details (illegal tabs, assembly violations, etc.)
+  for (const d of (v.details || [])) {
     const detailEl = document.createElement("div");
     detailEl.className = "result-item";
     detailEl.style.paddingLeft = "20px";
-    detailEl.style.color = "#f0c040";
-    detailEl.textContent = v.detail;
+    detailEl.style.color = d.color || "#ff6b6b";
+    detailEl.textContent = d.text;
     $resultList.appendChild(detailEl);
   }
 
@@ -231,7 +246,7 @@ function showSingleResult(result) {
     const legalEl = document.createElement("div");
     legalEl.className = "result-item";
     legalEl.style.paddingLeft = "20px";
-    legalEl.style.color = "#888";
+    legalEl.style.color = "#95d5b2";
     legalEl.textContent = `Legal tabs: ${legalFolders.join(", ")}`;
     $resultList.appendChild(legalEl);
   }
