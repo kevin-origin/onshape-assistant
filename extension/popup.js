@@ -277,7 +277,7 @@ function loadViolations() {
         const line = document.createElement("div");
         line.className = "result-item";
         line.style.paddingLeft = "20px";
-        line.style.fontSize = "10px";
+        /* font-size inherited from .result-item */
         line.style.color = "#ff6b6b";
         line.textContent = item;
         $list.appendChild(line);
