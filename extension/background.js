@@ -451,10 +451,9 @@ async function checkDocViolations(docId, docName, wid) {
   console.log(`[Violations] Checking ${docName} (${docId}), wid=${wid || "null"}`);
 
   try {
-    // Parallel fetch: versions + release packages always, elements if wid available
+    // Parallel fetch: versions always, elements if wid available
     const promises = [
       onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(e => { console.error("[Violations] versions fetch failed:", e.message); return null; }),
-      onshapeFetch(`/api/v10/releasepackages?documentId=${docId}`).catch(e => { console.log("[Violations] releasepackages fetch:", e.message); return null; }),
     ];
     if (wid) {
       promises.push(
@@ -462,66 +461,30 @@ async function checkDocViolations(docId, docName, wid) {
       );
     }
 
-    const [versions, releasePackages, rawElements] = await Promise.all(promises);
+    const [versions, rawElements] = await Promise.all(promises);
 
     // 1. Versions since last release
     if (Array.isArray(versions) && versions.length > 0) {
       // Sort by createdAt ascending
       const sorted = [...versions].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
 
-      // Log release packages for debugging
-      const pkgs = Array.isArray(releasePackages) ? releasePackages
-        : (releasePackages?.items || []);
-      console.log(`[Violations] ${docName}: ${versions.length} versions, ${pkgs.length} release packages`);
-      if (pkgs.length > 0) {
-        console.log("[Violations] Release packages:" + JSON.stringify(
-          pkgs.slice(-3).map(p => ({ name: p.name, id: p.id, createdAt: p.createdAt,
-            versionId: p.versionId, status: p.status }))
-        ));
+      // Debug: log ALL unique purpose values and all version names
+      const purposeMap = {};
+      for (const v of sorted) {
+        const p = String(v.purpose ?? "null");
+        if (!purposeMap[p]) purposeMap[p] = [];
+        purposeMap[p].push(v.name);
       }
+      console.log(`[Violations] ${docName}: ${versions.length} versions, purposes=` +
+        JSON.stringify(purposeMap));
 
-      // Find last release — use release packages (from Release Management workflow)
-      // Match release package versionId to a version in the sorted list
+      // Find last release version by purpose field
       let lastReleaseIdx = -1;
-      if (pkgs.length > 0) {
-        // Collect all version IDs that have a release package
-        const releaseVersionIds = new Set(
-          pkgs.filter(p => p.versionId).map(p => p.versionId)
-        );
-        // If release packages don't have versionId, use createdAt to find nearest version
-        const releaseCreatedAts = pkgs
-          .filter(p => p.createdAt && !p.versionId)
-          .map(p => new Date(p.createdAt).getTime());
-
-        for (let i = sorted.length - 1; i >= 0; i--) {
-          if (releaseVersionIds.has(sorted[i].id)) {
-            lastReleaseIdx = i;
-            break;
-          }
-        }
-
-        // Fallback: match by createdAt if no versionId match
-        if (lastReleaseIdx === -1 && releaseCreatedAts.length > 0) {
-          const latestRelease = Math.max(...releaseCreatedAts);
-          for (let i = sorted.length - 1; i >= 0; i--) {
-            const vTime = new Date(sorted[i].createdAt).getTime();
-            if (vTime <= latestRelease) {
-              lastReleaseIdx = i;
-              break;
-            }
-          }
-        }
-      }
-
-      // Fallback: check version fields directly (purpose, name, description)
-      if (lastReleaseIdx === -1) {
-        for (let i = sorted.length - 1; i >= 0; i--) {
-          const v = sorted[i];
-          const p = v.purpose;
-          if (p && p !== 0 && p !== "0") {
-            lastReleaseIdx = i;
-            break;
-          }
+      for (let i = sorted.length - 1; i >= 0; i--) {
+        const p = sorted[i].purpose;
+        if (p && p !== 0 && p !== "0") {
+          lastReleaseIdx = i;
+          break;
         }
       }
 
