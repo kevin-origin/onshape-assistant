@@ -10,7 +10,10 @@ function showSection(id) {
 }
 
 document.getElementById("btnGoDrawing").addEventListener("click", () => showSection("sectionDrawing"));
-document.getElementById("btnGoScanner").addEventListener("click", () => showSection("sectionScanner"));
+document.getElementById("btnGoScanner").addEventListener("click", () => {
+  showSection("sectionScanner");
+  loadLastScanForCurrentDoc();
+});
 document.getElementById("btnGoViolations").addEventListener("click", () => {
   showSection("sectionViolations");
   loadViolations();
@@ -21,23 +24,26 @@ document.getElementById("btnBackFromViolations").addEventListener("click", () =>
 
 // ---------------------------------------------------------------------------
 
-const REQUIRED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports"];
+const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
 
 // Returns { ok, badgeClass, badgeText, detail } for a scan result
+// Missing folders = OK (subset is fine). Only flag EXTRA/unknown folders.
 function validateFolders(result) {
   const folders = Object.keys(result.folders || {});
   if (folders.length === 0) {
-    return { ok: false, badgeClass: "badge-err", badgeText: "no folders", detail: null };
+    // No folders at all — that's fine (root-level tabs only)
+    return { ok: true, badgeClass: "badge-ok", badgeText: "no folders", detail: null };
   }
-  const missing = REQUIRED_FOLDERS.filter(f => !folders.includes(f));
-  const extra   = folders.filter(f => !REQUIRED_FOLDERS.includes(f));
-  if (missing.length === 0 && extra.length === 0) {
-    return { ok: true, badgeClass: "badge-ok", badgeText: "4 folders", detail: null };
+  const extra = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
+  if (extra.length === 0) {
+    return { ok: true, badgeClass: "badge-ok", badgeText: `${folders.length} folder${folders.length > 1 ? "s" : ""}`, detail: null };
   }
-  let detail = [];
-  if (missing.length > 0) detail.push("missing: " + missing.join(", "));
-  if (extra.length > 0)   detail.push("extra: " + extra.join(", "));
-  return { ok: false, badgeClass: "badge-warn", badgeText: `${folders.length} folder${folders.length > 1 ? "s" : ""}`, detail: detail.join(" | ") };
+  return {
+    ok: false,
+    badgeClass: "badge-warn",
+    badgeText: `${extra.length} extra`,
+    detail: "extra: " + extra.join(", "),
+  };
 }
 
 // Drawing Creator elements
@@ -46,8 +52,6 @@ const $btnCreateDraw   = document.getElementById("btnCreateDrawings");
 const $drawLog         = document.getElementById("drawLog");
 
 // Scanner elements
-const $folderIds    = document.getElementById("folderIds");
-const $btnScan      = document.getElementById("btnScan");
 const $btnRescan    = document.getElementById("btnRescan");
 const $status       = document.getElementById("status");
 const $results      = document.getElementById("results");
@@ -58,32 +62,17 @@ const $resultList   = document.getElementById("resultList");
 // Load saved config
 // ---------------------------------------------------------------------------
 
-chrome.storage.local.get(["folderIds", "lastScanSummary", "partStudioUrl"], (data) => {
-  $folderIds.value    = (data.folderIds || []).join("\n");
+chrome.storage.local.get(["partStudioUrl"], (data) => {
   $partStudioUrl.value = data.partStudioUrl || "";
-
-  if (data.lastScanSummary) {
-    showSummary(data.lastScanSummary);
-  }
 });
 
 // ---------------------------------------------------------------------------
 // Save config on change
 // ---------------------------------------------------------------------------
 
-function saveConfig() {
-  const ids = $folderIds.value
-    .split("\n")
-    .map(s => s.trim())
-    .filter(Boolean);
-  chrome.storage.local.set({
-    folderIds: ids,
-    partStudioUrl: $partStudioUrl.value.trim(),
-  });
-}
-
-$folderIds.addEventListener("change", saveConfig);
-$partStudioUrl.addEventListener("change", saveConfig);
+$partStudioUrl.addEventListener("change", () => {
+  chrome.storage.local.set({ partStudioUrl: $partStudioUrl.value.trim() });
+});
 
 // ---------------------------------------------------------------------------
 // Status display
@@ -112,7 +101,7 @@ function appendDrawLog(text, cls) {
 }
 
 $btnCreateDraw.addEventListener("click", () => {
-  saveConfig();
+  chrome.storage.local.set({ partStudioUrl: $partStudioUrl.value.trim() });
 
   const url = $partStudioUrl.value.trim();
   if (!url || !url.includes("cad.onshape.com/documents/")) {
@@ -133,54 +122,11 @@ $btnCreateDraw.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Scan All
-// ---------------------------------------------------------------------------
-
-$btnScan.addEventListener("click", () => {
-  saveConfig();
-
-  const ids = $folderIds.value.split("\n").map(s => s.trim()).filter(Boolean);
-  if (ids.length === 0) {
-    showStatus("Enter at least one folder ID");
-    return;
-  }
-
-  $btnScan.disabled = true;
-  $btnRescan.disabled = true;
-  showStatus("Starting bulk scan...");
-
-  chrome.runtime.sendMessage(
-    {
-      type: "start-bulk-scan",
-      folderIds: ids,
-    },
-    (response) => {
-      $btnScan.disabled = false;
-      $btnRescan.disabled = false;
-
-      if (!response) {
-        showStatus("No response from background — try reloading extension");
-        return;
-      }
-
-      if (response.error) {
-        showStatus("Error: " + response.error);
-        return;
-      }
-
-      showSummary(response);
-    }
-  );
-});
-
-// ---------------------------------------------------------------------------
-// Listen for progress updates from background.js
+// Listen for messages from background.js
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "scan-progress") {
-    showStatus(msg.message);
-  } else if (msg.type === "draw-log") {
+  if (msg.type === "draw-log") {
     appendDrawLog(msg.message, msg.cls);
   } else if (msg.type === "draw-done") {
     $btnCreateDraw.disabled = false;
@@ -195,7 +141,29 @@ chrome.runtime.onMessage.addListener((msg) => {
 });
 
 // ---------------------------------------------------------------------------
-// Re-scan active tab
+// Load last scan result for current doc (from storage)
+// ---------------------------------------------------------------------------
+
+function loadLastScanForCurrentDoc() {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) return;
+    const url = tabs[0].url || "";
+    const m = url.match(/\/documents\/([a-f0-9]+)/);
+    if (!m) return;
+    const docId = m[1];
+
+    chrome.storage.local.get("docScanResults", (data) => {
+      const results = data.docScanResults || {};
+      if (results[docId]) {
+        showSingleResult(results[docId]);
+        $summaryText.textContent = "Last scan result";
+      }
+    });
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Scan This Doc
 // ---------------------------------------------------------------------------
 
 $btnRescan.addEventListener("click", () => {
@@ -206,7 +174,7 @@ $btnRescan.addEventListener("click", () => {
     $btnRescan.disabled = false;
 
     if (!response) {
-      showStatus("No response — is this an Onshape document?");
+      showStatus("No response -- is this an Onshape document?");
       return;
     }
 
@@ -215,66 +183,15 @@ $btnRescan.addEventListener("click", () => {
       return;
     }
 
-    showStatus(`Scanned: ${response.doc_name || response.doc_id}`);
+    hideStatus();
     showSingleResult(response);
+    $summaryText.textContent = `Scanned: ${response.doc_name || response.doc_id}`;
   });
 });
 
 // ---------------------------------------------------------------------------
 // Results display
 // ---------------------------------------------------------------------------
-
-function showSummary(data) {
-  $results.style.display = "block";
-
-  const timestamp = data.timestamp || "";
-  const total     = data.total || 0;
-  const scanned   = data.scanned || 0;
-  const errors    = data.errors || 0;
-
-  let text = `${scanned} docs scanned`;
-  if (errors > 0) text += `, ${errors} errors`;
-  if (timestamp) text += ` -- ${timestamp}`;
-  $summaryText.textContent = text;
-
-  $resultList.innerHTML = "";
-  const results = data.results || [];
-
-  for (const r of results) {
-    const v = validateFolders(r);
-    const el = document.createElement("div");
-    el.className = "result-item";
-
-    const nameSpan = document.createElement("span");
-    nameSpan.className = "result-name";
-    nameSpan.textContent = r.doc_name || r.doc_id;
-    el.appendChild(nameSpan);
-
-    const badge = document.createElement("span");
-    badge.className = "badge " + v.badgeClass;
-    badge.textContent = v.badgeText;
-    el.appendChild(badge);
-
-    $resultList.appendChild(el);
-
-    if (v.detail) {
-      const detailEl = document.createElement("div");
-      detailEl.className = "result-item";
-      detailEl.style.paddingLeft = "20px";
-      detailEl.style.fontSize = "10px";
-      detailEl.style.color = "#f0c040";
-      detailEl.textContent = v.detail;
-      $resultList.appendChild(detailEl);
-    }
-  }
-
-  // Show errors
-  const errList = data.errors_list || data.errors_detail || [];
-  // errors might just be a count from the summary
-  if (typeof data.errors !== "number") return;
-
-  hideStatus();
-}
 
 function showSingleResult(result) {
   $results.style.display = "block";

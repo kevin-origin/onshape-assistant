@@ -95,7 +95,7 @@
       font-weight: 400;
     }
     .btn-draw { background: #1b4332; color: #95d5b2; }
-    .btn-scan { background: #0f3460; color: #fff; }
+    /* .btn-scan removed — no bulk scan */
     .btn-rescan { background: #1a1a40; color: #7ec8e3; border: 1px solid #333; }
     #status {
       margin-top: 10px;
@@ -169,8 +169,8 @@
       <div class="menu-desc">Generate drawings for all parts in a Part Studio</div>
     </button>
     <button class="btn-menu" id="btnGoScanner">
-      Tab Folder Scanner
-      <div class="menu-desc">Scan documents and report folder structure</div>
+      Doc Scanner
+      <div class="menu-desc">Validate folder structure of the current document</div>
     </button>
     <button class="btn-menu" id="btnGoViolations">
       Violations
@@ -192,16 +192,12 @@
     <div id="drawLog"></div>
   </div>
 
-  <!-- ============ Tab Folder Scanner ============ -->
+  <!-- ============ Doc Scanner ============ -->
   <div id="sectionScanner" class="section">
-    <h3><button class="btn-back" id="btnBackFromScanner">Back</button> Tab Folder Scanner</h3>
-
-    <label>Folder IDs (one per line)</label>
-    <textarea id="folderIds" placeholder="e.g. 0e6a83bfe36bbb4968b747fb"></textarea>
+    <h3><button class="btn-back" id="btnBackFromScanner">Back</button> Doc Scanner</h3>
 
     <div class="btn-row">
-      <button class="btn-scan" id="btnScan">Scan All</button>
-      <button class="btn-rescan" id="btnRescan">Re-scan This Doc</button>
+      <button class="btn-rescan" id="btnRescan">Scan This Doc</button>
     </div>
 
     <div id="status"></div>

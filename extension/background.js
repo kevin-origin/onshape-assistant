@@ -1,6 +1,6 @@
-// background.js — Onshape Tab Folder Scanner service worker
-// Orchestrates bulk scans: discovers docs via Onshape session cookies,
-// opens a scanner tab, cycles through docs, collects results, POSTs to dashboard.
+// background.js — Onshape Doc Scanner service worker
+// Handles rescan requests, stores per-doc scan results, drawing creation,
+// and violation checks. No bulk scan — content.js auto-scans every doc on open.
 
 const ONSHAPE_BASE = "https://cad.onshape.com";
 const COMPANY_ID   = "6810c247e7c40668c32816a6";
@@ -198,7 +198,6 @@ async function createDrawingsForUrl(url) {
     // Center views vertically at y=0.155, spread horizontally
 
     // Step 1: Create front + iso views
-    // TODO: Add to dashboard later
     try {
       const viewBody = {
         description: "Add views",
@@ -340,174 +339,6 @@ async function createDrawingsForUrl(url) {
 }
 
 // ---------------------------------------------------------------------------
-// Document discovery — find all docs in the configured folders
-// ---------------------------------------------------------------------------
-
-async function discoverDocs(folderIds) {
-  const docs = [];
-  const seenDocIds = new Set();
-
-  for (const folderId of folderIds) {
-    await discoverDocsInFolder(folderId, docs, seenDocIds);
-  }
-
-  return docs;
-}
-
-async function discoverDocsInFolder(folderId, docs, seenDocIds) {
-  try {
-    // List documents owned by company, filtered by folder
-    // Use globaltreenodes which returns docs + subfolders in a folder
-    const items = await onshapeFetch(
-      `/api/v10/globaltreenodes/folder/${folderId}?getPathToRoot=false&includeAssemblies=false&limit=50`
-    );
-
-    const nodes = items.items || items.pathToRoot || items || [];
-    const nodeList = Array.isArray(nodes) ? nodes : [];
-
-    for (const node of nodeList) {
-      if (node.jsonType === "document" || node.resourceType === "document") {
-        if (!seenDocIds.has(node.id)) {
-          seenDocIds.add(node.id);
-          docs.push({
-            id: node.id,
-            name: node.name || node.id,
-            url: `${ONSHAPE_BASE}/documents/${node.id}`,
-          });
-        }
-      } else if (node.jsonType === "folder" || node.resourceType === "folder") {
-        // Recurse into subfolder
-        await discoverDocsInFolder(node.id, docs, seenDocIds);
-      }
-    }
-  } catch (err) {
-    console.error(`[Scanner] Failed to list folder ${folderId}:`, err);
-  }
-}
-
-// ---------------------------------------------------------------------------
-// Bulk scan — open scanner tab, cycle through docs, collect results
-// ---------------------------------------------------------------------------
-
-let scanState = {
-  running: false,
-  total: 0,
-  scanned: 0,
-  results: [],
-  errors: [],
-  scannerTabId: null,
-};
-
-async function runBulkScan(folderIds) {
-  if (scanState.running) {
-    return { error: "Scan already in progress" };
-  }
-
-  scanState = {
-    running: true,
-    total: 0,
-    scanned: 0,
-    results: [],
-    errors: [],
-    scannerTabId: null,
-  };
-
-  try {
-    // 1. Discover all docs in configured folders
-    broadcastProgress("Discovering documents...");
-    const docs = await discoverDocs(folderIds);
-    scanState.total = docs.length;
-
-    if (docs.length === 0) {
-      scanState.running = false;
-      return { error: "No documents found in configured folders" };
-    }
-
-    // Save registered doc IDs for auto-scan, and set bulk scan flag
-    const docIds = docs.map(d => d.id);
-    await chrome.storage.local.set({ registeredDocIds: docIds, bulkScanRunning: true });
-
-    // 2. Create scanner tab (inactive/background)
-    const tab = await chrome.tabs.create({
-      url: docs[0].url,
-      active: false,
-    });
-    scanState.scannerTabId = tab.id;
-
-    // 3. Scan each doc one by one
-    for (let i = 0; i < docs.length; i++) {
-      const doc = docs[i];
-      scanState.scanned = i;
-      broadcastProgress(`Scanning ${i + 1}/${docs.length}: ${doc.name}`);
-
-      try {
-        // Navigate scanner tab (first doc already loaded)
-        if (i > 0) {
-          await navigateTab(scanState.scannerTabId, doc.url);
-        } else {
-          // Wait for first doc to finish loading
-          await waitForTabLoad(scanState.scannerTabId);
-        }
-
-        // Ask content.js to scan
-        const result = await scanDocInTab(scanState.scannerTabId);
-        if (result && !result.error) {
-          scanState.results.push(result);
-        } else {
-          scanState.errors.push({
-            doc_id: doc.id,
-            doc_name: doc.name,
-            error: result?.error || "No response from content script",
-          });
-        }
-      } catch (err) {
-        scanState.errors.push({
-          doc_id: doc.id,
-          doc_name: doc.name,
-          error: err.message,
-        });
-      }
-    }
-
-    // 4. Close scanner tab
-    try {
-      await chrome.tabs.remove(scanState.scannerTabId);
-    } catch (_) { /* tab may already be closed */ }
-
-    scanState.scanned = docs.length;
-    const summary = {
-      total: docs.length,
-      scanned: scanState.results.length,
-      errors: scanState.errors.length,
-      results: scanState.results,
-    };
-
-    // Save last scan summary
-    const now = new Date();
-    const timeStr = now.toLocaleTimeString("en-IN", { hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata" }) + " IST";
-    await chrome.storage.local.set({
-      lastScanSummary: {
-        ...summary,
-        timestamp: timeStr,
-      },
-    });
-
-    broadcastProgress(`Done: ${summary.scanned} docs scanned, ${summary.errors} errors`);
-    scanState.running = false;
-    await chrome.storage.local.set({ bulkScanRunning: false });
-    return summary;
-
-  } catch (err) {
-    scanState.running = false;
-    await chrome.storage.local.set({ bulkScanRunning: false });
-    try {
-      if (scanState.scannerTabId) await chrome.tabs.remove(scanState.scannerTabId);
-    } catch (_) {}
-    return { error: err.message };
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Tab navigation helpers
 // ---------------------------------------------------------------------------
 
@@ -542,31 +373,6 @@ function waitForTabLoad(tabId) {
   });
 }
 
-function scanDocInTab(tabId) {
-  return new Promise((resolve) => {
-    const timeout = setTimeout(() => {
-      resolve({ error: "Scan timed out" });
-    }, DOC_SCAN_TIMEOUT);
-
-    chrome.tabs.sendMessage(tabId, { type: "scan-tab-folders" }, (response) => {
-      clearTimeout(timeout);
-      if (chrome.runtime.lastError) {
-        resolve({ error: chrome.runtime.lastError.message });
-      } else {
-        resolve(response);
-      }
-    });
-  });
-}
-
-// ---------------------------------------------------------------------------
-// Progress broadcast to popup
-// ---------------------------------------------------------------------------
-
-function broadcastProgress(message) {
-  chrome.runtime.sendMessage({ type: "scan-progress", message }).catch(() => {});
-}
-
 // ---------------------------------------------------------------------------
 // Try sending scan message to a tab's content script
 // Returns result or { __noConnection: true } if content script isn't there
@@ -584,6 +390,18 @@ function trySendScan(tabId) {
       }
     });
   });
+}
+
+// ---------------------------------------------------------------------------
+// Store scan result per doc in chrome.storage.local
+// ---------------------------------------------------------------------------
+
+async function storeDocScanResult(result) {
+  if (!result || !result.doc_id) return;
+  const data = await chrome.storage.local.get("docScanResults");
+  const results = data.docScanResults || {};
+  results[result.doc_id] = result;
+  await chrome.storage.local.set({ docScanResults: results });
 }
 
 // ---------------------------------------------------------------------------
@@ -792,35 +610,214 @@ async function addSheetViaIframe(tabId) {
 }
 
 // ---------------------------------------------------------------------------
-// Test helper — call testFlatOnActiveSheet(drawingEid) in service worker console
-// Navigate to Sheet 2 in the drawing first, then run this
-async function testFlatOnActiveSheet(eid) {
-  const did = "02355889d1a545fc8c1b4978";
-  const wid = "6dbe6080b6b51389fe698ee5";
-  const psEid = "4525923a27b4c34acc628a93";
-  // Try without sheetIndex — maybe it uses the editor's active sheet
-  const body = {
-    description: "Flat pattern no sheetIndex",
-    jsonRequests: [{
-      messageName: "onshapeCreateViews",
-      formatVersion: "2021-01-01",
-      views: [{
-        viewType: "TopLevel",
-        orientation: "flatPattern",
-        scale: { scaleSource: "Custom", numerator: 1, denominator: 3 },
-        reference: { documentId: did, workspaceId: wid, elementId: psEid, partId: "RZCD" },
-      }],
-    }],
-  };
-  try {
-    const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
-    console.log("Response:", JSON.stringify(r));
-    if (r.id) await pollModify(did, wid, eid, r.id);
-  } catch (e) {
-    console.log("ERR:", e.message);
+// Test helpers — disabled, kept for future debugging
+// ---------------------------------------------------------------------------
+
+/*
+// Test helper — explore drawing editor DOM to find flat pattern insertion UI
+// Run with: exploreFlatPatternUI()
+// Must have a drawing open in the active tab
+async function exploreFlatPatternUI() {
+  const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
+  if (!tabs.length) return console.log("No Onshape tab found");
+
+  const tabId = tabs[0].id;
+  console.log("[FlatExplore] Using tab:", tabId, tabs[0].url.slice(0, 80));
+
+  // Find drawing iframe
+  let drawingFrame = null;
+  const frames = await chrome.webNavigation.getAllFrames({ tabId });
+  drawingFrame = frames.find(f =>
+    f.url.includes("onshape.com/editor") || f.url.includes("onshape.com/drawing")
+  );
+  if (!drawingFrame) return console.log("No drawing iframe. Frames:", frames.map(f => f.url.slice(0, 120)));
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [drawingFrame.frameId] },
+    func: () => {
+      const found = {};
+
+      // 1. Look for toolbar/ribbon elements
+      const toolbarEls = document.querySelectorAll("[class*='toolbar' i], [class*='ribbon' i], [class*='menu' i]");
+      found.toolbars = Array.from(toolbarEls)
+        .filter(el => el.offsetHeight > 0)
+        .slice(0, 20)
+        .map(el => ({ cls: el.className.toString().slice(0, 120), tag: el.tagName, text: el.textContent.trim().slice(0, 60) }));
+
+      // 2. Look for anything with "flat", "pattern", "insert", "view" in class or text
+      const allEls = document.querySelectorAll("*");
+      found.flatRelated = [];
+      found.insertRelated = [];
+      for (const el of allEls) {
+        if (el.offsetHeight === 0) continue;
+        const cls = (el.className || "").toString().toLowerCase();
+        const txt = (el.textContent || "").trim().toLowerCase().slice(0, 80);
+        const title = (el.getAttribute("title") || "").toLowerCase();
+        const aria = (el.getAttribute("aria-label") || "").toLowerCase();
+
+        if (cls.includes("flat") || txt.includes("flat pattern") || title.includes("flat") || aria.includes("flat")) {
+          found.flatRelated.push({ cls: el.className.toString().slice(0, 120), tag: el.tagName, text: txt.slice(0, 60), title, aria });
+        }
+        if (cls.includes("insert") || title.includes("insert") || aria.includes("insert")) {
+          found.insertRelated.push({ cls: el.className.toString().slice(0, 120), tag: el.tagName, text: txt.slice(0, 60), title, aria });
+        }
+      }
+      found.flatRelated = found.flatRelated.slice(0, 20);
+      found.insertRelated = found.insertRelated.slice(0, 20);
+
+      // 3. Detailed toolbar button info (tooltips, data attrs, children)
+      const tbBtns = document.querySelectorAll(".toolbar-button, .toolbar-popup-button");
+      found.toolbarButtons = Array.from(tbBtns)
+        .filter(el => el.offsetHeight > 0)
+        .map(el => {
+          const tooltip = el.querySelector(".tooltip-text, .tooltip");
+          const svgUse = el.querySelector("svg use");
+          const img = el.querySelector("img");
+          const dataAttrs = {};
+          for (const attr of el.attributes) {
+            if (attr.name.startsWith("data-")) dataAttrs[attr.name] = attr.value;
+          }
+          return {
+            cls: el.className.toString().slice(0, 120),
+            title: el.getAttribute("title") || "",
+            aria: el.getAttribute("aria-label") || "",
+            tooltipText: tooltip?.textContent.trim().slice(0, 60) || "",
+            svgHref: svgUse?.getAttribute("href") || svgUse?.getAttribute("xlink:href") || "",
+            imgSrc: img?.getAttribute("src")?.slice(0, 80) || "",
+            dataAttrs,
+            disabled: el.classList.contains("disabled"),
+            childClasses: Array.from(el.children).map(c => c.className.toString().slice(0, 80)).slice(0, 5),
+          };
+        });
+
+      // 4. Active sheet info
+      found.activeSheet = document.querySelector(".active_sheet_label")?.textContent.trim() || "not found";
+
+      return found;
+    },
+  });
+
+  const data = results?.[0]?.result;
+  if (data) {
+    console.log("[FlatExplore] Active sheet:", data.activeSheet);
+    console.log("[FlatExplore] Flat-related elements:", JSON.stringify(data.flatRelated, null, 2));
+    console.log("[FlatExplore] Insert-related elements:", JSON.stringify(data.insertRelated, null, 2));
+    console.log("[FlatExplore] Toolbar buttons:", JSON.stringify(data.toolbarButtons, null, 2));
+    console.log("[FlatExplore] Toolbars:", JSON.stringify(data.toolbars, null, 2));
   }
+  return data;
 }
 
+// Test helper — click "Insert view" button and explore the dialog that appears
+// Run with: exploreInsertViewDialog()
+async function exploreInsertViewDialog() {
+  const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
+  if (!tabs.length) return console.log("No Onshape tab found");
+
+  const tabId = tabs[0].id;
+  const frames = await chrome.webNavigation.getAllFrames({ tabId });
+  const drawingFrame = frames.find(f =>
+    f.url.includes("onshape.com/editor") || f.url.includes("onshape.com/drawing")
+  );
+  if (!drawingFrame) return console.log("No drawing iframe found");
+
+  const results = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [drawingFrame.frameId] },
+    func: async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+      // Click "Insert view" button
+      const insertBtn = document.querySelector('[data-object-name="button_ID_DRAWINGVIEW"]');
+      if (!insertBtn) return { error: "Insert view button not found" };
+
+      const rect = insertBtn.getBoundingClientRect();
+      const cx = rect.left + rect.width / 2;
+      const cy = rect.top + rect.height / 2;
+      const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
+      insertBtn.dispatchEvent(new MouseEvent("mousedown", evtOpts));
+      await sleep(50);
+      insertBtn.dispatchEvent(new MouseEvent("mouseup", evtOpts));
+      await sleep(50);
+      insertBtn.dispatchEvent(new MouseEvent("click", evtOpts));
+
+      // Wait for dialog/panel to appear
+      await sleep(3000);
+
+      // Explore what appeared — look for dialogs, panels, dropdowns, radio buttons, selectors
+      const found = {};
+
+      // 1. Any new dialog/panel/flyout elements
+      const dialogs = document.querySelectorAll("[class*='dialog' i], [class*='panel' i], [class*='flyout' i], [class*='popup' i], [class*='modal' i]");
+      found.dialogs = Array.from(dialogs)
+        .filter(el => el.offsetHeight > 0)
+        .slice(0, 15)
+        .map(el => ({
+          cls: el.className.toString().slice(0, 150),
+          text: el.textContent.trim().slice(0, 200),
+          childCount: el.children.length,
+        }));
+
+      // 2. Any elements with "view", "orientation", "flat", "front", "iso" text
+      const allVisible = document.querySelectorAll("*");
+      found.viewOptions = [];
+      for (const el of allVisible) {
+        if (el.offsetHeight === 0 || el.children.length > 3) continue;
+        const txt = (el.textContent || "").trim().toLowerCase();
+        if (txt.length > 2 && txt.length < 80 && (
+          txt.includes("flat") || txt.includes("front") || txt.includes("isometric") ||
+          txt.includes("orientation") || txt.includes("view type") || txt.includes("part studio") ||
+          txt.includes("scale") || txt.includes("sheet metal")
+        )) {
+          found.viewOptions.push({
+            cls: el.className.toString().slice(0, 100),
+            tag: el.tagName,
+            text: txt.slice(0, 80),
+          });
+        }
+      }
+      found.viewOptions = found.viewOptions.slice(0, 30);
+
+      // 3. Radio buttons, checkboxes, select elements, dropdowns
+      const inputs = document.querySelectorAll("input[type='radio'], input[type='checkbox'], select, [class*='dropdown' i], [class*='combo' i], [class*='select' i]");
+      found.inputs = Array.from(inputs)
+        .filter(el => el.offsetHeight > 0)
+        .slice(0, 20)
+        .map(el => ({
+          cls: el.className.toString().slice(0, 100),
+          tag: el.tagName,
+          type: el.type || "",
+          name: el.name || "",
+          value: el.value || "",
+          text: el.textContent.trim().slice(0, 60),
+        }));
+
+      // 4. Clickable items in any list/tree that appeared
+      const listItems = document.querySelectorAll("[class*='list-item' i], [class*='tree-item' i], [class*='option' i], [class*='row' i]");
+      found.listItems = Array.from(listItems)
+        .filter(el => el.offsetHeight > 0 && el.textContent.trim().length > 0 && el.textContent.trim().length < 100)
+        .slice(0, 20)
+        .map(el => ({
+          cls: el.className.toString().slice(0, 100),
+          tag: el.tagName,
+          text: el.textContent.trim().slice(0, 80),
+        }));
+
+      return found;
+    },
+  });
+
+  const data = results?.[0]?.result;
+  if (data) {
+    console.log("[InsertView] Dialogs/panels:", JSON.stringify(data.dialogs, null, 2));
+    console.log("[InsertView] View options:", JSON.stringify(data.viewOptions, null, 2));
+    console.log("[InsertView] Inputs:", JSON.stringify(data.inputs, null, 2));
+    console.log("[InsertView] List items:", JSON.stringify(data.listItems, null, 2));
+  }
+  return data;
+}
+*/
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -830,20 +827,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return;
 
-  } else if (msg.type === "start-bulk-scan") {
-    runBulkScan(msg.folderIds).then(sendResponse);
-    return true; // async response
-
-  } else if (msg.type === "get-scan-status") {
-    sendResponse({
-      running: scanState.running,
-      total: scanState.total,
-      scanned: scanState.scanned,
-    });
-
   } else if (msg.type === "tab-folder-result") {
-    // Auto-scan result from content.js — store locally
-    // (previously forwarded to dashboard, now extension-only)
+    // Auto-scan result from content.js — store per doc
+    storeDocScanResult(msg.data);
 
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
@@ -884,6 +870,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
 
       if (result.error) return sendResponse(result);
+
+      // Store result per doc
+      await storeDocScanResult(result);
       sendResponse(result);
     });
     return true;

@@ -128,20 +128,12 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Auto-scan logic (only for registered docs)
+  // Auto-scan logic — runs on every Onshape doc open
   // ---------------------------------------------------------------------------
 
   async function autoScan() {
     const docId = getDocIdFromUrl();
     if (!docId) return;
-
-    // Skip if bulk scan is running (it handles scanning itself)
-    const data = await chrome.storage.local.get(["registeredDocIds", "bulkScanRunning"]);
-    if (data.bulkScanRunning) return;
-
-    const registered = data.registeredDocIds || [];
-    if (registered.length === 0) return;          // No bulk scan done yet
-    if (!registered.includes(docId)) return;      // Not a registered doc
 
     // Wait for tab bar to be ready
     await waitForTabBar();
@@ -149,7 +141,7 @@
     const result = await scanTabFolders();
     if (!result) return;
 
-    // Send to background for dashboard reporting
+    // Send to background for per-doc storage
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
   }
 
@@ -176,7 +168,7 @@
   });
 
   // ---------------------------------------------------------------------------
-  // Auto-scan on page load (only registered docs)
+  // Auto-scan on page load (every Onshape doc)
   // ---------------------------------------------------------------------------
 
   // Small delay to let Onshape fully initialize
