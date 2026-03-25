@@ -116,11 +116,29 @@
       const rootItems = getTabNames();
       if (rootItems.length === 0) return result;
 
-      // Debug: log what we found at root so console shows DOM structure
-      console.log("[Scanner] Root items:", rootItems.map(r => ({
-        text: r.text, isFolder: r.isFolder,
-        tabClass: (r.tab.className || "").toString().slice(0, 120),
-      })));
+      // Debug: dump DOM ancestry of each tab name to find the right selectors
+      console.log("[Scanner] Root items:", rootItems.map(r => {
+        // Walk up 5 ancestors from .os-tab-name
+        const ancestors = [];
+        let node = r.el;
+        for (let a = 0; a < 6 && node; a++) {
+          ancestors.push({
+            tag: node.tagName,
+            cls: (node.className || "").toString().slice(0, 150),
+            childCount: node.children?.length || 0,
+          });
+          node = node.parentElement;
+        }
+        // Sibling elements of .os-tab-name (icons, arrows, etc.)
+        const siblings = Array.from(r.el.parentElement?.children || [])
+          .filter(c => c !== r.el)
+          .map(c => ({
+            tag: c.tagName,
+            cls: (c.className || "").toString().slice(0, 100),
+            text: c.textContent?.trim().slice(0, 30) || "",
+          }));
+        return { text: r.text, ancestors, siblings };
+      }));
 
       const depthBefore = getBreadcrumbDepth();
 
