@@ -119,8 +119,8 @@
         const item = currentItems[i];
         const itemName = item.text;
 
-        // Click this item
-        item.el.click();
+        // Double-click to open folders (single-click just selects the tab)
+        item.el.dispatchEvent(new MouseEvent("dblclick", { bubbles: true, cancelable: true }));
         await sleep(CLICK_DELAY);
 
         const depthAfter = getBreadcrumbDepth();
@@ -133,7 +133,7 @@
           // Return to root
           await clickAllTabs();
         } else {
-          // Regular tab — not a folder
+          // Regular tab — not a folder (dblclick opened it in workspace, no nav)
           result.root_tabs.push(itemName);
           // Return to root to keep position consistent
           await clickAllTabs();
