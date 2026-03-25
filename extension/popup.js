@@ -76,7 +76,7 @@ function validateFolders(result) {
   return {
     ok: false,
     badgeClass: "badge-err",
-    badgeText: `${details.length} issue${details.length > 1 ? "s" : ""}`,
+    badgeText: "Issues",
     details,
   };
 }

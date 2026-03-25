@@ -107,6 +107,7 @@
 
       const result = {
         doc_id: docId,
+        wid: getWidFromUrl(),
         doc_name: getDocName(),
         folders: {},
         root_tabs: [],
@@ -135,62 +136,9 @@
         }
       }
 
-      // Second pass: click into each folder to read children and count assemblies.
-      // Try multiple click targets — Onshape's Angular may bind the handler on
-      // any of these elements. Stop as soon as breadcrumb depth increases.
-      for (let i = 0; i < rootItems.length; i++) {
-        if (!rootItems[i].isFolder) continue;
-        const folderName = rootItems[i].text;
-
-        // Re-query to get fresh DOM references
-        const freshItems = getTabNames();
-        const folderItem = freshItems.find(f => f.text === folderName && f.isFolder);
-        if (!folderItem) continue;
-
-        const wrapper = folderItem.el.closest(".tab-content-wrapper");
-        const targets = [
-          { name: "tab-content-wrapper", el: wrapper },
-          { name: "TAB-LIST-ITEM", el: folderItem.tab },
-          { name: "ELEMENT-NAME", el: folderItem.el.parentElement },
-          { name: "os-tab-name", el: folderItem.el },
-        ].filter(t => t.el);
-
-        let navigated = false;
-        for (const target of targets) {
-          const rect = target.el.getBoundingClientRect();
-          if (rect.width === 0) continue;
-          const cx = rect.left + rect.width / 2;
-          const cy = rect.top + rect.height / 2;
-          const opts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
-
-          target.el.dispatchEvent(new PointerEvent("pointerdown", { ...opts, pointerId: 1 }));
-          await sleep(30);
-          target.el.dispatchEvent(new PointerEvent("pointerup", { ...opts, pointerId: 1 }));
-          await sleep(30);
-          target.el.dispatchEvent(new MouseEvent("click", opts));
-          await sleep(CLICK_DELAY);
-
-          if (getBreadcrumbDepth() > depthBefore) {
-            console.log(`[Scanner] Folder "${folderName}" opened via: ${target.name}`);
-            navigated = true;
-            break;
-          }
-        }
-
-        if (navigated) {
-          const children = getTabNames();
-          const childNames = children.map(c => c.text);
-          const assemblyCount = children.filter(c => c.tabType === "assembly").length;
-
-          console.log(`[Scanner] Folder "${folderName}" children:`, children.map(c => ({
-            text: c.text, tabType: c.tabType, classes: c.classes,
-          })));
-
-          result.folders[folderName] = { children: childNames, assemblies: assemblyCount };
-          await clickAllTabs();
-        }
-        // If no target worked, folder stays with defaults (0 assemblies)
-      }
+      // NOTE: Folder navigation via DOM clicks doesn't work (Onshape checks
+      // event.isTrusted). Assembly counting per folder is done via API in
+      // background.js storeDocScanResult() instead.
 
       return result;
     } finally {
