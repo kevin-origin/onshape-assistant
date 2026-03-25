@@ -401,7 +401,9 @@ const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feat
 async function storeDocScanResult(result) {
   if (!result || !result.doc_id) return;
 
-  // Enrich with assembly counts from API (avoids unreliable DOM clicking)
+  // Enrich with assembly count from API
+  // Onshape API doesn't expose tab group membership, so we count total
+  // assemblies and attribute them to the "Assemblies" folder if it exists
   const folders = Object.keys(result.folders || {});
   if (result.wid && folders.length > 0) {
     try {
@@ -409,48 +411,14 @@ async function storeDocScanResult(result) {
         `/api/v10/documents/d/${result.doc_id}/w/${result.wid}/elements`
       );
       const elements = Array.isArray(rawElements) ? rawElements : (rawElements.items || []);
+      const assemblies = elements.filter(e => e.elementType === "ASSEMBLY");
+      console.log(`[Scanner] ${assemblies.length} assemblies in doc:`,
+        assemblies.map(a => a.name));
 
-      // Log first element's keys so we can discover tab group mapping
-      if (elements.length > 0) {
-        console.log("[Scanner] Element keys:", Object.keys(elements[0]));
-        console.log("[Scanner] First 3 elements:", JSON.stringify(elements.slice(0, 3).map(e => ({
-          name: e.name, elementType: e.elementType, type: e.type,
-          dataType: e.dataType, tabGroupId: e.tabGroupId,
-          id: e.id,
-        }))));
-      }
-
-      // Count assemblies and check for tab group field
-      const assemblies = elements.filter(
-        e => (e.elementType || e.type || "") === "ASSEMBLY"
-      );
-      console.log("[Scanner] Assemblies:", assemblies.map(a => ({
-        name: a.name, tabGroupId: a.tabGroupId, folderId: a.folderId,
-      })));
-
-      // If elements have tabGroupId, build folder-to-assembly mapping
-      // Tab groups (folders) might be elements themselves with a special type
-      const tabGroups = elements.filter(e => e.elementType === "TABGROUP" || e.dataType === "tabgroup");
-      if (tabGroups.length > 0) {
-        console.log("[Scanner] Tab groups found:", tabGroups.map(g => ({ name: g.name, id: g.id })));
-        // Build map: tabGroupId -> folder name
-        const groupNameMap = {};
-        for (const g of tabGroups) groupNameMap[g.id] = g.name;
-
-        // Count assemblies per folder
-        for (const a of assemblies) {
-          const folderName = groupNameMap[a.tabGroupId] || null;
-          if (folderName && result.folders[folderName]) {
-            result.folders[folderName].assemblies = (result.folders[folderName].assemblies || 0) + 1;
-          }
-        }
-      } else if (assemblies.length > 0 && assemblies[0].tabGroupId) {
-        // Tab groups aren't separate elements, but assemblies have tabGroupId
-        // We need to map IDs to folder names — find elements matching folder names
-        // that might be the tab group containers
-        console.log("[Scanner] No TABGROUP elements, but assemblies have tabGroupId");
-      } else {
-        console.log("[Scanner] No tab group mapping found — cannot count assemblies per folder via API");
+      // Attribute all assemblies to "Assemblies" folder (best heuristic —
+      // API has no tab group mapping, DOM click navigation doesn't work)
+      if (result.folders["Assemblies"]) {
+        result.folders["Assemblies"].assemblies = assemblies.length;
       }
     } catch (e) {
       console.error("[Scanner] Elements API error:", e.message);
