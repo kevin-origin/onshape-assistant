@@ -436,9 +436,19 @@
   // SPA navigation: background.js sends "spa-navigated" when URL changes
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "spa-navigated") {
-      console.log("[Scanner] SPA navigation detected:", msg.url);
+      console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
       removeFolderOverlay();
       runOnDocLoad();
     }
   });
+
+  // Fallback: poll URL every 2s in case tabs.onUpdated doesn't fire
+  setInterval(() => {
+    const docId = getDocIdFromUrl();
+    if (docId && docId !== _lastDocId) {
+      console.log("[Scanner] URL poll detected new doc:", docId);
+      removeFolderOverlay();
+      runOnDocLoad();
+    }
+  }, 2000);
 })();

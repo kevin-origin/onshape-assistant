@@ -892,25 +892,25 @@ function cdpSend(tabId, method, params = {}) {
 
 async function cdpClick(tabId, x, y) {
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseMoved", x, y,
+    type: "mouseMoved", x, y, buttons: 0,
   });
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mousePressed", x, y, button: "left", clickCount: 1,
+    type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1,
   });
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseReleased", x, y, button: "left", clickCount: 1,
+    type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1,
   });
 }
 
 async function cdpRightClick(tabId, x, y) {
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseMoved", x, y,
+    type: "mouseMoved", x, y, buttons: 0,
   });
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mousePressed", x, y, button: "right", clickCount: 1,
+    type: "mousePressed", x, y, button: "right", buttons: 2, clickCount: 1,
   });
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseReleased", x, y, button: "right", clickCount: 1,
+    type: "mouseReleased", x, y, button: "right", buttons: 0, clickCount: 1,
   });
 }
 
@@ -1309,18 +1309,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 });
 
 // ---------------------------------------------------------------------------
-// SPA navigation detection — Onshape uses pushState for doc switching
+// SPA navigation detection — notify content script when Onshape URL changes
 // ---------------------------------------------------------------------------
 
-chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
-  if (details.frameId !== 0) return; // main frame only
-  if (!details.url.includes("cad.onshape.com/documents/")) return;
-  console.log("[SPA] History state updated:", details.url);
-  chrome.tabs.sendMessage(details.tabId, {
-    type: "spa-navigated",
-    url: details.url,
-  }).catch(() => {}); // content script may not be injected yet
-}, { url: [{ hostSuffix: "onshape.com" }] });
+// Track last known URL per tab to detect doc switches
+const _tabUrls = {};
+
+chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
+  if (!changeInfo.url) return;
+  if (!changeInfo.url.includes("cad.onshape.com/documents/")) return;
+  const prev = _tabUrls[tabId] || "";
+  _tabUrls[tabId] = changeInfo.url;
+  // Only notify if the document ID changed (not just element/workspace switch)
+  const prevDocId = prev.match(/\/documents\/([a-f0-9]+)/)?.[1];
+  const newDocId = changeInfo.url.match(/\/documents\/([a-f0-9]+)/)?.[1];
+  if (newDocId && newDocId !== prevDocId) {
+    console.log("[SPA] Doc switch detected:", prevDocId, "->", newDocId);
+    chrome.tabs.sendMessage(tabId, {
+      type: "spa-navigated",
+      url: changeInfo.url,
+    }).catch(() => {});
+  }
+});
+
+chrome.tabs.onRemoved.addListener((tabId) => { delete _tabUrls[tabId]; });
 
 // ---------------------------------------------------------------------------
 // Notification click — open popup to the relevant section
