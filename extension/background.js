@@ -1354,6 +1354,81 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
     return true;
 
+  } else if (msg.type === "observe-dom-changes") {
+    // DOM observer: start recording mutations. User manually right-clicks and
+    // creates a folder, then sends "read-dom-changes" to dump what happened.
+    // Run from console: chrome.runtime.sendMessage({type:"observe-dom-changes"})
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs.length === 0) return sendResponse({ error: "No active tab" });
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: () => {
+            window.__domChanges = [];
+            window.__domObserver = new MutationObserver((mutations) => {
+              for (const m of mutations) {
+                for (const node of m.addedNodes) {
+                  if (node.nodeType !== 1) continue;
+                  const el = node;
+                  const r = el.getBoundingClientRect();
+                  window.__domChanges.push({
+                    action: "added",
+                    tag: el.tagName,
+                    cls: (el.className || "").toString().slice(0, 150),
+                    text: el.textContent.trim().slice(0, 120),
+                    x: Math.round(r.left), y: Math.round(r.top),
+                    w: Math.round(r.width), h: Math.round(r.height),
+                    children: el.children.length,
+                    html: el.outerHTML.slice(0, 300),
+                  });
+                }
+              }
+            });
+            window.__domObserver.observe(document.body, { childList: true, subtree: true });
+            console.log("[DOM Observer] Recording started. Right-click tab bar and create a folder, then run: chrome.runtime.sendMessage({type:'read-dom-changes'})");
+          },
+        });
+        sendResponse({ ok: true, msg: "Recording. Do the manual action, then send 'read-dom-changes'" });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    });
+    return true;
+
+  } else if (msg.type === "read-dom-changes") {
+    // Read back recorded DOM mutations
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs.length === 0) return sendResponse({ error: "No active tab" });
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: () => {
+            if (window.__domObserver) {
+              window.__domObserver.disconnect();
+              window.__domObserver = null;
+            }
+            const changes = window.__domChanges || [];
+            window.__domChanges = [];
+            return changes;
+          },
+        });
+        const changes = results?.[0]?.result || [];
+        console.log(`[DOM Observer] ${changes.length} DOM mutations recorded:`);
+        // Log the interesting ones (not our own toast, visible, menu-like)
+        const interesting = changes.filter(c =>
+          c.w > 20 && c.h > 10 && !c.cls.includes("oxt-") && c.text.length > 0
+        );
+        for (const c of interesting) {
+          console.log(`  [${c.tag}] cls="${c.cls}" text="${c.text}" (${c.w}x${c.h} at ${c.x},${c.y})`);
+        }
+        console.log("[DOM Observer] Full dump:", JSON.stringify(interesting, null, 2));
+        sendResponse({ count: changes.length, interesting });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    });
+    return true;
+
   } else if (msg.type === "rescan-active-tab") {
     // Re-scan the current active tab. If content script isn't injected, inject it first.
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -1409,7 +1484,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     chrome.tabs.sendMessage(tabId, {
       type: "spa-navigated",
       url: changeInfo.url,
-    }).catch(() => {});
+    }).catch(() => {
+      // Content script not injected — reload tab as backup (approach C)
+      console.log("[SPA] Content script not reachable, reloading tab");
+      chrome.tabs.reload(tabId);
+    });
   }
 });
 
