@@ -966,8 +966,13 @@ async function discoverContextMenu(tabId) {
     // Find tab bar area coordinates
     const tabBarPos = await cdpSend(tabId, "Runtime.evaluate", {
       expression: `(() => {
-        const bar = document.querySelector('.os-tab-bar-scroll-container') ||
-                    document.querySelector('.os-tab-bar');
+        const selectors = ['.os-tab-bar-scroll-container', '.os-tab-bar', '.os-tab-bar-tabs', '[class*="tab-bar"]', '[class*="tabbar"]'];
+        let bar = null;
+        for (const sel of selectors) {
+          bar = document.querySelector(sel);
+          if (bar && bar.offsetHeight > 0) break;
+          bar = null;
+        }
         if (!bar) return null;
         const r = bar.getBoundingClientRect();
         return { x: r.left + 80, y: r.top + r.height / 2 };
@@ -1066,27 +1071,61 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       // Step a: Get tab bar coordinates (right-click on empty area)
       const tabBarPos = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
-          const bar = document.querySelector('.os-tab-bar-scroll-container') ||
-                      document.querySelector('.os-tab-bar');
-          if (!bar) return null;
+          // Try multiple selectors for the tab bar area
+          const selectors = [
+            '.os-tab-bar-scroll-container',
+            '.os-tab-bar',
+            '.os-tab-bar-tabs',
+            '[class*="tab-bar"]',
+            '[class*="tabbar"]',
+          ];
+          let bar = null;
+          let matchedSelector = '';
+          for (const sel of selectors) {
+            bar = document.querySelector(sel);
+            if (bar && bar.offsetHeight > 0) { matchedSelector = sel; break; }
+            bar = null;
+          }
+          if (!bar) {
+            // Diagnostic: find what tab-related elements exist
+            const allEls = document.querySelectorAll('[class*="tab"]');
+            const diag = [];
+            for (const el of allEls) {
+              if (el.offsetHeight === 0) continue;
+              const r = el.getBoundingClientRect();
+              if (r.height < 5 || r.height > 100) continue;
+              diag.push({
+                cls: el.className.toString().slice(0, 120),
+                tag: el.tagName,
+                w: Math.round(r.width),
+                h: Math.round(r.height),
+                x: Math.round(r.left),
+                y: Math.round(r.top),
+              });
+            }
+            return { error: "no-tab-bar", diag: diag.slice(0, 15) };
+          }
           const r = bar.getBoundingClientRect();
-          // Click in the right half of the bar to hit empty space
-          const tabs = bar.querySelectorAll('.os-tab-bar-tab');
+          // Find right edge of existing tabs to click in empty space
+          const tabs = bar.querySelectorAll('.os-tab-bar-tab, .os-tab-name');
           let rightEdge = r.left + 20;
           for (const t of tabs) {
             const tr = t.getBoundingClientRect();
             if (tr.right > rightEdge) rightEdge = tr.right;
           }
-          return { x: Math.min(rightEdge + 30, r.right - 10), y: r.top + r.height / 2 };
+          return { x: Math.min(rightEdge + 30, r.right - 10), y: r.top + r.height / 2, selector: matchedSelector };
         })()`,
         returnByValue: true,
       });
 
-      if (!tabBarPos.result?.value) {
-        throw new Error("Tab bar not found");
+      const tbVal = tabBarPos.result?.value;
+      if (!tbVal || tbVal.error) {
+        console.log("[CDP-Folders] Tab bar lookup result:", JSON.stringify(tbVal));
+        throw new Error("Tab bar not found — check console for diagnostic");
       }
 
-      const { x, y } = tabBarPos.result.value;
+      console.log(`[CDP-Folders] Tab bar found via "${tbVal.selector}" at (${tbVal.x}, ${tbVal.y})`);
+      const { x, y } = tbVal;
 
       // Step b: Right-click → context menu
       await cdpRightClick(tabId, x, y);
