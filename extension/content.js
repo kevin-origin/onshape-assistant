@@ -194,11 +194,13 @@
     maybeOfferFolderCreation(result);
 
     // --- Tab sorter: move stray root tabs into matching folders ---
+    // Always trigger if folders exist — sortStrayTabs does its own fresh DOM
+    // pre-check and exits early if nothing to sort. The scan result may miss
+    // strays due to tab bar load timing, so don't gate on hasStrays here.
     const hasFolders = Object.keys(result.folders || {}).length > 0;
-    const hasStrays = (result.root_tabs || []).length > 0;
-    if (hasFolders && hasStrays) {
+    if (hasFolders) {
       setTimeout(() => {
-        console.log("[Scanner] Triggering tab sort (stray root tabs detected)");
+        console.log("[Scanner] Triggering tab sort (folders exist)");
         chrome.runtime.sendMessage({ type: "sort-tabs" });
       }, 2000);
     }
