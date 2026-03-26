@@ -43,7 +43,7 @@ chrome.storage.local.get("popupTargetSection", (data) => {
 
 // ---------------------------------------------------------------------------
 
-const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
+const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
 // Returns { ok, badgeClass, badgeText, details[] } for a scan result
 // Flags: illegal tabs (extra folders + root tabs), >1 assembly per folder

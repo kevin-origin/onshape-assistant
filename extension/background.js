@@ -396,7 +396,7 @@ function trySendScan(tabId) {
 // Store scan result per doc in chrome.storage.local
 // ---------------------------------------------------------------------------
 
-const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
+const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
 async function storeDocScanResult(result) {
   if (!result || !result.doc_id) return;
@@ -935,6 +935,10 @@ async function cdpPressKey(tabId, key, keyCode) {
 }
 
 async function cdpDrag(tabId, fromX, fromY, toX, toY) {
+  // Three-phase drag: DOWN (out of tab bar) → ACROSS → UP (into target folder)
+  // Straight-line drags cross intermediate folders and tabs get "caught" mid-path.
+  const dropY = fromY + 120; // drag below the tab bar to avoid crossing other folders
+
   // Hover over source
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved", x: fromX, y: fromY, button: "none", buttons: 0, pointerType: "mouse",
@@ -947,16 +951,34 @@ async function cdpDrag(tabId, fromX, fromY, toX, toY) {
   });
   await new Promise(r => setTimeout(r, 200));
 
-  // Move in small steps from source to target (triggers dragstart)
-  const steps = 12;
-  for (let i = 1; i <= steps; i++) {
-    const ratio = i / steps;
-    const x = Math.round(fromX + (toX - fromX) * ratio);
-    const y = Math.round(fromY + (toY - fromY) * ratio);
+  // Phase 1: Drag DOWN (out of tab bar)
+  for (let i = 1; i <= 4; i++) {
+    const y = Math.round(fromY + (dropY - fromY) * (i / 4));
     await cdpSend(tabId, "Input.dispatchMouseEvent", {
-      type: "mouseMoved", x, y, button: "left", buttons: 1, pointerType: "mouse",
+      type: "mouseMoved", x: fromX, y, button: "left", buttons: 1, pointerType: "mouse",
     });
-    await new Promise(r => setTimeout(r, 40));
+    await new Promise(r => setTimeout(r, 30));
+  }
+  await new Promise(r => setTimeout(r, 100));
+
+  // Phase 2: Move ACROSS horizontally (below the tab bar, no folders to snag)
+  const hSteps = 8;
+  for (let i = 1; i <= hSteps; i++) {
+    const x = Math.round(fromX + (toX - fromX) * (i / hSteps));
+    await cdpSend(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved", x, y: dropY, button: "left", buttons: 1, pointerType: "mouse",
+    });
+    await new Promise(r => setTimeout(r, 30));
+  }
+  await new Promise(r => setTimeout(r, 100));
+
+  // Phase 3: Drag UP into target folder
+  for (let i = 1; i <= 4; i++) {
+    const y = Math.round(dropY + (toY - dropY) * (i / 4));
+    await cdpSend(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved", x: toX, y, button: "left", buttons: 1, pointerType: "mouse",
+    });
+    await new Promise(r => setTimeout(r, 30));
   }
   await new Promise(r => setTimeout(r, 150));
 
@@ -1251,8 +1273,8 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     // --- Move all stray root-level tabs into their matching folders ---
     // Type-to-folder mapping (tab CSS classes → target folder name)
     const TYPE_FOLDER_MAP = {
-      partstudio: "Parts",
-      "part-studio": "Parts",
+      partstudio: "Part Studios",
+      "part-studio": "Part Studios",
       assembly: "Assemblies",
       drawing: "Drawings",
     };
@@ -1408,8 +1430,8 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
 // ---------------------------------------------------------------------------
 
 const TAB_TYPE_FOLDER_MAP = {
-  partstudio: "Parts",
-  "part-studio": "Parts",
+  partstudio: "Part Studios",
+  "part-studio": "Part Studios",
   assembly: "Assemblies",
   drawing: "Drawings",
 };

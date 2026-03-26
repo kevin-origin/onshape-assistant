@@ -167,7 +167,7 @@
 
     // Notify after 10s if issues found (delay lives here in the content
     // script because the service worker may sleep before a setTimeout fires)
-    const ALLOWED_FOLDERS = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
+    const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
     const folderData = result.folders || {};
     const folders = Object.keys(folderData);
     const rootTabs = result.root_tabs || [];
@@ -218,7 +218,7 @@
   // Folder creation overlay — offered on new/empty docs
   // ---------------------------------------------------------------------------
 
-  const FOLDER_NAMES = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
+  const FOLDER_NAMES = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
   async function maybeOfferFolderCreation(scanResult) {
     const docId = scanResult.doc_id;
