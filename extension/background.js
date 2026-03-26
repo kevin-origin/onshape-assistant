@@ -1130,12 +1130,16 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       // Step b: Right-click → context menu
       await cdpRightClick(tabId, x, y);
 
-      // Step c: Wait for context menu and find "Create folder"
+      // Wait a moment for context menu to render
+      await new Promise(r => setTimeout(r, 500));
+
+      // Step c: Dump whatever appeared after right-click, then find "Create folder"
       const menuItem = await waitForElement(tabId, `(() => {
-        const items = document.querySelectorAll(
-          '[role="menuitem"], [class*="context-menu"] li, [class*="contextmenu"] li, [class*="dropdown-menu"] li, [class*="popover"] li'
+        // Broad search: any visible element that could be a menu item
+        const candidates = document.querySelectorAll(
+          '[role="menuitem"], [role="option"], [class*="context-menu"] *, [class*="contextmenu"] *, [class*="dropdown-menu"] *, [class*="popover"] *, [class*="menu-item"] *, [class*="menuitem"] *, [class*="popup"] li, [class*="menu"] li, [class*="menu"] div'
         );
-        for (const el of items) {
+        for (const el of candidates) {
           if (el.offsetHeight === 0) continue;
           const text = el.textContent.trim().toLowerCase();
           if (text === "create folder" || text === "new folder" || text.includes("create folder")) {
@@ -1144,9 +1148,44 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
           }
         }
         return null;
-      })()`, 3000);
+      })()`, 4000);
 
       if (!menuItem) {
+        // Diagnostic: dump all visible elements that appeared (potential menu items)
+        const diagDump = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const all = document.querySelectorAll('*');
+            const results = [];
+            for (const el of all) {
+              if (el.offsetHeight === 0 || el.children.length > 5) continue;
+              const text = el.textContent.trim();
+              if (!text || text.length > 80 || text.length < 2) continue;
+              const cls = el.className.toString().toLowerCase();
+              const role = el.getAttribute('role') || '';
+              // Only include elements that look like menu items
+              if (cls.includes('menu') || cls.includes('popup') || cls.includes('context') ||
+                  cls.includes('dropdown') || cls.includes('popover') || cls.includes('overlay') ||
+                  role.includes('menu') || role.includes('option') ||
+                  text.toLowerCase().includes('folder') || text.toLowerCase().includes('create') ||
+                  text.toLowerCase().includes('insert') || text.toLowerCase().includes('rename') ||
+                  text.toLowerCase().includes('delete') || text.toLowerCase().includes('new')) {
+                const r = el.getBoundingClientRect();
+                results.push({
+                  tag: el.tagName,
+                  cls: el.className.toString().slice(0, 150),
+                  text: text.slice(0, 60),
+                  role,
+                  x: Math.round(r.left + r.width / 2),
+                  y: Math.round(r.top + r.height / 2),
+                });
+              }
+            }
+            return results.slice(0, 30);
+          })()`,
+          returnByValue: true,
+        });
+        console.log("[CDP-Folders] Menu diagnostic:", JSON.stringify(diagDump.result?.value, null, 2));
+
         // Dismiss any open menu
         await cdpPressKey(tabId, "Escape", 27);
         throw new Error(`"Create folder" menu item not found for folder "${name}"`);
