@@ -1272,51 +1272,30 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
 
     // --- Move all stray root-level tabs into their matching folders ---
     // Type-to-folder mapping (tab CSS classes → target folder name)
-    const TYPE_FOLDER_MAP = {
-      partstudio: "Part Studios",
-      "part-studio": "Part Studios",
-      assembly: "Assemblies",
-      drawing: "Drawings",
+    // data-icon-src → folder name mapping (from DOM observation)
+    const ICON_FOLDER_MAP = {
+      "partstudio": "Part Studios",
+      "assembly": "Assemblies",
+      "drawing": "Drawings",
+      "feature-studio-element": "Feature Studios",
+      "variable-studio-element": "Variable Studios",
     };
 
-    // Gather all root-level non-folder tabs and their types
+    // Gather all root-level non-folder tabs and their types via data-icon-src
     const strayTabs = await cdpSend(tabId, "Runtime.evaluate", {
       expression: `(() => {
         const results = [];
         const tabs = document.querySelectorAll('.os-tab-bar-tab');
         for (const tab of tabs) {
-          // Skip folders
           if (tab.classList.contains('os-tab-bar-tab-group')) continue;
-          // Skip tabs already inside a folder (nested)
           if (tab.parentElement?.closest('.os-tab-bar-tab-group')) continue;
           const nameEl = tab.querySelector('.os-tab-name');
           if (!nameEl) continue;
           const name = nameEl.textContent.trim();
-          const cls = (tab.className || '').toString().toLowerCase();
+          const iconSrc = tab.getAttribute('data-icon-src') || '';
           const r = tab.getBoundingClientRect();
           if (r.width === 0) continue;
-          // Detect type from CSS classes or icon/SVG hints
-          let tabType = 'unknown';
-          if (cls.includes('partstudio') || cls.includes('part-studio')) tabType = 'partstudio';
-          else if (cls.includes('assembly')) tabType = 'assembly';
-          else if (cls.includes('drawing')) tabType = 'drawing';
-          // Fallback: check SVG use href or icon class inside the tab
-          if (tabType === 'unknown') {
-            const icon = tab.querySelector('svg use, [class*="icon"], [class*="svg"]');
-            const href = icon?.getAttribute('href') || icon?.getAttribute('xlink:href') || '';
-            const iconCls = (icon?.className || '').toString().toLowerCase();
-            if (href.includes('part-studio') || iconCls.includes('part-studio') || href.includes('partstudio') || iconCls.includes('partstudio')) tabType = 'partstudio';
-            else if (href.includes('assembly') || iconCls.includes('assembly')) tabType = 'assembly';
-            else if (href.includes('drawing') || iconCls.includes('drawing')) tabType = 'drawing';
-          }
-          // Fallback: match by tab name pattern
-          if (tabType === 'unknown') {
-            const lower = name.toLowerCase();
-            if (lower.startsWith('part studio')) tabType = 'partstudio';
-            else if (lower.startsWith('assembly')) tabType = 'assembly';
-            else if (lower.startsWith('drawing')) tabType = 'drawing';
-          }
-          results.push({ name, tabType, cls: cls.slice(0, 150), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
+          results.push({ name, iconSrc, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
         }
         return results;
       })()`,
@@ -1324,12 +1303,12 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     });
 
     const strays = strayTabs.result?.value || [];
-    console.log(`[CDP-Folders] Found ${strays.length} stray root tab(s):`, strays.map(s => `${s.name} (${s.tabType}) [${s.cls}]`));
+    console.log(`[CDP-Folders] Found ${strays.length} stray root tab(s):`, strays.map(s => `${s.name} (${s.iconSrc})`));
 
     for (const stray of strays) {
-      const targetFolder = TYPE_FOLDER_MAP[stray.tabType];
+      const targetFolder = ICON_FOLDER_MAP[stray.iconSrc];
       if (!targetFolder) {
-        console.log(`[CDP-Folders] No folder mapping for "${stray.name}" (type: ${stray.tabType}, cls: ${stray.cls}), skipping`);
+        console.log(`[CDP-Folders] No folder mapping for "${stray.name}" (icon: ${stray.iconSrc}), skipping`);
         continue;
       }
       if (!folderNames.includes(targetFolder)) {
@@ -1429,11 +1408,13 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
 // Runs independently of folder creation: after every scan, or on demand.
 // ---------------------------------------------------------------------------
 
-const TAB_TYPE_FOLDER_MAP = {
-  partstudio: "Part Studios",
-  "part-studio": "Part Studios",
-  assembly: "Assemblies",
-  drawing: "Drawings",
+// data-icon-src → folder name (from DOM observation)
+const TAB_ICON_FOLDER_MAP = {
+  "partstudio": "Part Studios",
+  "assembly": "Assemblies",
+  "drawing": "Drawings",
+  "feature-studio-element": "Feature Studios",
+  "variable-studio-element": "Variable Studios",
 };
 
 let _sortingInProgress = false;
@@ -1471,26 +1452,8 @@ async function sortStrayTabs(tabId, senderTabId) {
           if (tab.classList.contains('os-tab-bar-tab-group')) {
             folders.push(name);
           } else if (!tab.parentElement?.closest('.os-tab-bar-tab-group')) {
-            const cls = (tab.className || '').toString().toLowerCase();
-            let tabType = 'unknown';
-            if (cls.includes('partstudio') || cls.includes('part-studio')) tabType = 'partstudio';
-            else if (cls.includes('assembly')) tabType = 'assembly';
-            else if (cls.includes('drawing')) tabType = 'drawing';
-            if (tabType === 'unknown') {
-              const icon = tab.querySelector('svg use, [class*="icon"], [class*="svg"]');
-              const href = icon?.getAttribute('href') || icon?.getAttribute('xlink:href') || '';
-              const iconCls = (icon?.className || '').toString().toLowerCase();
-              if (href.includes('part-studio') || iconCls.includes('part-studio') || href.includes('partstudio') || iconCls.includes('partstudio')) tabType = 'partstudio';
-              else if (href.includes('assembly') || iconCls.includes('assembly')) tabType = 'assembly';
-              else if (href.includes('drawing') || iconCls.includes('drawing')) tabType = 'drawing';
-            }
-            if (tabType === 'unknown') {
-              const lower = name.toLowerCase();
-              if (lower.startsWith('part studio')) tabType = 'partstudio';
-              else if (lower.startsWith('assembly')) tabType = 'assembly';
-              else if (lower.startsWith('drawing')) tabType = 'drawing';
-            }
-            strays.push({ name, tabType });
+            const iconSrc = tab.getAttribute('data-icon-src') || '';
+            strays.push({ name, iconSrc });
           }
         }
         return { folders, strays };
@@ -1504,7 +1467,7 @@ async function sortStrayTabs(tabId, senderTabId) {
     }
 
     const movable = strays.filter(s => {
-      const target = TAB_TYPE_FOLDER_MAP[s.tabType];
+      const target = TAB_ICON_FOLDER_MAP[s.iconSrc];
       return target && folders.includes(target);
     });
     if (movable.length === 0) {
@@ -1512,7 +1475,7 @@ async function sortStrayTabs(tabId, senderTabId) {
       return { sorted: 0, skipped: 0, reason: "none-stray" };
     }
 
-    console.log(`[TabSort] ${movable.length} stray tab(s) to sort:`, movable.map(s => `${s.name} -> ${TAB_TYPE_FOLDER_MAP[s.tabType]}`));
+    console.log(`[TabSort] ${movable.length} stray tab(s) to sort:`, movable.map(s => `${s.name} -> ${TAB_ICON_FOLDER_MAP[s.iconSrc]}`));
 
     // Attach debugger only when we actually have tabs to move
     await new Promise((resolve, reject) => {
@@ -1524,7 +1487,7 @@ async function sortStrayTabs(tabId, senderTabId) {
     needsDetach = true;
 
     for (const stray of movable) {
-      const targetFolder = TAB_TYPE_FOLDER_MAP[stray.tabType];
+      const targetFolder = TAB_ICON_FOLDER_MAP[stray.iconSrc];
       sendSortProgress(stray.name);
       console.log(`[TabSort] Moving "${stray.name}" -> "${targetFolder}"`);
 

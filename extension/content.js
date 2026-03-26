@@ -51,14 +51,16 @@
       // Folders have additional class: os-tab-bar-tab-group
       const tab = el.closest(".os-tab-bar-tab") || el.parentElement;
       const isFolder = tab.classList?.contains("os-tab-bar-tab-group") || false;
-      const classes = (tab.className || "").toString().toLowerCase();
-      // Detect element type from tab classes (assembly, partstudio, drawing, etc.)
+      // data-icon-src is the reliable type identifier (from DOM observation)
+      const iconSrc = tab.getAttribute("data-icon-src") || "";
       let tabType = "unknown";
       if (isFolder) tabType = "folder";
-      else if (classes.includes("assembly")) tabType = "assembly";
-      else if (classes.includes("partstudio") || classes.includes("part-studio")) tabType = "partstudio";
-      else if (classes.includes("drawing")) tabType = "drawing";
-      return { text: el.textContent.trim(), el: el, tab: tab, isFolder, tabType, classes };
+      else if (iconSrc === "partstudio") tabType = "partstudio";
+      else if (iconSrc === "assembly") tabType = "assembly";
+      else if (iconSrc === "drawing") tabType = "drawing";
+      else if (iconSrc === "feature-studio-element") tabType = "featurestudio";
+      else if (iconSrc === "variable-studio-element") tabType = "variablestudio";
+      return { text: el.textContent.trim(), el: el, tab: tab, isFolder, tabType, iconSrc };
     });
   }
 
