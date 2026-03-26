@@ -934,6 +934,38 @@ async function cdpPressKey(tabId, key, keyCode) {
   });
 }
 
+async function cdpDrag(tabId, fromX, fromY, toX, toY) {
+  // Hover over source
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved", x: fromX, y: fromY, button: "none", buttons: 0, pointerType: "mouse",
+  });
+  await new Promise(r => setTimeout(r, 100));
+
+  // Press down on source
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mousePressed", x: fromX, y: fromY, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse",
+  });
+  await new Promise(r => setTimeout(r, 200));
+
+  // Move in small steps from source to target (triggers dragstart)
+  const steps = 12;
+  for (let i = 1; i <= steps; i++) {
+    const ratio = i / steps;
+    const x = Math.round(fromX + (toX - fromX) * ratio);
+    const y = Math.round(fromY + (toY - fromY) * ratio);
+    await cdpSend(tabId, "Input.dispatchMouseEvent", {
+      type: "mouseMoved", x, y, button: "left", buttons: 1, pointerType: "mouse",
+    });
+    await new Promise(r => setTimeout(r, 40));
+  }
+  await new Promise(r => setTimeout(r, 150));
+
+  // Release on target
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseReleased", x: toX, y: toY, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse",
+  });
+}
+
 async function waitForElement(tabId, jsExpr, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1215,6 +1247,92 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     }
 
     console.log("[CDP-Folders] All folders created successfully");
+
+    // --- Move default tabs into their folders ---
+    const DEFAULT_MOVES = [
+      { tabName: "Part Studio 1", folderName: "Parts" },
+      { tabName: "Assembly 1", folderName: "Assemblies" },
+    ];
+
+    for (const { tabName, folderName } of DEFAULT_MOVES) {
+      if (!folderNames.includes(folderName)) continue; // folder wasn't selected
+      sendProgress(folderNames.length, folderNames.length, tabName, "moving");
+      console.log(`[CDP-Folders] Moving "${tabName}" into "${folderName}"`);
+
+      // Find source tab position
+      const srcResult = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-name');
+          for (const t of tabs) {
+            if (t.textContent.trim() === ${JSON.stringify(tabName)}) {
+              const container = t.closest('.os-tab-bar-tab');
+              if (container && !container.classList.contains('os-tab-bar-tab-group')) {
+                const r = container.getBoundingClientRect();
+                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+              }
+            }
+          }
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+
+      // Find target folder position
+      const tgtResult = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-name');
+          for (const t of tabs) {
+            const container = t.closest('.os-tab-bar-tab');
+            if (container && container.classList.contains('os-tab-bar-tab-group') && t.textContent.trim() === ${JSON.stringify(folderName)}) {
+              const r = container.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+          }
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+
+      const src = srcResult.result?.value;
+      const tgt = tgtResult.result?.value;
+
+      if (!src) {
+        console.log(`[CDP-Folders] Tab "${tabName}" not found — may have been renamed or removed, skipping`);
+        continue;
+      }
+      if (!tgt) {
+        console.log(`[CDP-Folders] Folder "${folderName}" not found for move, skipping`);
+        continue;
+      }
+
+      console.log(`[CDP-Folders] Dragging from (${src.x},${src.y}) to (${tgt.x},${tgt.y})`);
+      await cdpDrag(tabId, src.x, src.y, tgt.x, tgt.y);
+      await new Promise(r => setTimeout(r, 800));
+
+      // Verify the tab moved (it should no longer be at root level)
+      const verified = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-name');
+          for (const t of tabs) {
+            if (t.textContent.trim() === ${JSON.stringify(tabName)}) {
+              const container = t.closest('.os-tab-bar-tab');
+              // If it's now inside a folder group, success
+              const parent = container?.parentElement?.closest('.os-tab-bar-tab-group');
+              return { moved: !!parent, parentCls: (parent?.className || '').toString().slice(0, 100) };
+            }
+          }
+          return { moved: false, reason: "tab-not-found" };
+        })()`,
+        returnByValue: true,
+      });
+      const v = verified.result?.value;
+      if (v?.moved) {
+        console.log(`[CDP-Folders] "${tabName}" successfully moved into folder`);
+      } else {
+        console.log(`[CDP-Folders] "${tabName}" move not confirmed:`, JSON.stringify(v));
+      }
+    }
+
     sendDone(true);
   } catch (e) {
     console.error("[CDP-Folders] Error:", e.message);

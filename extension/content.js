@@ -388,7 +388,11 @@
       return true; // keep channel open for async response
 
     } else if (msg.type === "folder-creation-progress") {
-      showProgressToast(`Creating folder ${msg.index}/${msg.total}: ${msg.name}...`);
+      if (msg.status === "moving") {
+        showProgressToast(`Moving "${msg.name}" to folder...`);
+      } else {
+        showProgressToast(`Creating folder ${msg.index}/${msg.total}: ${msg.name}...`);
+      }
 
     } else if (msg.type === "folder-creation-done") {
       if (msg.success) {
