@@ -1273,12 +1273,28 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
           const cls = (tab.className || '').toString().toLowerCase();
           const r = tab.getBoundingClientRect();
           if (r.width === 0) continue;
-          // Detect type from CSS classes
+          // Detect type from CSS classes or icon/SVG hints
           let tabType = 'unknown';
           if (cls.includes('partstudio') || cls.includes('part-studio')) tabType = 'partstudio';
           else if (cls.includes('assembly')) tabType = 'assembly';
           else if (cls.includes('drawing')) tabType = 'drawing';
-          results.push({ name, tabType, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
+          // Fallback: check SVG use href or icon class inside the tab
+          if (tabType === 'unknown') {
+            const icon = tab.querySelector('svg use, [class*="icon"], [class*="svg"]');
+            const href = icon?.getAttribute('href') || icon?.getAttribute('xlink:href') || '';
+            const iconCls = (icon?.className || '').toString().toLowerCase();
+            if (href.includes('part-studio') || iconCls.includes('part-studio') || href.includes('partstudio') || iconCls.includes('partstudio')) tabType = 'partstudio';
+            else if (href.includes('assembly') || iconCls.includes('assembly')) tabType = 'assembly';
+            else if (href.includes('drawing') || iconCls.includes('drawing')) tabType = 'drawing';
+          }
+          // Fallback: match by tab name pattern
+          if (tabType === 'unknown') {
+            const lower = name.toLowerCase();
+            if (lower.startsWith('part studio')) tabType = 'partstudio';
+            else if (lower.startsWith('assembly')) tabType = 'assembly';
+            else if (lower.startsWith('drawing')) tabType = 'drawing';
+          }
+          results.push({ name, tabType, cls: cls.slice(0, 150), x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
         }
         return results;
       })()`,
@@ -1286,12 +1302,12 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     });
 
     const strays = strayTabs.result?.value || [];
-    console.log(`[CDP-Folders] Found ${strays.length} stray root tab(s):`, strays.map(s => `${s.name} (${s.tabType})`));
+    console.log(`[CDP-Folders] Found ${strays.length} stray root tab(s):`, strays.map(s => `${s.name} (${s.tabType}) [${s.cls}]`));
 
     for (const stray of strays) {
       const targetFolder = TYPE_FOLDER_MAP[stray.tabType];
       if (!targetFolder) {
-        console.log(`[CDP-Folders] No folder mapping for "${stray.name}" (type: ${stray.tabType}), skipping`);
+        console.log(`[CDP-Folders] No folder mapping for "${stray.name}" (type: ${stray.tabType}, cls: ${stray.cls}), skipping`);
         continue;
       }
       if (!folderNames.includes(targetFolder)) {
@@ -1438,6 +1454,20 @@ async function sortStrayTabs(tabId, senderTabId) {
             if (cls.includes('partstudio') || cls.includes('part-studio')) tabType = 'partstudio';
             else if (cls.includes('assembly')) tabType = 'assembly';
             else if (cls.includes('drawing')) tabType = 'drawing';
+            if (tabType === 'unknown') {
+              const icon = tab.querySelector('svg use, [class*="icon"], [class*="svg"]');
+              const href = icon?.getAttribute('href') || icon?.getAttribute('xlink:href') || '';
+              const iconCls = (icon?.className || '').toString().toLowerCase();
+              if (href.includes('part-studio') || iconCls.includes('part-studio') || href.includes('partstudio') || iconCls.includes('partstudio')) tabType = 'partstudio';
+              else if (href.includes('assembly') || iconCls.includes('assembly')) tabType = 'assembly';
+              else if (href.includes('drawing') || iconCls.includes('drawing')) tabType = 'drawing';
+            }
+            if (tabType === 'unknown') {
+              const lower = name.toLowerCase();
+              if (lower.startsWith('part studio')) tabType = 'partstudio';
+              else if (lower.startsWith('assembly')) tabType = 'assembly';
+              else if (lower.startsWith('drawing')) tabType = 'drawing';
+            }
             strays.push({ name, tabType });
           }
         }
