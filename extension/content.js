@@ -152,10 +152,12 @@
 
   async function autoScan() {
     const docId = getDocIdFromUrl();
-    if (!docId) return;
+    if (!docId) { console.log("[Scanner] autoScan: no docId"); return; }
+    console.log("[Scanner] autoScan starting for", docId);
 
     // Wait for tab bar to be ready
     await waitForTabBar();
+    console.log("[Scanner] Tab bar ready");
 
     const result = await scanTabFolders();
     if (!result) return;
@@ -193,9 +195,13 @@
   async function waitForTabBar() {
     // Poll for the tab bar to appear (Onshape loads it dynamically)
     for (let i = 0; i < 30; i++) {
-      if (document.querySelector(".os-tab-name")) return;
+      if (document.querySelector(".os-tab-name")) {
+        console.log(`[Scanner] waitForTabBar: found after ${i * 500}ms`);
+        return;
+      }
       await sleep(500);
     }
+    console.log("[Scanner] waitForTabBar: timed out after 15s");
   }
 
   // ---------------------------------------------------------------------------
