@@ -1068,204 +1068,131 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       sendProgress(i + 1, folderNames.length, name, "creating");
       console.log(`[CDP-Folders] Creating folder ${i + 1}/${folderNames.length}: ${name}`);
 
-      // Step a: Find a tab element and set up contextmenu event listener diagnostic
-      const tabPos = await cdpSend(tabId, "Runtime.evaluate", {
+      // Step a: Find the "Insert new tab" button (+ icon near tab bar)
+      const insertBtn = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
-          // Install one-shot contextmenu listener to check if event fires
-          window.__cdpContextMenuFired = false;
-          window.__cdpContextMenuTarget = null;
-          document.addEventListener('contextmenu', function _cdpTest(e) {
-            window.__cdpContextMenuFired = true;
-            window.__cdpContextMenuTarget = e.target?.className?.toString().slice(0, 100) || e.target?.tagName || 'unknown';
-            document.removeEventListener('contextmenu', _cdpTest, true);
-          }, true);
-
-          const tab = document.querySelector('.os-tab-bar-tab, .os-tab-name');
-          if (!tab || tab.offsetHeight === 0) return null;
-          const r = tab.getBoundingClientRect();
-          // Also find the "+" add button near the tab bar
-          const addBtns = document.querySelectorAll('.os-tab-bar-add-button, [class*="add-tab"], [class*="new-tab"], [data-testid*="add"]');
-          let addBtn = null;
-          for (const b of addBtns) {
-            if (b.offsetHeight > 0) {
-              const br = b.getBoundingClientRect();
-              addBtn = { x: Math.round(br.left + br.width / 2), y: Math.round(br.top + br.height / 2), cls: b.className.toString().slice(0, 100) };
-              break;
-            }
+          // Search by Bootstrap tooltip attribute (confirmed from DOM observation)
+          const byTooltip = document.querySelector('[data-bs-original-title="Insert new tab"], [title="Insert new tab"]');
+          if (byTooltip && byTooltip.offsetHeight > 0) {
+            const r = byTooltip.getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), method: "tooltip" };
           }
-          // Also scan for any "+" icon or button near the tabs
-          if (!addBtn) {
-            const allBtns = document.querySelectorAll('button, [role="button"], .os-icon');
-            for (const b of allBtns) {
-              if (b.offsetHeight === 0) continue;
-              const br = b.getBoundingClientRect();
-              const text = b.textContent.trim();
-              const title = b.getAttribute('title') || '';
-              const aria = b.getAttribute('aria-label') || '';
-              // Look for add/plus/insert near the tab bar (within 50px vertically)
-              if (Math.abs(br.top - r.top) < 50 && (text === '+' || title.toLowerCase().includes('insert') || title.toLowerCase().includes('add') || title.toLowerCase().includes('new') || aria.toLowerCase().includes('add') || aria.toLowerCase().includes('insert'))) {
-                addBtn = { x: Math.round(br.left + br.width / 2), y: Math.round(br.top + br.height / 2), cls: b.className.toString().slice(0, 100), text: text.slice(0, 20), title, aria };
-                break;
-              }
-            }
-          }
-          return {
-            x: Math.round(r.left + r.width / 2),
-            y: Math.round(r.top + r.height / 2),
-            text: tab.textContent.trim().slice(0, 40),
-            addBtn,
-          };
-        })()`,
-        returnByValue: true,
-      });
-
-      if (!tabPos.result?.value) {
-        throw new Error("No tab element found in DOM");
-      }
-
-      const tabInfo = tabPos.result.value;
-      console.log(`[CDP-Folders] Tab: "${tabInfo.text}" at (${tabInfo.x}, ${tabInfo.y}), addBtn:`, tabInfo.addBtn);
-
-      // Step b: Inspect what event listeners Onshape has on the tab element
-      if (i === 0) {
-        try {
-          const evalResult = await cdpSend(tabId, "Runtime.evaluate", {
-            expression: `document.querySelector('.os-tab-bar-tab, .os-tab-name')`,
-          });
-          if (evalResult.result?.objectId) {
-            const listeners = await cdpSend(tabId, "DOMDebugger.getEventListeners", {
-              objectId: evalResult.result.objectId,
-            });
-            const summary = (listeners.listeners || []).map(l => ({
-              type: l.type,
-              useCapture: l.useCapture,
-              passive: l.passive,
-              scriptId: l.scriptId,
-            }));
-            console.log("[CDP-Folders] Event listeners on tab element:", JSON.stringify(summary));
-          }
-        } catch (e) {
-          console.log("[CDP-Folders] Could not get event listeners:", e.message);
-        }
-      }
-
-      // Step c: Left-click tab first to select/focus it
-      console.log(`[CDP-Folders] Left-clicking tab to focus...`);
-      await cdpClick(tabId, tabInfo.x, tabInfo.y);
-      await new Promise(r => setTimeout(r, 500));
-
-      // Step d: Right-click with delays between events for proper processing
-      console.log(`[CDP-Folders] Right-clicking tab at (${tabInfo.x}, ${tabInfo.y})...`);
-      await cdpSend(tabId, "Input.dispatchMouseEvent", {
-        type: "mouseMoved", x: tabInfo.x, y: tabInfo.y, buttons: 0, pointerType: "mouse",
-      });
-      await new Promise(r => setTimeout(r, 100));
-      await cdpSend(tabId, "Input.dispatchMouseEvent", {
-        type: "mousePressed", x: tabInfo.x, y: tabInfo.y, button: "right", buttons: 2, clickCount: 1, pointerType: "mouse",
-      });
-      await new Promise(r => setTimeout(r, 100));
-      await cdpSend(tabId, "Input.dispatchMouseEvent", {
-        type: "mouseReleased", x: tabInfo.x, y: tabInfo.y, button: "right", buttons: 0, clickCount: 1, pointerType: "mouse",
-      });
-
-      // Wait for context menu to render
-      await new Promise(r => setTimeout(r, 1500));
-
-      // Check if contextmenu event fired
-      const ctxCheck = await cdpSend(tabId, "Runtime.evaluate", {
-        expression: `({ fired: window.__cdpContextMenuFired, target: window.__cdpContextMenuTarget })`,
-        returnByValue: true,
-      });
-      console.log("[CDP-Folders] contextmenu event:", JSON.stringify(ctxCheck.result?.value));
-
-      // Step e: Search for "Create folder" — check regular DOM AND shadow DOMs
-      const menuSearch = await cdpSend(tabId, "Runtime.evaluate", {
-        expression: `(() => {
-          const result = { found: null, newElements: [], shadowMenus: [] };
-
-          function searchInRoot(root) {
-            const all = root.querySelectorAll('*');
-            for (const el of all) {
-              if (el.offsetHeight === 0) continue;
-              const text = el.textContent.trim();
-              const ownText = el.childNodes.length <= 1 ? text : '';
-              if (!text || text.length > 100) continue;
-              const lower = (ownText || text).toLowerCase();
-              const cls = (el.className || '').toString();
-              const r = el.getBoundingClientRect();
-              if (ownText && (lower === 'create folder' || lower === 'new folder' || lower === 'create tab group' || lower === 'new tab group')) {
-                result.found = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: ownText, cls: cls.slice(0, 120), tag: el.tagName };
-              }
-              // Check for shadow roots
-              if (el.shadowRoot) {
-                result.shadowMenus.push({ host: cls.slice(0, 80), childCount: el.shadowRoot.childElementCount });
-                searchInRoot(el.shadowRoot);
-              }
-            }
-          }
-
-          searchInRoot(document);
-
-          // Also collect positioned/overlaying elements
-          const all = document.querySelectorAll('*');
-          for (const el of all) {
+          // Fallback: find "+" button or insert icon near the tab bar
+          const tabBar = document.querySelector('.os-tab-bar-tab');
+          if (!tabBar) return null;
+          const tabR = tabBar.getBoundingClientRect();
+          // Look for small buttons/icons near the tab bar
+          const candidates = document.querySelectorAll('button, [role="button"], .os-icon, [class*="insert"], [class*="add"]');
+          for (const el of candidates) {
             if (el.offsetHeight === 0) continue;
             const r = el.getBoundingClientRect();
-            if (r.width < 50 || r.width > 400 || r.height < 20 || r.height > 500) continue;
-            const style = getComputedStyle(el);
-            const zIndex = parseInt(style.zIndex) || 0;
-            if ((style.position === 'absolute' || style.position === 'fixed') && zIndex > 10) {
-              result.newElements.push({ tag: el.tagName, cls: (el.className||'').toString().slice(0, 120), text: el.textContent.trim().slice(0, 80), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), zIndex });
+            const title = el.getAttribute('data-bs-original-title') || el.getAttribute('title') || '';
+            const aria = el.getAttribute('aria-label') || '';
+            const text = el.textContent.trim();
+            // Must be near the tab bar vertically, and look like an add/insert button
+            if (Math.abs(r.top - tabR.top) < 30 && r.width < 50 && r.height < 50) {
+              if (text === '+' || title.toLowerCase().includes('insert') || title.toLowerCase().includes('new tab') || aria.toLowerCase().includes('insert')) {
+                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), method: "scan", title, text: text.slice(0, 20) };
+              }
             }
           }
-          result.newElements = result.newElements.slice(0, 20);
-          return result;
+          // Last resort: dump nearby small buttons for diagnostic
+          const nearby = [];
+          for (const el of candidates) {
+            if (el.offsetHeight === 0) continue;
+            const r = el.getBoundingClientRect();
+            if (Math.abs(r.top - tabR.top) < 50 && r.width < 60) {
+              nearby.push({ cls: (el.className||'').toString().slice(0, 100), title: el.getAttribute('data-bs-original-title') || el.getAttribute('title') || '', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+            }
+          }
+          return { error: "not-found", nearby: nearby.slice(0, 10) };
         })()`,
         returnByValue: true,
       });
 
-      const searchResult = menuSearch.result?.value;
-      let menuItem = searchResult?.found;
-
-      if (!menuItem) {
-        console.log("[CDP-Folders] No 'Create folder' found.");
-        console.log("[CDP-Folders] Shadow DOMs:", JSON.stringify(searchResult?.shadowMenus));
-        console.log("[CDP-Folders] High z-index elements:", JSON.stringify(searchResult?.newElements, null, 2));
-        await cdpPressKey(tabId, "Escape", 27);
-        throw new Error(`Context menu not found. Event fired: ${ctxCheck.result?.value?.fired}. See console.`);
+      const btnInfo = insertBtn.result?.value;
+      if (!btnInfo || btnInfo.error) {
+        console.log("[CDP-Folders] Insert button search:", JSON.stringify(btnInfo));
+        throw new Error("'Insert new tab' button not found. See console for nearby elements.");
       }
 
-      console.log(`[CDP-Folders] Found menu item: "${menuItem.text}" at (${menuItem.x}, ${menuItem.y})`);
+      console.log(`[CDP-Folders] Found insert button via ${btnInfo.method} at (${btnInfo.x}, ${btnInfo.y})`);
 
-      // Step d: Click "Create folder"
-      await cdpClick(tabId, menuItem.x, menuItem.y);
+      // Step b: Click the "Insert new tab" button to open dropdown
+      await cdpClick(tabId, btnInfo.x, btnInfo.y);
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Step c: Find "Folder" option in the dropdown menu
+      const folderOption = await waitForElement(tabId, `(() => {
+        const all = document.querySelectorAll('*');
+        for (const el of all) {
+          if (el.offsetHeight === 0 || el.children.length > 3) continue;
+          const text = el.textContent.trim().toLowerCase();
+          if (text === 'folder' || text === 'tab group' || text === 'create folder' || text === 'new folder') {
+            const r = el.getBoundingClientRect();
+            if (r.width > 30 && r.height > 10) {
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: el.textContent.trim() };
+            }
+          }
+        }
+        return null;
+      })()`, 3000);
+
+      if (!folderOption) {
+        // Dump what appeared in the dropdown for diagnostic
+        const dropDiag = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const items = [];
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+              if (el.offsetHeight === 0 || el.children.length > 3) continue;
+              const text = el.textContent.trim();
+              if (!text || text.length > 60 || text.length < 2) continue;
+              const style = getComputedStyle(el);
+              const pos = style.position;
+              const z = parseInt(style.zIndex) || 0;
+              const r = el.getBoundingClientRect();
+              // Look for menu-like items (positioned, or in a dropdown area)
+              if ((pos === 'absolute' || pos === 'fixed') && z > 0 && r.width > 50 && r.height < 400) {
+                items.push({ tag: el.tagName, cls: (el.className||'').toString().slice(0, 100), text: text.slice(0, 60), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+              }
+            }
+            return items.slice(0, 20);
+          })()`,
+          returnByValue: true,
+        });
+        console.log("[CDP-Folders] Dropdown items:", JSON.stringify(dropDiag.result?.value, null, 2));
+        await cdpPressKey(tabId, "Escape", 27);
+        throw new Error("'Folder' option not found in dropdown. See console.");
+      }
+
+      console.log(`[CDP-Folders] Found folder option: "${folderOption.text}" at (${folderOption.x}, ${folderOption.y})`);
+
+      // Step d: Click "Folder" option
+      await cdpClick(tabId, folderOption.x, folderOption.y);
 
       // Step e: Wait for rename input to appear
       const renameInput = await waitForElement(tabId, `(() => {
-        const input = document.querySelector('.os-tab-name-input, .os-tab-bar-rename-input, input[class*="tab-name"], .os-rename-input');
+        const input = document.querySelector('.rename-tab-input, .os-tab-name-input, input[class*="rename"]');
         if (input && input.offsetHeight > 0) {
           const r = input.getBoundingClientRect();
           return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
         }
-        // Also check for contenteditable spans
-        const editable = document.querySelector('[contenteditable="true"].os-tab-name, .os-tab-name[contenteditable]');
-        if (editable && editable.offsetHeight > 0) {
-          const r = editable.getBoundingClientRect();
-          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), contentEditable: true };
-        }
         return null;
-      })()`, 3000);
+      })()`, 5000);
 
       if (!renameInput) {
         await cdpPressKey(tabId, "Escape", 27);
         throw new Error(`Rename input not found after creating folder "${name}"`);
       }
 
-      // Step f: Click the input to focus, select all, type folder name, press Enter
+      console.log(`[CDP-Folders] Rename input at (${renameInput.x}, ${renameInput.y})`);
+
+      // Step f: Click input to focus, select all, type folder name, press Enter
       await cdpClick(tabId, renameInput.x, renameInput.y);
       await new Promise(r => setTimeout(r, 200));
       await cdpTypeText(tabId, name);
-      await new Promise(r => setTimeout(r, 200));
+      await new Promise(r => setTimeout(r, 300));
       await cdpPressKey(tabId, "Enter", 13);
 
       // Step g: Wait for folder to appear in DOM
@@ -1277,12 +1204,14 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
         return null;
       })()`, 3000);
 
-      if (!folderAppeared) {
-        console.log(`[CDP-Folders] Warning: folder "${name}" not confirmed in DOM, continuing anyway`);
+      if (folderAppeared) {
+        console.log(`[CDP-Folders] Folder "${name}" confirmed in DOM`);
+      } else {
+        console.log(`[CDP-Folders] Warning: folder "${name}" not confirmed, continuing`);
       }
 
-      // Brief pause before next folder
-      await new Promise(r => setTimeout(r, 500));
+      // Pause before next folder
+      await new Promise(r => setTimeout(r, 800));
     }
 
     console.log("[CDP-Folders] All folders created successfully");
