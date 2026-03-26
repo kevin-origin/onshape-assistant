@@ -320,15 +320,10 @@
         progressText.style.color = "#dc2626";
         return;
       }
-      // Disable buttons during creation
-      createBtn.disabled = true;
-      createBtn.style.opacity = "0.6";
-      createBtn.style.cursor = "default";
-      skipBtn.disabled = true;
-      skipBtn.style.opacity = "0.6";
-      checkboxes.forEach(cb => { cb.disabled = true; });
-      progressText.textContent = "Starting folder creation...";
-      progressText.style.color = "#2563eb";
+      // Remove the full overlay so CDP can reach the tab bar
+      overlay.remove();
+      // Show a small non-blocking toast for progress
+      showProgressToast("Starting folder creation...");
 
       chrome.runtime.sendMessage({ type: "create-folders", folders: selected });
     });
@@ -340,9 +335,33 @@
     document.body.appendChild(overlay);
   }
 
+  function showProgressToast(text) {
+    let toast = document.getElementById("oxt-folder-toast");
+    if (!toast) {
+      toast = document.createElement("div");
+      toast.id = "oxt-folder-toast";
+      toast.style.cssText = `
+        position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
+        background: #1e293b; color: #fff; padding: 10px 20px; border-radius: 6px;
+        font-size: 13px; z-index: 999999; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        pointer-events: none;
+      `;
+      document.body.appendChild(toast);
+    }
+    toast.textContent = text;
+    return toast;
+  }
+
+  function removeProgressToast() {
+    const toast = document.getElementById("oxt-folder-toast");
+    if (toast) toast.remove();
+  }
+
   function removeFolderOverlay() {
     const overlay = document.getElementById("oxt-folder-overlay");
     if (overlay) overlay.remove();
+    removeProgressToast();
   }
 
   // ---------------------------------------------------------------------------
@@ -363,19 +382,11 @@
       return true; // keep channel open for async response
 
     } else if (msg.type === "folder-creation-progress") {
-      const progress = document.getElementById("oxt-folder-progress");
-      if (progress) {
-        progress.textContent = `Creating folder ${msg.index}/${msg.total}: ${msg.name}...`;
-        progress.style.color = "#2563eb";
-      }
+      showProgressToast(`Creating folder ${msg.index}/${msg.total}: ${msg.name}...`);
 
     } else if (msg.type === "folder-creation-done") {
-      const progress = document.getElementById("oxt-folder-progress");
       if (msg.success) {
-        if (progress) {
-          progress.textContent = "All folders created!";
-          progress.style.color = "#16a34a";
-        }
+        showProgressToast("All folders created!");
         // Save docId to offered list so overlay doesn't reappear
         const docId = getDocIdFromUrl();
         if (docId) {
@@ -385,18 +396,11 @@
             chrome.storage.local.set({ folderCreationOffered: offered });
           });
         }
-        // Remove overlay after brief delay
-        setTimeout(removeFolderOverlay, 1500);
+        setTimeout(removeProgressToast, 3000);
       } else {
-        if (progress) {
-          progress.textContent = `Error: ${msg.error || "Unknown error"}`;
-          progress.style.color = "#dc2626";
-        }
-        // Re-enable buttons so user can retry or skip
-        const createBtn = document.querySelector("#oxt-folder-overlay button:last-child");
-        const skipBtn = document.querySelector("#oxt-folder-overlay button:first-child");
-        if (createBtn) { createBtn.disabled = false; createBtn.style.opacity = "1"; createBtn.style.cursor = "pointer"; }
-        if (skipBtn) { skipBtn.disabled = false; skipBtn.style.opacity = "1"; }
+        const toast = showProgressToast(`Error: ${msg.error || "Unknown error"}`);
+        toast.style.background = "#dc2626";
+        setTimeout(removeProgressToast, 5000);
       }
     }
   });
@@ -406,15 +410,39 @@
   // ---------------------------------------------------------------------------
 
   // Small delay to let Onshape fully initialize
-  setTimeout(() => autoScan(), 3000);
+  let _lastDocId = null;
 
-  // Check violations (versions, parts, features, tabs) for release tracker
-  setTimeout(() => {
+  function runOnDocLoad() {
     const docId = getDocIdFromUrl();
-    const wid = getWidFromUrl();
-    const docName = getDocName();
-    if (docId) {
-      chrome.runtime.sendMessage({ type: "check-versions", docId, docName, wid });
+    if (!docId || docId === _lastDocId) return;
+    _lastDocId = docId;
+    console.log("[Scanner] Doc detected:", docId);
+
+    setTimeout(() => autoScan(), 3000);
+
+    // Check violations (versions, parts, features, tabs) for release tracker
+    setTimeout(() => {
+      const wid = getWidFromUrl();
+      const docName = getDocName();
+      if (docId) {
+        chrome.runtime.sendMessage({ type: "check-versions", docId, docName, wid });
+      }
+    }, 3000);
+  }
+
+  // Initial page load
+  runOnDocLoad();
+
+  // SPA navigation: Onshape uses pushState, so re-run when URL changes
+  let _lastHref = location.href;
+  const _spaObserver = new MutationObserver(() => {
+    if (location.href !== _lastHref) {
+      _lastHref = location.href;
+      console.log("[Scanner] SPA navigation detected:", location.href);
+      // Clean up any leftover overlays from previous doc
+      removeFolderOverlay();
+      runOnDocLoad();
     }
-  }, 3000);
+  });
+  _spaObserver.observe(document.body, { childList: true, subtree: true });
 })();
