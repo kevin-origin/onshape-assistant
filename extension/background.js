@@ -1068,127 +1068,90 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       sendProgress(i + 1, folderNames.length, name, "creating");
       console.log(`[CDP-Folders] Creating folder ${i + 1}/${folderNames.length}: ${name}`);
 
-      // Step a: Get tab bar coordinates (right-click on empty area)
-      const tabBarPos = await cdpSend(tabId, "Runtime.evaluate", {
+      // Step a: Find a tab element (.os-tab-name) and right-click directly on it
+      const tabPos = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
-          // Try multiple selectors for the tab bar area
-          const selectors = [
-            '.os-tab-bar-scroll-container',
-            '.os-tab-bar',
-            '.os-tab-bar-tabs',
-            '[class*="tab-bar"]',
-            '[class*="tabbar"]',
-          ];
-          let bar = null;
-          let matchedSelector = '';
-          for (const sel of selectors) {
-            bar = document.querySelector(sel);
-            if (bar && bar.offsetHeight > 0) { matchedSelector = sel; break; }
-            bar = null;
-          }
-          if (!bar) {
-            // Diagnostic: find what tab-related elements exist
-            const allEls = document.querySelectorAll('[class*="tab"]');
-            const diag = [];
-            for (const el of allEls) {
-              if (el.offsetHeight === 0) continue;
-              const r = el.getBoundingClientRect();
-              if (r.height < 5 || r.height > 100) continue;
-              diag.push({
-                cls: el.className.toString().slice(0, 120),
-                tag: el.tagName,
-                w: Math.round(r.width),
-                h: Math.round(r.height),
-                x: Math.round(r.left),
-                y: Math.round(r.top),
-              });
-            }
-            return { error: "no-tab-bar", diag: diag.slice(0, 15) };
-          }
-          const r = bar.getBoundingClientRect();
-          // Find right edge of existing tabs to click in empty space
-          const tabs = bar.querySelectorAll('.os-tab-bar-tab, .os-tab-name');
-          let rightEdge = r.left + 20;
-          for (const t of tabs) {
-            const tr = t.getBoundingClientRect();
-            if (tr.right > rightEdge) rightEdge = tr.right;
-          }
-          return { x: Math.min(rightEdge + 30, r.right - 10), y: r.top + r.height / 2, selector: matchedSelector };
+          const tab = document.querySelector('.os-tab-bar-tab, .os-tab-name');
+          if (!tab || tab.offsetHeight === 0) return null;
+          const r = tab.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: tab.textContent.trim().slice(0, 40) };
         })()`,
         returnByValue: true,
       });
 
-      const tbVal = tabBarPos.result?.value;
-      if (!tbVal || tbVal.error) {
-        console.log("[CDP-Folders] Tab bar lookup result:", JSON.stringify(tbVal));
-        throw new Error("Tab bar not found — check console for diagnostic");
+      if (!tabPos.result?.value) {
+        throw new Error("No tab element found in DOM");
       }
 
-      console.log(`[CDP-Folders] Tab bar found via "${tbVal.selector}" at (${tbVal.x}, ${tbVal.y})`);
-      const { x, y } = tbVal;
+      const { x, y } = tabPos.result.value;
+      console.log(`[CDP-Folders] Right-clicking tab "${tabPos.result.value.text}" at (${x}, ${y})`);
 
-      // Step b: Right-click → context menu
+      // Step b: Right-click on the tab
       await cdpRightClick(tabId, x, y);
 
-      // Wait a moment for context menu to render
-      await new Promise(r => setTimeout(r, 500));
+      // Wait for context menu to render
+      await new Promise(r => setTimeout(r, 1000));
 
-      // Step c: Dump whatever appeared after right-click, then find "Create folder"
-      const menuItem = await waitForElement(tabId, `(() => {
-        // Broad search: any visible element that could be a menu item
-        const candidates = document.querySelectorAll(
-          '[role="menuitem"], [role="option"], [class*="context-menu"] *, [class*="contextmenu"] *, [class*="dropdown-menu"] *, [class*="popover"] *, [class*="menu-item"] *, [class*="menuitem"] *, [class*="popup"] li, [class*="menu"] li, [class*="menu"] div'
-        );
-        for (const el of candidates) {
-          if (el.offsetHeight === 0) continue;
-          const text = el.textContent.trim().toLowerCase();
-          if (text === "create folder" || text === "new folder" || text.includes("create folder")) {
+      // Step c: Search broadly for "Create folder" in anything that appeared
+      // Also dump the full page state around the click area for diagnostics
+      const menuSearch = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const result = { found: null, allMenuItems: [], newElements: [] };
+
+          // Search ALL visible elements for "create folder" or "new folder" text
+          const all = document.querySelectorAll('*');
+          for (const el of all) {
+            if (el.offsetHeight === 0) continue;
+            const text = el.textContent.trim();
+            const ownText = el.childNodes.length <= 1 ? text : '';
+            if (!text || text.length > 100) continue;
+            const lower = (ownText || text).toLowerCase();
+            const cls = (el.className || '').toString();
             const r = el.getBoundingClientRect();
-            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: el.textContent.trim() };
-          }
-        }
-        return null;
-      })()`, 4000);
 
-      if (!menuItem) {
-        // Diagnostic: dump all visible elements that appeared (potential menu items)
-        const diagDump = await cdpSend(tabId, "Runtime.evaluate", {
-          expression: `(() => {
-            const all = document.querySelectorAll('*');
-            const results = [];
-            for (const el of all) {
-              if (el.offsetHeight === 0 || el.children.length > 5) continue;
-              const text = el.textContent.trim();
-              if (!text || text.length > 80 || text.length < 2) continue;
-              const cls = el.className.toString().toLowerCase();
-              const role = el.getAttribute('role') || '';
-              // Only include elements that look like menu items
-              if (cls.includes('menu') || cls.includes('popup') || cls.includes('context') ||
-                  cls.includes('dropdown') || cls.includes('popover') || cls.includes('overlay') ||
-                  role.includes('menu') || role.includes('option') ||
-                  text.toLowerCase().includes('folder') || text.toLowerCase().includes('create') ||
-                  text.toLowerCase().includes('insert') || text.toLowerCase().includes('rename') ||
-                  text.toLowerCase().includes('delete') || text.toLowerCase().includes('new')) {
-                const r = el.getBoundingClientRect();
-                results.push({
+            // Exact match on leaf elements
+            if (ownText && (lower === 'create folder' || lower === 'new folder' || lower === 'create tab group')) {
+              result.found = {
+                x: Math.round(r.left + r.width / 2),
+                y: Math.round(r.top + r.height / 2),
+                text: ownText,
+                cls: cls.slice(0, 120),
+                tag: el.tagName,
+              };
+            }
+
+            // Collect anything that looks like a popup/menu/overlay that wasn't there before
+            if (r.width > 50 && r.width < 400 && r.height > 20 && r.height < 500) {
+              const style = getComputedStyle(el);
+              const zIndex = parseInt(style.zIndex) || 0;
+              const pos = style.position;
+              if ((pos === 'absolute' || pos === 'fixed') && zIndex > 10) {
+                result.newElements.push({
                   tag: el.tagName,
-                  cls: el.className.toString().slice(0, 150),
-                  text: text.slice(0, 60),
-                  role,
-                  x: Math.round(r.left + r.width / 2),
-                  y: Math.round(r.top + r.height / 2),
+                  cls: cls.slice(0, 120),
+                  text: text.slice(0, 120),
+                  x: Math.round(r.left),
+                  y: Math.round(r.top),
+                  w: Math.round(r.width),
+                  h: Math.round(r.height),
+                  zIndex,
                 });
               }
             }
-            return results.slice(0, 30);
-          })()`,
-          returnByValue: true,
-        });
-        console.log("[CDP-Folders] Menu diagnostic:", JSON.stringify(diagDump.result?.value, null, 2));
+          }
+          result.newElements = result.newElements.slice(0, 20);
+          return result;
+        })()`,
+        returnByValue: true,
+      });
 
-        // Dismiss any open menu
+      const searchResult = menuSearch.result?.value;
+      let menuItem = searchResult?.found;
+
+      if (!menuItem) {
+        console.log("[CDP-Folders] No 'Create folder' found. High z-index elements:", JSON.stringify(searchResult?.newElements, null, 2));
         await cdpPressKey(tabId, "Escape", 27);
-        throw new Error(`"Create folder" menu item not found for folder "${name}"`);
+        throw new Error(`Context menu not found after right-clicking tab. See console for diagnostic.`);
       }
 
       console.log(`[CDP-Folders] Found menu item: "${menuItem.text}" at (${menuItem.x}, ${menuItem.y})`);
@@ -1344,6 +1307,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
   }
 });
+
+// ---------------------------------------------------------------------------
+// SPA navigation detection — Onshape uses pushState for doc switching
+// ---------------------------------------------------------------------------
+
+chrome.webNavigation.onHistoryStateUpdated.addListener((details) => {
+  if (details.frameId !== 0) return; // main frame only
+  if (!details.url.includes("cad.onshape.com/documents/")) return;
+  console.log("[SPA] History state updated:", details.url);
+  chrome.tabs.sendMessage(details.tabId, {
+    type: "spa-navigated",
+    url: details.url,
+  }).catch(() => {}); // content script may not be injected yet
+}, { url: [{ hostSuffix: "onshape.com" }] });
 
 // ---------------------------------------------------------------------------
 // Notification click — open popup to the relevant section

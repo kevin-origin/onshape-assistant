@@ -433,16 +433,12 @@
   // Initial page load
   runOnDocLoad();
 
-  // SPA navigation: Onshape uses pushState, so re-run when URL changes
-  let _lastHref = location.href;
-  const _spaObserver = new MutationObserver(() => {
-    if (location.href !== _lastHref) {
-      _lastHref = location.href;
-      console.log("[Scanner] SPA navigation detected:", location.href);
-      // Clean up any leftover overlays from previous doc
+  // SPA navigation: background.js sends "spa-navigated" when URL changes
+  chrome.runtime.onMessage.addListener((msg) => {
+    if (msg.type === "spa-navigated") {
+      console.log("[Scanner] SPA navigation detected:", msg.url);
       removeFolderOverlay();
       runOnDocLoad();
     }
   });
-  _spaObserver.observe(document.body, { childList: true, subtree: true });
 })();
