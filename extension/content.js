@@ -185,6 +185,9 @@
         });
       }, 10000);
     }
+
+    // --- New doc detection: offer folder structure creation ---
+    maybeOfferFolderCreation(result);
   }
 
   async function waitForTabBar() {
@@ -193,6 +196,146 @@
       if (document.querySelector(".os-tab-name")) return;
       await sleep(500);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Folder creation overlay — offered on new/empty docs
+  // ---------------------------------------------------------------------------
+
+  const FOLDER_NAMES = ["Parts", "Assemblies", "Drawings", "CAD Imports", "Feature Studios"];
+
+  async function maybeOfferFolderCreation(scanResult) {
+    const docId = scanResult.doc_id;
+    if (!docId) return;
+
+    const folders = Object.keys(scanResult.folders || {});
+    const rootTabs = scanResult.root_tabs || [];
+
+    // Only offer if: no folders, few root tabs, not already offered
+    if (folders.length > 0 || rootTabs.length >= 5) return;
+
+    // Check if already offered for this doc
+    const stored = await chrome.storage.local.get("folderCreationOffered");
+    const offered = stored.folderCreationOffered || [];
+    if (offered.includes(docId)) return;
+
+    // Check version count (stored by checkDocViolations, zero extra API calls)
+    const vcData = await chrome.storage.local.get("versionCounts");
+    const versionCount = (vcData.versionCounts || {})[docId];
+    // If version count not yet available, wait a bit and retry once
+    if (versionCount === undefined) {
+      await sleep(3000);
+      const vcRetry = await chrome.storage.local.get("versionCounts");
+      const retryCount = (vcRetry.versionCounts || {})[docId];
+      if (retryCount !== undefined && retryCount > 1) return;
+      // If still undefined, this is likely a brand-new doc — proceed
+    } else if (versionCount > 1) {
+      return; // Not a new doc
+    }
+
+    showFolderOverlay(docId);
+  }
+
+  function showFolderOverlay(docId) {
+    // Remove any existing overlay
+    const existing = document.getElementById("oxt-folder-overlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "oxt-folder-overlay";
+    overlay.style.cssText = `
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5); z-index: 999999;
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    `;
+
+    const card = document.createElement("div");
+    card.style.cssText = `
+      background: #fff; border-radius: 8px; padding: 24px 28px;
+      min-width: 340px; max-width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+    `;
+
+    const title = document.createElement("h3");
+    title.textContent = "Set up folder structure";
+    title.style.cssText = "margin: 0 0 16px 0; font-size: 16px; color: #1a1a1a;";
+    card.appendChild(title);
+
+    const checkboxes = [];
+    for (const name of FOLDER_NAMES) {
+      const label = document.createElement("label");
+      label.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; color: #333; cursor: pointer;";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.value = name;
+      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer;";
+      label.appendChild(cb);
+      label.appendChild(document.createTextNode(name));
+      card.appendChild(label);
+      checkboxes.push(cb);
+    }
+
+    const progressText = document.createElement("div");
+    progressText.id = "oxt-folder-progress";
+    progressText.style.cssText = "margin: 12px 0; font-size: 13px; color: #666; min-height: 20px;";
+    card.appendChild(progressText);
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end;";
+
+    const skipBtn = document.createElement("button");
+    skipBtn.textContent = "Skip";
+    skipBtn.style.cssText = `
+      padding: 8px 18px; border: 1px solid #ccc; border-radius: 4px;
+      background: #fff; color: #555; font-size: 14px; cursor: pointer;
+    `;
+    skipBtn.addEventListener("click", async () => {
+      // Save docId to offered list
+      const stored = await chrome.storage.local.get("folderCreationOffered");
+      const offered = stored.folderCreationOffered || [];
+      if (!offered.includes(docId)) offered.push(docId);
+      await chrome.storage.local.set({ folderCreationOffered: offered });
+      overlay.remove();
+    });
+
+    const createBtn = document.createElement("button");
+    createBtn.textContent = "Create Folders";
+    createBtn.style.cssText = `
+      padding: 8px 18px; border: none; border-radius: 4px;
+      background: #2563eb; color: #fff; font-size: 14px; cursor: pointer;
+      font-weight: 500;
+    `;
+    createBtn.addEventListener("click", () => {
+      const selected = checkboxes.filter(cb => cb.checked).map(cb => cb.value);
+      if (selected.length === 0) {
+        progressText.textContent = "Select at least one folder.";
+        progressText.style.color = "#dc2626";
+        return;
+      }
+      // Disable buttons during creation
+      createBtn.disabled = true;
+      createBtn.style.opacity = "0.6";
+      createBtn.style.cursor = "default";
+      skipBtn.disabled = true;
+      skipBtn.style.opacity = "0.6";
+      checkboxes.forEach(cb => { cb.disabled = true; });
+      progressText.textContent = "Starting folder creation...";
+      progressText.style.color = "#2563eb";
+
+      chrome.runtime.sendMessage({ type: "create-folders", folders: selected });
+    });
+
+    btnRow.appendChild(skipBtn);
+    btnRow.appendChild(createBtn);
+    card.appendChild(btnRow);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
+
+  function removeFolderOverlay() {
+    const overlay = document.getElementById("oxt-folder-overlay");
+    if (overlay) overlay.remove();
   }
 
   // ---------------------------------------------------------------------------
@@ -211,6 +354,43 @@
         .then(result => sendResponse(result))
         .catch(err => sendResponse({ error: err.message }));
       return true; // keep channel open for async response
+
+    } else if (msg.type === "folder-creation-progress") {
+      const progress = document.getElementById("oxt-folder-progress");
+      if (progress) {
+        progress.textContent = `Creating folder ${msg.index}/${msg.total}: ${msg.name}...`;
+        progress.style.color = "#2563eb";
+      }
+
+    } else if (msg.type === "folder-creation-done") {
+      const progress = document.getElementById("oxt-folder-progress");
+      if (msg.success) {
+        if (progress) {
+          progress.textContent = "All folders created!";
+          progress.style.color = "#16a34a";
+        }
+        // Save docId to offered list so overlay doesn't reappear
+        const docId = getDocIdFromUrl();
+        if (docId) {
+          chrome.storage.local.get("folderCreationOffered", (stored) => {
+            const offered = stored.folderCreationOffered || [];
+            if (!offered.includes(docId)) offered.push(docId);
+            chrome.storage.local.set({ folderCreationOffered: offered });
+          });
+        }
+        // Remove overlay after brief delay
+        setTimeout(removeFolderOverlay, 1500);
+      } else {
+        if (progress) {
+          progress.textContent = `Error: ${msg.error || "Unknown error"}`;
+          progress.style.color = "#dc2626";
+        }
+        // Re-enable buttons so user can retry or skip
+        const createBtn = document.querySelector("#oxt-folder-overlay button:last-child");
+        const skipBtn = document.querySelector("#oxt-folder-overlay button:first-child");
+        if (createBtn) { createBtn.disabled = false; createBtn.style.opacity = "1"; createBtn.style.cursor = "pointer"; }
+        if (skipBtn) { skipBtn.disabled = false; skipBtn.style.opacity = "1"; }
+      }
     }
   });
 

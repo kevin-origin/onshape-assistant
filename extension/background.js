@@ -463,6 +463,14 @@ async function checkDocViolations(docId, docName, wid) {
 
     const [versions, rawElements] = await Promise.all(promises);
 
+    // Store version count for folder-creation overlay (zero extra API calls)
+    if (Array.isArray(versions)) {
+      const vcData = await chrome.storage.local.get("versionCounts");
+      const vc = vcData.versionCounts || {};
+      vc[docId] = versions.length;
+      await chrome.storage.local.set({ versionCounts: vc });
+    }
+
     // 1. Versions since last release
     if (Array.isArray(versions) && versions.length > 0) {
       // Sort by createdAt ascending
@@ -867,6 +875,307 @@ async function exploreInsertViewDialog() {
 */
 
 // ---------------------------------------------------------------------------
+// CDP helpers — chrome.debugger wrappers for trusted input events
+// ---------------------------------------------------------------------------
+
+function cdpSend(tabId, method, params = {}) {
+  return new Promise((resolve, reject) => {
+    chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
+      if (chrome.runtime.lastError) {
+        reject(new Error(chrome.runtime.lastError.message));
+      } else {
+        resolve(result);
+      }
+    });
+  });
+}
+
+async function cdpClick(tabId, x, y) {
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved", x, y,
+  });
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mousePressed", x, y, button: "left", clickCount: 1,
+  });
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseReleased", x, y, button: "left", clickCount: 1,
+  });
+}
+
+async function cdpRightClick(tabId, x, y) {
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseMoved", x, y,
+  });
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mousePressed", x, y, button: "right", clickCount: 1,
+  });
+  await cdpSend(tabId, "Input.dispatchMouseEvent", {
+    type: "mouseReleased", x, y, button: "right", clickCount: 1,
+  });
+}
+
+async function cdpTypeText(tabId, text) {
+  // Select all existing text first (Ctrl+A), then type
+  await cdpSend(tabId, "Input.dispatchKeyEvent", {
+    type: "keyDown", modifiers: 2, windowsVirtualKeyCode: 65, key: "a", code: "KeyA",
+  });
+  await cdpSend(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp", modifiers: 2, windowsVirtualKeyCode: 65, key: "a", code: "KeyA",
+  });
+  await cdpSend(tabId, "Input.insertText", { text });
+}
+
+async function cdpPressKey(tabId, key, keyCode) {
+  await cdpSend(tabId, "Input.dispatchKeyEvent", {
+    type: "keyDown", windowsVirtualKeyCode: keyCode, key, code: key,
+  });
+  await cdpSend(tabId, "Input.dispatchKeyEvent", {
+    type: "keyUp", windowsVirtualKeyCode: keyCode, key, code: key,
+  });
+}
+
+async function waitForElement(tabId, jsExpr, timeoutMs = 3000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const res = await cdpSend(tabId, "Runtime.evaluate", {
+      expression: jsExpr,
+      returnByValue: true,
+    });
+    if (res.result && res.result.value) return res.result.value;
+    await new Promise(r => setTimeout(r, 200));
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
+// Discovery helper — dump context menu DOM after right-clicking tab bar
+// Run once to find selectors for "Create folder" menu item.
+// Triggered by message type "discover-context-menu" from content.js or console.
+// ---------------------------------------------------------------------------
+
+async function discoverContextMenu(tabId) {
+  console.log("[CDP-Discovery] Attaching debugger to tab", tabId);
+  try {
+    await new Promise((resolve, reject) => {
+      chrome.debugger.attach({ tabId }, "1.3", () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
+      });
+    });
+
+    // Find tab bar area coordinates
+    const tabBarPos = await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const bar = document.querySelector('.os-tab-bar-scroll-container') ||
+                    document.querySelector('.os-tab-bar');
+        if (!bar) return null;
+        const r = bar.getBoundingClientRect();
+        return { x: r.left + 80, y: r.top + r.height / 2 };
+      })()`,
+      returnByValue: true,
+    });
+
+    if (!tabBarPos.result?.value) {
+      console.log("[CDP-Discovery] Tab bar not found");
+      return { error: "Tab bar not found" };
+    }
+
+    const { x, y } = tabBarPos.result.value;
+    console.log("[CDP-Discovery] Right-clicking at", x, y);
+    await cdpRightClick(tabId, x, y);
+
+    // Wait for context menu to appear
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Dump all context menu elements
+    const menuDump = await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const items = document.querySelectorAll(
+          '[class*="context-menu"] *, [class*="contextmenu"] *, [class*="dropdown-menu"] *, [class*="popover"] li, [class*="popup"] li, [role="menu"] *, [role="menuitem"]'
+        );
+        const results = [];
+        for (const el of items) {
+          if (el.offsetHeight === 0) continue;
+          const text = el.textContent.trim();
+          if (!text || text.length > 100) continue;
+          const r = el.getBoundingClientRect();
+          results.push({
+            tag: el.tagName,
+            cls: el.className.toString().slice(0, 150),
+            text: text.slice(0, 80),
+            role: el.getAttribute('role') || '',
+            x: Math.round(r.left + r.width / 2),
+            y: Math.round(r.top + r.height / 2),
+            w: Math.round(r.width),
+            h: Math.round(r.height),
+          });
+        }
+        return results;
+      })()`,
+      returnByValue: true,
+    });
+
+    // Dismiss the menu with Escape
+    await cdpPressKey(tabId, "Escape", 27);
+
+    const menuItems = menuDump.result?.value || [];
+    console.log("[CDP-Discovery] Context menu items:", JSON.stringify(menuItems, null, 2));
+    return { items: menuItems };
+  } catch (e) {
+    console.error("[CDP-Discovery] Error:", e.message);
+    return { error: e.message };
+  } finally {
+    chrome.debugger.detach({ tabId }, () => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Folder creation orchestrator — creates tab folders via CDP
+// ---------------------------------------------------------------------------
+
+async function createTabFolders(tabId, senderTabId, folderNames) {
+  console.log("[CDP-Folders] Starting folder creation:", folderNames);
+
+  function sendProgress(index, total, name, status) {
+    chrome.tabs.sendMessage(senderTabId, {
+      type: "folder-creation-progress",
+      index, total, name, status,
+    }).catch(() => {});
+  }
+
+  function sendDone(success, error) {
+    chrome.tabs.sendMessage(senderTabId, {
+      type: "folder-creation-done",
+      success, error,
+    }).catch(() => {});
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      chrome.debugger.attach({ tabId }, "1.3", () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
+      });
+    });
+
+    for (let i = 0; i < folderNames.length; i++) {
+      const name = folderNames[i];
+      sendProgress(i + 1, folderNames.length, name, "creating");
+      console.log(`[CDP-Folders] Creating folder ${i + 1}/${folderNames.length}: ${name}`);
+
+      // Step a: Get tab bar coordinates (right-click on empty area)
+      const tabBarPos = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const bar = document.querySelector('.os-tab-bar-scroll-container') ||
+                      document.querySelector('.os-tab-bar');
+          if (!bar) return null;
+          const r = bar.getBoundingClientRect();
+          // Click in the right half of the bar to hit empty space
+          const tabs = bar.querySelectorAll('.os-tab-bar-tab');
+          let rightEdge = r.left + 20;
+          for (const t of tabs) {
+            const tr = t.getBoundingClientRect();
+            if (tr.right > rightEdge) rightEdge = tr.right;
+          }
+          return { x: Math.min(rightEdge + 30, r.right - 10), y: r.top + r.height / 2 };
+        })()`,
+        returnByValue: true,
+      });
+
+      if (!tabBarPos.result?.value) {
+        throw new Error("Tab bar not found");
+      }
+
+      const { x, y } = tabBarPos.result.value;
+
+      // Step b: Right-click → context menu
+      await cdpRightClick(tabId, x, y);
+
+      // Step c: Wait for context menu and find "Create folder"
+      const menuItem = await waitForElement(tabId, `(() => {
+        const items = document.querySelectorAll(
+          '[role="menuitem"], [class*="context-menu"] li, [class*="contextmenu"] li, [class*="dropdown-menu"] li, [class*="popover"] li'
+        );
+        for (const el of items) {
+          if (el.offsetHeight === 0) continue;
+          const text = el.textContent.trim().toLowerCase();
+          if (text === "create folder" || text === "new folder" || text.includes("create folder")) {
+            const r = el.getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: el.textContent.trim() };
+          }
+        }
+        return null;
+      })()`, 3000);
+
+      if (!menuItem) {
+        // Dismiss any open menu
+        await cdpPressKey(tabId, "Escape", 27);
+        throw new Error(`"Create folder" menu item not found for folder "${name}"`);
+      }
+
+      console.log(`[CDP-Folders] Found menu item: "${menuItem.text}" at (${menuItem.x}, ${menuItem.y})`);
+
+      // Step d: Click "Create folder"
+      await cdpClick(tabId, menuItem.x, menuItem.y);
+
+      // Step e: Wait for rename input to appear
+      const renameInput = await waitForElement(tabId, `(() => {
+        const input = document.querySelector('.os-tab-name-input, .os-tab-bar-rename-input, input[class*="tab-name"], .os-rename-input');
+        if (input && input.offsetHeight > 0) {
+          const r = input.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        }
+        // Also check for contenteditable spans
+        const editable = document.querySelector('[contenteditable="true"].os-tab-name, .os-tab-name[contenteditable]');
+        if (editable && editable.offsetHeight > 0) {
+          const r = editable.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), contentEditable: true };
+        }
+        return null;
+      })()`, 3000);
+
+      if (!renameInput) {
+        await cdpPressKey(tabId, "Escape", 27);
+        throw new Error(`Rename input not found after creating folder "${name}"`);
+      }
+
+      // Step f: Click the input to focus, select all, type folder name, press Enter
+      await cdpClick(tabId, renameInput.x, renameInput.y);
+      await new Promise(r => setTimeout(r, 200));
+      await cdpTypeText(tabId, name);
+      await new Promise(r => setTimeout(r, 200));
+      await cdpPressKey(tabId, "Enter", 13);
+
+      // Step g: Wait for folder to appear in DOM
+      const folderAppeared = await waitForElement(tabId, `(() => {
+        const tabs = document.querySelectorAll('.os-tab-name');
+        for (const t of tabs) {
+          if (t.textContent.trim() === ${JSON.stringify(name)}) return true;
+        }
+        return null;
+      })()`, 3000);
+
+      if (!folderAppeared) {
+        console.log(`[CDP-Folders] Warning: folder "${name}" not confirmed in DOM, continuing anyway`);
+      }
+
+      // Brief pause before next folder
+      await new Promise(r => setTimeout(r, 500));
+    }
+
+    console.log("[CDP-Folders] All folders created successfully");
+    sendDone(true);
+  } catch (e) {
+    console.error("[CDP-Folders] Error:", e.message);
+    // Try to dismiss any open menus/dialogs
+    try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
+    sendDone(false, e.message);
+  } finally {
+    chrome.debugger.detach({ tabId }, () => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -901,6 +1210,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.type === "check-versions") {
     const { docId, docName, wid } = msg;
     checkDocViolations(docId, docName, wid);
+
+  } else if (msg.type === "create-folders") {
+    // Folder creation via CDP — triggered from content.js overlay
+    const folderNames = msg.folders || [];
+    const tabId = sender.tab?.id;
+    if (!tabId || folderNames.length === 0) {
+      sendResponse({ error: "Missing tab or folders" });
+      return;
+    }
+    createTabFolders(tabId, tabId, folderNames);
+    sendResponse({ ok: true });
+    return;
+
+  } else if (msg.type === "discover-context-menu") {
+    // Discovery helper — run once to find context menu selectors
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs.length === 0) return sendResponse({ error: "No active tab" });
+      const result = await discoverContextMenu(tabs[0].id);
+      sendResponse(result);
+    });
+    return true;
 
   } else if (msg.type === "rescan-active-tab") {
     // Re-scan the current active tab. If content script isn't injected, inject it first.
