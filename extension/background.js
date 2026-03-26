@@ -1248,28 +1248,69 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
 
     console.log("[CDP-Folders] All folders created successfully");
 
-    // --- Move default tabs into their folders ---
-    const DEFAULT_MOVES = [
-      { tabName: "Part Studio 1", folderName: "Parts" },
-      { tabName: "Assembly 1", folderName: "Assemblies" },
-    ];
+    // --- Move all stray root-level tabs into their matching folders ---
+    // Type-to-folder mapping (tab CSS classes → target folder name)
+    const TYPE_FOLDER_MAP = {
+      partstudio: "Parts",
+      "part-studio": "Parts",
+      assembly: "Assemblies",
+      drawing: "Drawings",
+    };
 
-    for (const { tabName, folderName } of DEFAULT_MOVES) {
-      if (!folderNames.includes(folderName)) continue; // folder wasn't selected
-      sendProgress(folderNames.length, folderNames.length, tabName, "moving");
-      console.log(`[CDP-Folders] Moving "${tabName}" into "${folderName}"`);
+    // Gather all root-level non-folder tabs and their types
+    const strayTabs = await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const results = [];
+        const tabs = document.querySelectorAll('.os-tab-bar-tab');
+        for (const tab of tabs) {
+          // Skip folders
+          if (tab.classList.contains('os-tab-bar-tab-group')) continue;
+          // Skip tabs already inside a folder (nested)
+          if (tab.parentElement?.closest('.os-tab-bar-tab-group')) continue;
+          const nameEl = tab.querySelector('.os-tab-name');
+          if (!nameEl) continue;
+          const name = nameEl.textContent.trim();
+          const cls = (tab.className || '').toString().toLowerCase();
+          const r = tab.getBoundingClientRect();
+          if (r.width === 0) continue;
+          // Detect type from CSS classes
+          let tabType = 'unknown';
+          if (cls.includes('partstudio') || cls.includes('part-studio')) tabType = 'partstudio';
+          else if (cls.includes('assembly')) tabType = 'assembly';
+          else if (cls.includes('drawing')) tabType = 'drawing';
+          results.push({ name, tabType, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
+        }
+        return results;
+      })()`,
+      returnByValue: true,
+    });
 
-      // Find source tab position
-      const srcResult = await cdpSend(tabId, "Runtime.evaluate", {
+    const strays = strayTabs.result?.value || [];
+    console.log(`[CDP-Folders] Found ${strays.length} stray root tab(s):`, strays.map(s => `${s.name} (${s.tabType})`));
+
+    for (const stray of strays) {
+      const targetFolder = TYPE_FOLDER_MAP[stray.tabType];
+      if (!targetFolder) {
+        console.log(`[CDP-Folders] No folder mapping for "${stray.name}" (type: ${stray.tabType}), skipping`);
+        continue;
+      }
+      if (!folderNames.includes(targetFolder)) {
+        console.log(`[CDP-Folders] Folder "${targetFolder}" wasn't created, skipping "${stray.name}"`);
+        continue;
+      }
+
+      sendProgress(folderNames.length, folderNames.length, stray.name, "moving");
+      console.log(`[CDP-Folders] Moving "${stray.name}" into "${targetFolder}"`);
+
+      // Find target folder position (re-query each time since positions shift after moves)
+      const tgtResult = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
           const tabs = document.querySelectorAll('.os-tab-name');
           for (const t of tabs) {
-            if (t.textContent.trim() === ${JSON.stringify(tabName)}) {
-              const container = t.closest('.os-tab-bar-tab');
-              if (container && !container.classList.contains('os-tab-bar-tab-group')) {
-                const r = container.getBoundingClientRect();
-                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-              }
+            const container = t.closest('.os-tab-bar-tab');
+            if (container && container.classList.contains('os-tab-bar-tab-group') && t.textContent.trim() === ${JSON.stringify(targetFolder)}) {
+              const r = container.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
             }
           }
           return null;
@@ -1277,14 +1318,16 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
         returnByValue: true,
       });
 
-      // Find target folder position
-      const tgtResult = await cdpSend(tabId, "Runtime.evaluate", {
+      // Re-query source position too (may have shifted)
+      const srcResult = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
-          const tabs = document.querySelectorAll('.os-tab-name');
-          for (const t of tabs) {
-            const container = t.closest('.os-tab-bar-tab');
-            if (container && container.classList.contains('os-tab-bar-tab-group') && t.textContent.trim() === ${JSON.stringify(folderName)}) {
-              const r = container.getBoundingClientRect();
+          const tabs = document.querySelectorAll('.os-tab-bar-tab');
+          for (const tab of tabs) {
+            if (tab.classList.contains('os-tab-bar-tab-group')) continue;
+            if (tab.parentElement?.closest('.os-tab-bar-tab-group')) continue;
+            const nameEl = tab.querySelector('.os-tab-name');
+            if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(stray.name)}) {
+              const r = tab.getBoundingClientRect();
               return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
             }
           }
@@ -1297,11 +1340,11 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       const tgt = tgtResult.result?.value;
 
       if (!src) {
-        console.log(`[CDP-Folders] Tab "${tabName}" not found — may have been renamed or removed, skipping`);
+        console.log(`[CDP-Folders] Tab "${stray.name}" no longer at root, skipping`);
         continue;
       }
       if (!tgt) {
-        console.log(`[CDP-Folders] Folder "${folderName}" not found for move, skipping`);
+        console.log(`[CDP-Folders] Folder "${targetFolder}" not found for move, skipping`);
         continue;
       }
 
@@ -1309,16 +1352,15 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       await cdpDrag(tabId, src.x, src.y, tgt.x, tgt.y);
       await new Promise(r => setTimeout(r, 800));
 
-      // Verify the tab moved (it should no longer be at root level)
+      // Verify the tab moved
       const verified = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
           const tabs = document.querySelectorAll('.os-tab-name');
           for (const t of tabs) {
-            if (t.textContent.trim() === ${JSON.stringify(tabName)}) {
+            if (t.textContent.trim() === ${JSON.stringify(stray.name)}) {
               const container = t.closest('.os-tab-bar-tab');
-              // If it's now inside a folder group, success
               const parent = container?.parentElement?.closest('.os-tab-bar-tab-group');
-              return { moved: !!parent, parentCls: (parent?.className || '').toString().slice(0, 100) };
+              return { moved: !!parent };
             }
           }
           return { moved: false, reason: "tab-not-found" };
@@ -1327,9 +1369,9 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       });
       const v = verified.result?.value;
       if (v?.moved) {
-        console.log(`[CDP-Folders] "${tabName}" successfully moved into folder`);
+        console.log(`[CDP-Folders] "${stray.name}" successfully moved`);
       } else {
-        console.log(`[CDP-Folders] "${tabName}" move not confirmed:`, JSON.stringify(v));
+        console.log(`[CDP-Folders] "${stray.name}" move not confirmed:`, JSON.stringify(v));
       }
     }
 
