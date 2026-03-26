@@ -1126,39 +1126,96 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       const tabInfo = tabPos.result.value;
       console.log(`[CDP-Folders] Tab: "${tabInfo.text}" at (${tabInfo.x}, ${tabInfo.y}), addBtn:`, tabInfo.addBtn);
 
-      // Step b: Right-click on the tab
-      await cdpRightClick(tabId, tabInfo.x, tabInfo.y);
+      // Step b: Inspect what event listeners Onshape has on the tab element
+      if (i === 0) {
+        try {
+          const evalResult = await cdpSend(tabId, "Runtime.evaluate", {
+            expression: `document.querySelector('.os-tab-bar-tab, .os-tab-name')`,
+          });
+          if (evalResult.result?.objectId) {
+            const listeners = await cdpSend(tabId, "DOMDebugger.getEventListeners", {
+              objectId: evalResult.result.objectId,
+            });
+            const summary = (listeners.listeners || []).map(l => ({
+              type: l.type,
+              useCapture: l.useCapture,
+              passive: l.passive,
+              scriptId: l.scriptId,
+            }));
+            console.log("[CDP-Folders] Event listeners on tab element:", JSON.stringify(summary));
+          }
+        } catch (e) {
+          console.log("[CDP-Folders] Could not get event listeners:", e.message);
+        }
+      }
+
+      // Step c: Left-click tab first to select/focus it
+      console.log(`[CDP-Folders] Left-clicking tab to focus...`);
+      await cdpClick(tabId, tabInfo.x, tabInfo.y);
+      await new Promise(r => setTimeout(r, 500));
+
+      // Step d: Right-click with delays between events for proper processing
+      console.log(`[CDP-Folders] Right-clicking tab at (${tabInfo.x}, ${tabInfo.y})...`);
+      await cdpSend(tabId, "Input.dispatchMouseEvent", {
+        type: "mouseMoved", x: tabInfo.x, y: tabInfo.y, buttons: 0, pointerType: "mouse",
+      });
+      await new Promise(r => setTimeout(r, 100));
+      await cdpSend(tabId, "Input.dispatchMouseEvent", {
+        type: "mousePressed", x: tabInfo.x, y: tabInfo.y, button: "right", buttons: 2, clickCount: 1, pointerType: "mouse",
+      });
+      await new Promise(r => setTimeout(r, 100));
+      await cdpSend(tabId, "Input.dispatchMouseEvent", {
+        type: "mouseReleased", x: tabInfo.x, y: tabInfo.y, button: "right", buttons: 0, clickCount: 1, pointerType: "mouse",
+      });
+
+      // Wait for context menu to render
       await new Promise(r => setTimeout(r, 1500));
 
-      // Check if contextmenu event fired at all
+      // Check if contextmenu event fired
       const ctxCheck = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `({ fired: window.__cdpContextMenuFired, target: window.__cdpContextMenuTarget })`,
         returnByValue: true,
       });
       console.log("[CDP-Folders] contextmenu event:", JSON.stringify(ctxCheck.result?.value));
 
-      // Step c: Search for "Create folder" in any new DOM elements
+      // Step e: Search for "Create folder" — check regular DOM AND shadow DOMs
       const menuSearch = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
-          const result = { found: null, newElements: [] };
+          const result = { found: null, newElements: [], shadowMenus: [] };
+
+          function searchInRoot(root) {
+            const all = root.querySelectorAll('*');
+            for (const el of all) {
+              if (el.offsetHeight === 0) continue;
+              const text = el.textContent.trim();
+              const ownText = el.childNodes.length <= 1 ? text : '';
+              if (!text || text.length > 100) continue;
+              const lower = (ownText || text).toLowerCase();
+              const cls = (el.className || '').toString();
+              const r = el.getBoundingClientRect();
+              if (ownText && (lower === 'create folder' || lower === 'new folder' || lower === 'create tab group' || lower === 'new tab group')) {
+                result.found = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: ownText, cls: cls.slice(0, 120), tag: el.tagName };
+              }
+              // Check for shadow roots
+              if (el.shadowRoot) {
+                result.shadowMenus.push({ host: cls.slice(0, 80), childCount: el.shadowRoot.childElementCount });
+                searchInRoot(el.shadowRoot);
+              }
+            }
+          }
+
+          searchInRoot(document);
+
+          // Also collect positioned/overlaying elements
           const all = document.querySelectorAll('*');
           for (const el of all) {
             if (el.offsetHeight === 0) continue;
-            const text = el.textContent.trim();
-            const ownText = el.childNodes.length <= 1 ? text : '';
-            if (!text || text.length > 100) continue;
-            const lower = (ownText || text).toLowerCase();
-            const cls = (el.className || '').toString();
             const r = el.getBoundingClientRect();
-            if (ownText && (lower === 'create folder' || lower === 'new folder' || lower === 'create tab group' || lower === 'new tab group')) {
-              result.found = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: ownText, cls: cls.slice(0, 120), tag: el.tagName };
-            }
-            if (r.width > 50 && r.width < 400 && r.height > 20 && r.height < 500) {
-              const style = getComputedStyle(el);
-              const zIndex = parseInt(style.zIndex) || 0;
-              if ((style.position === 'absolute' || style.position === 'fixed') && zIndex > 10) {
-                result.newElements.push({ tag: el.tagName, cls: cls.slice(0, 120), text: text.slice(0, 120), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), zIndex });
-              }
+            if (r.width < 50 || r.width > 400 || r.height < 20 || r.height > 500) continue;
+            const style = getComputedStyle(el);
+            const zIndex = parseInt(style.zIndex) || 0;
+            if ((style.position === 'absolute' || style.position === 'fixed') && zIndex > 10) {
+              result.newElements.push({ tag: el.tagName, cls: (el.className||'').toString().slice(0, 120), text: el.textContent.trim().slice(0, 80), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height), zIndex });
             }
           }
           result.newElements = result.newElements.slice(0, 20);
@@ -1171,9 +1228,11 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       let menuItem = searchResult?.found;
 
       if (!menuItem) {
-        console.log("[CDP-Folders] No 'Create folder' found. High z-index elements:", JSON.stringify(searchResult?.newElements, null, 2));
+        console.log("[CDP-Folders] No 'Create folder' found.");
+        console.log("[CDP-Folders] Shadow DOMs:", JSON.stringify(searchResult?.shadowMenus));
+        console.log("[CDP-Folders] High z-index elements:", JSON.stringify(searchResult?.newElements, null, 2));
         await cdpPressKey(tabId, "Escape", 27);
-        throw new Error(`Context menu not found. contextmenu event fired: ${ctxCheck.result?.value?.fired}. Check console.`);
+        throw new Error(`Context menu not found. Event fired: ${ctxCheck.result?.value?.fired}. See console.`);
       }
 
       console.log(`[CDP-Folders] Found menu item: "${menuItem.text}" at (${menuItem.x}, ${menuItem.y})`);
