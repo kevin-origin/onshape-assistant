@@ -206,33 +206,40 @@
 
   async function maybeOfferFolderCreation(scanResult) {
     const docId = scanResult.doc_id;
-    if (!docId) return;
+    if (!docId) { console.log("[FolderSetup] No docId"); return; }
 
     const folders = Object.keys(scanResult.folders || {});
     const rootTabs = scanResult.root_tabs || [];
+    console.log(`[FolderSetup] docId=${docId}, folders=${folders.length}, rootTabs=${rootTabs.length}`);
 
     // Only offer if: no folders, few root tabs, not already offered
-    if (folders.length > 0 || rootTabs.length >= 5) return;
+    if (folders.length > 0) { console.log("[FolderSetup] Skipped: has folders"); return; }
+    if (rootTabs.length >= 5) { console.log("[FolderSetup] Skipped: too many root tabs"); return; }
 
     // Check if already offered for this doc
     const stored = await chrome.storage.local.get("folderCreationOffered");
     const offered = stored.folderCreationOffered || [];
-    if (offered.includes(docId)) return;
+    if (offered.includes(docId)) { console.log("[FolderSetup] Skipped: already offered"); return; }
 
     // Check version count (stored by checkDocViolations, zero extra API calls)
     const vcData = await chrome.storage.local.get("versionCounts");
     const versionCount = (vcData.versionCounts || {})[docId];
+    console.log(`[FolderSetup] versionCount=${versionCount}`);
     // If version count not yet available, wait a bit and retry once
     if (versionCount === undefined) {
+      console.log("[FolderSetup] Version count not yet available, waiting 3s...");
       await sleep(3000);
       const vcRetry = await chrome.storage.local.get("versionCounts");
       const retryCount = (vcRetry.versionCounts || {})[docId];
-      if (retryCount !== undefined && retryCount > 1) return;
+      console.log(`[FolderSetup] Retry versionCount=${retryCount}`);
+      if (retryCount !== undefined && retryCount > 1) { console.log("[FolderSetup] Skipped: too many versions after retry"); return; }
       // If still undefined, this is likely a brand-new doc — proceed
     } else if (versionCount > 1) {
+      console.log("[FolderSetup] Skipped: too many versions");
       return; // Not a new doc
     }
 
+    console.log("[FolderSetup] Showing overlay!");
     showFolderOverlay(docId);
   }
 
