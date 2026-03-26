@@ -1387,6 +1387,171 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
 }
 
 // ---------------------------------------------------------------------------
+// Tab Sorter — persistent, moves stray root-level tabs into matching folders
+// Runs independently of folder creation: after every scan, or on demand.
+// ---------------------------------------------------------------------------
+
+const TAB_TYPE_FOLDER_MAP = {
+  partstudio: "Parts",
+  "part-studio": "Parts",
+  assembly: "Assemblies",
+  drawing: "Drawings",
+};
+
+let _sortingInProgress = false;
+
+async function sortStrayTabs(tabId, senderTabId) {
+  if (_sortingInProgress) {
+    console.log("[TabSort] Already sorting, skipping");
+    return { sorted: 0, skipped: 0, reason: "already-sorting" };
+  }
+  _sortingInProgress = true;
+
+  function sendSortProgress(name) {
+    chrome.tabs.sendMessage(senderTabId, { type: "tab-sort-progress", name }).catch(() => {});
+  }
+  function sendSortDone(sorted, skipped) {
+    chrome.tabs.sendMessage(senderTabId, { type: "tab-sort-done", sorted, skipped }).catch(() => {});
+  }
+
+  let needsDetach = false;
+  let sorted = 0;
+  let skipped = 0;
+
+  try {
+    // Lightweight pre-check via executeScript (no debugger needed)
+    const preCheck = await chrome.scripting.executeScript({
+      target: { tabId },
+      func: () => {
+        const folders = [];
+        const strays = [];
+        const tabs = document.querySelectorAll('.os-tab-bar-tab');
+        for (const tab of tabs) {
+          const nameEl = tab.querySelector('.os-tab-name');
+          if (!nameEl) continue;
+          const name = nameEl.textContent.trim();
+          if (tab.classList.contains('os-tab-bar-tab-group')) {
+            folders.push(name);
+          } else if (!tab.parentElement?.closest('.os-tab-bar-tab-group')) {
+            const cls = (tab.className || '').toString().toLowerCase();
+            let tabType = 'unknown';
+            if (cls.includes('partstudio') || cls.includes('part-studio')) tabType = 'partstudio';
+            else if (cls.includes('assembly')) tabType = 'assembly';
+            else if (cls.includes('drawing')) tabType = 'drawing';
+            strays.push({ name, tabType });
+          }
+        }
+        return { folders, strays };
+      },
+    });
+
+    const { folders, strays } = preCheck?.[0]?.result || { folders: [], strays: [] };
+    if (folders.length === 0) {
+      console.log("[TabSort] No folders exist, nothing to sort");
+      return { sorted: 0, skipped: 0, reason: "no-folders" };
+    }
+
+    const movable = strays.filter(s => {
+      const target = TAB_TYPE_FOLDER_MAP[s.tabType];
+      return target && folders.includes(target);
+    });
+    if (movable.length === 0) {
+      console.log("[TabSort] No stray tabs to sort");
+      return { sorted: 0, skipped: 0, reason: "none-stray" };
+    }
+
+    console.log(`[TabSort] ${movable.length} stray tab(s) to sort:`, movable.map(s => `${s.name} -> ${TAB_TYPE_FOLDER_MAP[s.tabType]}`));
+
+    // Attach debugger only when we actually have tabs to move
+    await new Promise((resolve, reject) => {
+      chrome.debugger.attach({ tabId }, "1.3", () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
+      });
+    });
+    needsDetach = true;
+
+    for (const stray of movable) {
+      const targetFolder = TAB_TYPE_FOLDER_MAP[stray.tabType];
+      sendSortProgress(stray.name);
+      console.log(`[TabSort] Moving "${stray.name}" -> "${targetFolder}"`);
+
+      // Fresh source position (layout shifts after each drag)
+      const srcResult = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-bar-tab');
+          for (const tab of tabs) {
+            if (tab.classList.contains('os-tab-bar-tab-group')) continue;
+            if (tab.parentElement?.closest('.os-tab-bar-tab-group')) continue;
+            const nameEl = tab.querySelector('.os-tab-name');
+            if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(stray.name)}) {
+              const r = tab.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+          }
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+
+      const tgtResult = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-name');
+          for (const t of tabs) {
+            const container = t.closest('.os-tab-bar-tab');
+            if (container && container.classList.contains('os-tab-bar-tab-group') && t.textContent.trim() === ${JSON.stringify(targetFolder)}) {
+              const r = container.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+          }
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+
+      const src = srcResult.result?.value;
+      const tgt = tgtResult.result?.value;
+      if (!src) { console.log(`[TabSort] "${stray.name}" no longer at root, skipping`); skipped++; continue; }
+      if (!tgt) { console.log(`[TabSort] Folder "${targetFolder}" not found, skipping`); skipped++; continue; }
+
+      console.log(`[TabSort] Dragging (${src.x},${src.y}) -> (${tgt.x},${tgt.y})`);
+      await cdpDrag(tabId, src.x, src.y, tgt.x, tgt.y);
+      await new Promise(r => setTimeout(r, 800));
+
+      // Verify
+      const verified = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-name');
+          for (const t of tabs) {
+            if (t.textContent.trim() === ${JSON.stringify(stray.name)}) {
+              const container = t.closest('.os-tab-bar-tab');
+              return !!container?.parentElement?.closest('.os-tab-bar-tab-group');
+            }
+          }
+          return false;
+        })()`,
+        returnByValue: true,
+      });
+      if (verified.result?.value) {
+        console.log(`[TabSort] "${stray.name}" moved successfully`); sorted++;
+      } else {
+        console.log(`[TabSort] "${stray.name}" move not confirmed`); skipped++;
+      }
+    }
+
+    console.log(`[TabSort] Done: ${sorted} moved, ${skipped} skipped`);
+    sendSortDone(sorted, skipped);
+    return { sorted, skipped };
+  } catch (e) {
+    console.error("[TabSort] Error:", e.message);
+    return { sorted, skipped, error: e.message };
+  } finally {
+    _sortingInProgress = false;
+    if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -1433,6 +1598,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     createTabFolders(tabId, tabId, folderNames);
     sendResponse({ ok: true });
     return;
+
+  } else if (msg.type === "sort-tabs") {
+    // Persistent tab sorter — moves stray root tabs into matching folders
+    const tabId = sender.tab?.id;
+    if (!tabId) { sendResponse({ error: "No tab" }); return; }
+    sortStrayTabs(tabId, tabId).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
+    return true;
 
   } else if (msg.type === "discover-context-menu") {
     // Discovery helper — run once to find context menu selectors

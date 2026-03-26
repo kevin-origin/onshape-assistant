@@ -190,6 +190,16 @@
 
     // --- New doc detection: offer folder structure creation ---
     maybeOfferFolderCreation(result);
+
+    // --- Tab sorter: move stray root tabs into matching folders ---
+    const hasFolders = Object.keys(result.folders || {}).length > 0;
+    const hasStrays = (result.root_tabs || []).length > 0;
+    if (hasFolders && hasStrays) {
+      setTimeout(() => {
+        console.log("[Scanner] Triggering tab sort (stray root tabs detected)");
+        chrome.runtime.sendMessage({ type: "sort-tabs" });
+      }, 2000);
+    }
   }
 
   async function waitForTabBar() {
@@ -392,6 +402,17 @@
         showProgressToast(`Moving "${msg.name}" to folder...`);
       } else {
         showProgressToast(`Creating folder ${msg.index}/${msg.total}: ${msg.name}...`);
+      }
+
+    } else if (msg.type === "tab-sort-progress") {
+      showProgressToast(`Sorting: moving "${msg.name}"...`);
+
+    } else if (msg.type === "tab-sort-done") {
+      if (msg.sorted > 0) {
+        showProgressToast(`Sorted ${msg.sorted} tab(s) into folders`);
+        setTimeout(removeProgressToast, 3000);
+      } else {
+        removeProgressToast();
       }
 
     } else if (msg.type === "folder-creation-done") {
