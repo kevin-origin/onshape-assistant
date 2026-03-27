@@ -1799,18 +1799,39 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
             await cdpClick(tabId, bodiesToCheck.result.value.x, bodiesToCheck.result.value.y);
             await new Promise(r => setTimeout(r, 500));
 
-            // Ctrl+A to select all parts in the assembly
-            console.log("[Interference] Pressing Ctrl+A to select all instances");
-            await cdpSend(tabId, "Input.dispatchKeyEvent", {
-              type: "keyDown", key: "a", code: "KeyA",
-              windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65,
-              modifiers: 2, // Ctrl
+            // Dump sidebar items for diagnostics, then click instance entries
+            const sidebarItems = await cdpSend(tabId, "Runtime.evaluate", {
+              expression: `(() => {
+                // Find the assembly instances panel (left sidebar outside the dialog)
+                const dialog = document.querySelector('#interference-detection-dialog');
+                const labels = document.querySelectorAll('.os-list-item-label');
+                const items = [];
+                for (const el of labels) {
+                  // Skip items inside the dialog
+                  if (dialog && dialog.contains(el)) continue;
+                  if (el.offsetWidth === 0) continue;
+                  const text = el.textContent.trim();
+                  const r = el.getBoundingClientRect();
+                  const parent = el.closest('.os-instances-list-item, .os-list-item, [class*="instance"], [class*="list-item"]');
+                  const parentCls = parent ? (parent.className || '').toString().slice(0, 150) : '';
+                  items.push({ text, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height), parentCls });
+                }
+                return items.slice(0, 30);
+              })()`,
+              returnByValue: true,
             });
-            await cdpSend(tabId, "Input.dispatchKeyEvent", {
-              type: "keyUp", key: "a", code: "KeyA",
-              windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65,
-              modifiers: 2,
-            });
+            console.log("[Interference] Sidebar items:", JSON.stringify(sidebarItems.result?.value, null, 2));
+
+            // Click each instance entry (skip Origin and mate-like entries)
+            const entries = sidebarItems.result?.value || [];
+            for (const entry of entries) {
+              if (entry.text === "Origin" || entry.text === "") continue;
+              // Skip mate entries (contain "Mate" or start with known non-instance prefixes)
+              if (/^(Mate|Fasten|Revolute|Slider|Planar|Cylindrical|Pin|Ball|Parallel|Tangent|Linear|Circular)/i.test(entry.text)) continue;
+              console.log(`[Interference] Clicking sidebar instance: "${entry.text}" at (${entry.x}, ${entry.y})`);
+              await cdpClick(tabId, entry.x, entry.y);
+              await new Promise(r => setTimeout(r, 300));
+            }
 
             // Wait for instances to populate (up to 5s)
             const populated = await waitForElement(tabId, `(() => {
@@ -1821,7 +1842,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
               const items = container.querySelectorAll('.os-selection-item-line');
               return items.length > 0 ? items.length : null;
             })()`, 5000);
-            console.log(`[Interference] After Ctrl+A: ${populated || 0} instance(s) selected`);
+            console.log(`[Interference] After sidebar clicks: ${populated || 0} instance(s) selected`);
           }
         }
 
