@@ -1656,8 +1656,20 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
       // Enter the Assemblies folder to reveal assembly tabs
       console.log("[Interference] Entering Assemblies folder");
       await cdpClick(tabId, folder.x, folder.y);
-      await new Promise(r => setTimeout(r, 1000));
-      enteredFolder = true;
+      // Wait for folder contents to render (assembly tabs appear inside)
+      const folderReady = await waitForElement(tabId, `(() => {
+        const tabs = document.querySelectorAll('.os-tab-bar-tab[data-icon-src="assembly"]');
+        for (const t of tabs) {
+          if (t.offsetWidth > 0) return true;
+        }
+        return null;
+      })()`, 5000);
+      if (folderReady) {
+        enteredFolder = true;
+        console.log("[Interference] Assemblies folder contents loaded");
+      } else {
+        console.log("[Interference] Assemblies folder contents did not load, trying without folder");
+      }
     }
 
     for (let i = 0; i < assemblyElements.length; i++) {
@@ -1666,32 +1678,29 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
       console.log(`[Interference] ${i + 1}/${assemblyElements.length}: ${asm.name}`);
 
       try {
-        // Find assembly tab by name and icon
-        const tabPos = await cdpSend(tabId, "Runtime.evaluate", {
-          expression: `(() => {
-            const tabs = document.querySelectorAll('.os-tab-bar-tab');
-            for (const t of tabs) {
-              if (t.classList.contains('os-tab-bar-tab-group')) continue;
-              const nameEl = t.querySelector('.os-tab-name');
-              const iconSrc = t.getAttribute('data-icon-src') || '';
-              if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(asm.name)} && iconSrc === 'assembly' && t.offsetWidth > 0) {
-                const r = t.getBoundingClientRect();
-                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-              }
+        // Find assembly tab — poll up to 3s (may still be rendering after folder entry)
+        const tabPos = await waitForElement(tabId, `(() => {
+          const tabs = document.querySelectorAll('.os-tab-bar-tab');
+          for (const t of tabs) {
+            if (t.classList.contains('os-tab-bar-tab-group')) continue;
+            const nameEl = t.querySelector('.os-tab-name');
+            const iconSrc = t.getAttribute('data-icon-src') || '';
+            if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(asm.name)} && iconSrc === 'assembly' && t.offsetWidth > 0) {
+              const r = t.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
             }
-            return null;
-          })()`,
-          returnByValue: true,
-        });
+          }
+          return null;
+        })()`, 3000);
 
-        if (!tabPos.result?.value) {
-          console.log(`[Interference] Tab "${asm.name}" not found, skipping`);
+        if (!tabPos) {
+          console.log(`[Interference] Tab "${asm.name}" not found after 3s, skipping`);
           results.assemblies[asm.name] = { interferences: [], count: 0, error: "Tab not found" };
           continue;
         }
 
         // Click assembly tab to activate
-        await cdpClick(tabId, tabPos.result.value.x, tabPos.result.value.y);
+        await cdpClick(tabId, tabPos.x, tabPos.y);
 
         // Wait for assembly to load: poll for "Show analysis tools" button (up to 15s)
         const analysisBtn = await waitForElement(tabId, `(() => {
@@ -1987,6 +1996,141 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     checkInterference(tabId, tabId, docId, wid);
     sendResponse({ ok: true });
     return;
+
+  } else if (msg.type === "observe-interference") {
+    // Observer: open interference dialog, start recording DOM mutations while
+    // user manually selects instances. Send "read-interference-observer" to dump.
+    // Usage: open assembly tab, then run from console:
+    //   chrome.runtime.sendMessage({type:"observe-interference"})
+    //   ...manually select instances in the dialog...
+    //   chrome.runtime.sendMessage({type:"read-interference-observer"})
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs.length === 0) return sendResponse({ error: "No active tab" });
+      try {
+        await chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: () => {
+            const dialog = document.querySelector('#interference-detection-dialog');
+            if (!dialog) return console.log("[IntObs] No interference dialog found — open it first");
+            window.__intObsChanges = [];
+            window.__intObserver = new MutationObserver((mutations) => {
+              for (const m of mutations) {
+                // Track attribute changes (class, title, aria changes on selection)
+                if (m.type === 'attributes') {
+                  const el = m.target;
+                  const r = el.getBoundingClientRect();
+                  window.__intObsChanges.push({
+                    action: 'attr-changed',
+                    attr: m.attributeName,
+                    newVal: (el.getAttribute(m.attributeName) || '').slice(0, 200),
+                    tag: el.tagName,
+                    cls: (el.className || '').toString().slice(0, 150),
+                    text: el.textContent.trim().slice(0, 80),
+                    x: Math.round(r.left), y: Math.round(r.top),
+                    w: Math.round(r.width), h: Math.round(r.height),
+                  });
+                }
+                // Track added nodes
+                for (const node of m.addedNodes) {
+                  if (node.nodeType !== 1) continue;
+                  const el = node;
+                  const r = el.getBoundingClientRect();
+                  window.__intObsChanges.push({
+                    action: 'added',
+                    tag: el.tagName,
+                    cls: (el.className || '').toString().slice(0, 150),
+                    text: el.textContent.trim().slice(0, 120),
+                    x: Math.round(r.left), y: Math.round(r.top),
+                    w: Math.round(r.width), h: Math.round(r.height),
+                    html: el.outerHTML.slice(0, 400),
+                  });
+                }
+                // Track removed nodes
+                for (const node of m.removedNodes) {
+                  if (node.nodeType !== 1) continue;
+                  window.__intObsChanges.push({
+                    action: 'removed',
+                    tag: node.tagName,
+                    cls: (node.className || '').toString().slice(0, 150),
+                    text: node.textContent.trim().slice(0, 80),
+                  });
+                }
+              }
+            });
+            // Observe the entire dialog and ancestors (selection may happen outside dialog too)
+            window.__intObserver.observe(document.body, {
+              childList: true, subtree: true, attributes: true,
+              attributeFilter: ['class', 'title', 'aria-selected', 'data-selected', 'style'],
+            });
+            console.log("[IntObs] Recording started. Select instances in the dialog, then run: chrome.runtime.sendMessage({type:'read-interference-observer'})");
+          },
+        });
+        sendResponse({ ok: true, msg: "Recording. Select instances, then send 'read-interference-observer'" });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    });
+    return true;
+
+  } else if (msg.type === "read-interference-observer") {
+    // Read back recorded interference dialog mutations
+    chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
+      if (tabs.length === 0) return sendResponse({ error: "No active tab" });
+      try {
+        const results = await chrome.scripting.executeScript({
+          target: { tabId: tabs[0].id },
+          func: () => {
+            if (window.__intObserver) {
+              window.__intObserver.disconnect();
+              window.__intObserver = null;
+            }
+            const changes = window.__intObsChanges || [];
+            window.__intObsChanges = [];
+            // Also snapshot the dialog's current state after selection
+            const dialog = document.querySelector('#interference-detection-dialog');
+            let snapshot = null;
+            if (dialog) {
+              const items = dialog.querySelectorAll('.os-selection-item-line, [class*="selection-item"], [class*="query-list-item"]');
+              snapshot = {
+                itemCount: items.length,
+                items: Array.from(items).slice(0, 20).map(el => ({
+                  cls: (el.className || '').toString().slice(0, 100),
+                  text: el.textContent.trim().slice(0, 80),
+                })),
+                bodyText: dialog.textContent.trim().slice(0, 500),
+              };
+            }
+            return { changes, snapshot };
+          },
+        });
+        const data = results?.[0]?.result || {};
+        const changes = data.changes || [];
+        // Filter to interesting changes (visible, not noise)
+        const interesting = changes.filter(c =>
+          c.action === 'added' ? (c.w > 5 && c.h > 5 && c.text.length > 0) :
+          c.action === 'attr-changed' ? true :
+          true
+        );
+        console.log(`[IntObs] ${changes.length} total mutations, ${interesting.length} interesting:`);
+        for (const c of interesting.slice(0, 40)) {
+          if (c.action === 'added') {
+            console.log(`  + [${c.tag}] cls="${c.cls}" text="${c.text}" (${c.w}x${c.h})`);
+            if (c.html) console.log(`    html: ${c.html}`);
+          } else if (c.action === 'attr-changed') {
+            console.log(`  ~ [${c.tag}] ${c.attr}="${c.newVal}" cls="${c.cls}" text="${c.text}"`);
+          } else if (c.action === 'removed') {
+            console.log(`  - [${c.tag}] cls="${c.cls}" text="${c.text}"`);
+          }
+        }
+        if (data.snapshot) {
+          console.log("[IntObs] Dialog snapshot after selection:", JSON.stringify(data.snapshot, null, 2));
+        }
+        sendResponse({ count: changes.length, interesting: interesting.slice(0, 40), snapshot: data.snapshot });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    });
+    return true;
 
   } else if (msg.type === "discover-context-menu") {
     // Discovery helper — run once to find context menu selectors
