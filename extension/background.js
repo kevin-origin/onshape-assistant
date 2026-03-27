@@ -1702,11 +1702,9 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
         }
 
         // Click assembly tab to activate
-        console.log(`[Interference] Clicking assembly tab at (${tabPos.x}, ${tabPos.y})`);
         await cdpClick(tabId, tabPos.x, tabPos.y);
 
         // Wait for assembly to load: poll for "Show analysis tools" button (up to 15s)
-        console.log("[Interference] Waiting for 'Show analysis tools' button...");
         const analysisBtn = await waitForElement(tabId, `(() => {
           const btn = document.querySelector('[data-bs-original-title="Show analysis tools"], [title="Show analysis tools"]');
           if (btn && btn.offsetWidth > 0) {
@@ -1723,11 +1721,9 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
         }
 
         // Click "Show analysis tools"
-        console.log(`[Interference] Clicking 'Show analysis tools' at (${analysisBtn.x}, ${analysisBtn.y})`);
         await cdpClick(tabId, analysisBtn.x, analysisBtn.y);
 
         // Wait for "Interference detection..." menu item (up to 3s)
-        console.log("[Interference] Waiting for 'Interference detection' menu item...");
         const interferenceItem = await waitForElement(tabId, `(() => {
           const items = document.querySelectorAll('span.context-menu-item-span');
           for (const item of items) {
@@ -1746,11 +1742,10 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
           continue;
         }
 
-        console.log(`[Interference] Clicking "${interferenceItem.text}" at (${interferenceItem.x}, ${interferenceItem.y})`);
+        console.log(`[Interference] Opening interference dialog`);
         await cdpClick(tabId, interferenceItem.x, interferenceItem.y);
 
         // Wait for interference detection dialog (up to 5s)
-        console.log("[Interference] Waiting for interference dialog...");
         const dialogFound = await waitForElement(tabId, `(() => {
           const dialog = document.querySelector('#interference-detection-dialog');
           if (dialog && dialog.offsetWidth > 0) return true;
@@ -1799,39 +1794,35 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
             await cdpClick(tabId, bodiesToCheck.result.value.x, bodiesToCheck.result.value.y);
             await new Promise(r => setTimeout(r, 500));
 
-            // Dump sidebar items for diagnostics, then click instance entries
+            // Click instance entries in the left sidebar to select them
             const sidebarItems = await cdpSend(tabId, "Runtime.evaluate", {
               expression: `(() => {
-                // Find the assembly instances panel (left sidebar outside the dialog)
                 const dialog = document.querySelector('#interference-detection-dialog');
                 const labels = document.querySelectorAll('.os-list-item-label');
                 const items = [];
                 for (const el of labels) {
-                  // Skip items inside the dialog
                   if (dialog && dialog.contains(el)) continue;
                   if (el.offsetWidth === 0) continue;
                   const text = el.textContent.trim();
                   const r = el.getBoundingClientRect();
-                  const parent = el.closest('.os-instances-list-item, .os-list-item, [class*="instance"], [class*="list-item"]');
-                  const parentCls = parent ? (parent.className || '').toString().slice(0, 150) : '';
-                  items.push({ text, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), w: Math.round(r.width), h: Math.round(r.height), parentCls });
+                  items.push({ text, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
                 }
                 return items.slice(0, 30);
               })()`,
               returnByValue: true,
             });
-            console.log("[Interference] Sidebar items:", JSON.stringify(sidebarItems.result?.value, null, 2));
 
-            // Click each instance entry (skip Origin and mate-like entries)
             const entries = sidebarItems.result?.value || [];
+            let clicked = 0;
             for (const entry of entries) {
-              if (entry.text === "Origin" || entry.text === "") continue;
-              // Skip mate entries (contain "Mate" or start with known non-instance prefixes)
-              if (/^(Mate|Fasten|Revolute|Slider|Planar|Cylindrical|Pin|Ball|Parallel|Tangent|Linear|Circular)/i.test(entry.text)) continue;
-              console.log(`[Interference] Clicking sidebar instance: "${entry.text}" at (${entry.x}, ${entry.y})`);
+              if (!entry.text || entry.text === "Origin") continue;
+              // Skip non-instance entries
+              if (/^(Mate|Fasten|Revolute|Slider|Planar|Cylindrical|Pin|Ball|Parallel|Tangent|Linear|Circular|Items|Loads|Connectors)/i.test(entry.text)) continue;
               await cdpClick(tabId, entry.x, entry.y);
               await new Promise(r => setTimeout(r, 300));
+              clicked++;
             }
+            console.log(`[Interference] Clicked ${clicked} sidebar instance(s)`);
 
             // Wait for instances to populate (up to 5s)
             const populated = await waitForElement(tabId, `(() => {
@@ -1842,7 +1833,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
               const items = container.querySelectorAll('.os-selection-item-line');
               return items.length > 0 ? items.length : null;
             })()`, 5000);
-            console.log(`[Interference] After sidebar clicks: ${populated || 0} instance(s) selected`);
+            console.log(`[Interference] ${populated || 0} instance(s) selected`);
           }
         }
 
