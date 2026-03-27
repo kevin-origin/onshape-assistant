@@ -1942,8 +1942,8 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
 // Step 4: readInterferenceObserver()  — dumps mutations + dialog snapshot
 
 async function observeInterference() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tabs.length === 0) return console.log("[IntObs] No active tab");
+  const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
+  if (tabs.length === 0) return console.log("[IntObs] No Onshape tab found");
   await chrome.scripting.executeScript({
     target: { tabId: tabs[0].id },
     func: () => {
@@ -1997,8 +1997,8 @@ async function observeInterference() {
 }
 
 async function readInterferenceObserver() {
-  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (tabs.length === 0) return console.log("[IntObs] No active tab");
+  const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
+  if (tabs.length === 0) return console.log("[IntObs] No Onshape tab found");
   const results = await chrome.scripting.executeScript({
     target: { tabId: tabs[0].id },
     func: () => {
