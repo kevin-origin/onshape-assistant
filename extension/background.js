@@ -1700,9 +1700,11 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
         }
 
         // Click assembly tab to activate
+        console.log(`[Interference] Clicking assembly tab at (${tabPos.x}, ${tabPos.y})`);
         await cdpClick(tabId, tabPos.x, tabPos.y);
 
         // Wait for assembly to load: poll for "Show analysis tools" button (up to 15s)
+        console.log("[Interference] Waiting for 'Show analysis tools' button...");
         const analysisBtn = await waitForElement(tabId, `(() => {
           const btn = document.querySelector('[data-bs-original-title="Show analysis tools"], [title="Show analysis tools"]');
           if (btn && btn.offsetWidth > 0) {
@@ -1719,9 +1721,11 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
         }
 
         // Click "Show analysis tools"
+        console.log(`[Interference] Clicking 'Show analysis tools' at (${analysisBtn.x}, ${analysisBtn.y})`);
         await cdpClick(tabId, analysisBtn.x, analysisBtn.y);
 
         // Wait for "Interference detection..." menu item (up to 3s)
+        console.log("[Interference] Waiting for 'Interference detection' menu item...");
         const interferenceItem = await waitForElement(tabId, `(() => {
           const items = document.querySelectorAll('span.context-menu-item-span');
           for (const item of items) {
@@ -1740,10 +1744,11 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
           continue;
         }
 
-        console.log(`[Interference] Clicking "${interferenceItem.text}"`);
+        console.log(`[Interference] Clicking "${interferenceItem.text}" at (${interferenceItem.x}, ${interferenceItem.y})`);
         await cdpClick(tabId, interferenceItem.x, interferenceItem.y);
 
         // Wait for interference detection dialog (up to 5s)
+        console.log("[Interference] Waiting for interference dialog...");
         const dialogFound = await waitForElement(tabId, `(() => {
           const dialog = document.querySelector('#interference-detection-dialog');
           if (dialog && dialog.offsetWidth > 0) return true;
