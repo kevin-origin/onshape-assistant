@@ -396,7 +396,7 @@ function trySendScan(tabId) {
 // Store scan result per doc in chrome.storage.local
 // ---------------------------------------------------------------------------
 
-const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
+const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "Feature Studios", "Variable Studios"];
 
 async function storeDocScanResult(result) {
   if (!result || !result.doc_id) return;
@@ -1469,16 +1469,27 @@ async function sortStrayTabs(tabId, senderTabId) {
       return { sorted: 0, skipped: 0, reason: "no-folders" };
     }
 
+    // Log ALL strays for diagnostics
+    console.log(`[TabSort] All stray tabs (${strays.length}):`, strays.map(s => `"${s.name}" (iconSrc: "${s.iconSrc}")`));
+
     const movable = strays.filter(s => {
       const target = TAB_ICON_FOLDER_MAP[s.iconSrc];
       return target && folders.includes(target);
     });
+    const unmapped = strays.filter(s => {
+      const target = TAB_ICON_FOLDER_MAP[s.iconSrc];
+      return !target || !folders.includes(target);
+    });
+    if (unmapped.length > 0) {
+      console.log(`[TabSort] ${unmapped.length} UNMAPPED stray tab(s) (no folder mapping, will stay at root):`,
+        unmapped.map(s => `"${s.name}" (iconSrc: "${s.iconSrc}")`));
+    }
     if (movable.length === 0) {
-      console.log("[TabSort] No stray tabs to sort");
+      console.log("[TabSort] No stray tabs to sort (all unmapped)");
       return { sorted: 0, skipped: 0, reason: "none-stray" };
     }
 
-    console.log(`[TabSort] ${movable.length} stray tab(s) to sort:`, movable.map(s => `${s.name} -> ${TAB_ICON_FOLDER_MAP[s.iconSrc]}`));
+    console.log(`[TabSort] ${movable.length} movable stray tab(s):`, movable.map(s => `${s.name} -> ${TAB_ICON_FOLDER_MAP[s.iconSrc]}`));
 
     // Attach debugger only when we actually have tabs to move
     await new Promise((resolve, reject) => {
@@ -1736,6 +1747,36 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
           results.assemblies[asm.name] = { interferences: [], count: 0, error: "Dialog not found" };
           continue;
         }
+
+        // Dump dialog DOM for diagnostics — need to see what buttons/controls exist
+        const dialogDump = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const dialog = document.querySelector('#interference-detection-dialog');
+            if (!dialog) return [];
+            const out = [];
+            dialog.querySelectorAll('*').forEach(el => {
+              if (el.offsetHeight === 0) return;
+              const tag = el.tagName;
+              const cls = (el.className || '').toString().slice(0, 120);
+              const text = el.children.length <= 1 ? el.textContent.trim().slice(0, 60) : '';
+              const title = el.getAttribute('title') || '';
+              const dataParam = el.getAttribute('data-parameter-id') || '';
+              const role = el.getAttribute('role') || '';
+              const type = el.type || '';
+              const r = el.getBoundingClientRect();
+              if (dataParam || role || tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT'
+                  || el.children.length <= 1 || cls.includes('btn') || cls.includes('button')
+                  || cls.includes('check') || cls.includes('compute') || cls.includes('select')) {
+                out.push({ tag, cls, text, title, dataParam, role, type,
+                  x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2),
+                  w: Math.round(r.width), h: Math.round(r.height) });
+              }
+            });
+            return out.slice(0, 60);
+          })()`,
+          returnByValue: true,
+        });
+        console.log("[Interference] Dialog DOM dump:", JSON.stringify(dialogDump.result?.value, null, 2));
 
         // Wait for computation to complete — poll until dialog text stabilizes (up to 15s)
         let lastText = "";
