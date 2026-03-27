@@ -63,7 +63,7 @@ function validateFolders(result) {
   for (const [name, data] of Object.entries(folderData)) {
     const count = (typeof data === "object" && data.assemblies) || 0;
     if (count > 1) {
-      details.push({ text: `${name}: ${count} assemblies (max 1)`, color: "#ff6b6b" });
+      details.push({ text: `${count} assemblies detected, please use only 1 assembly with multiple configurations instead.`, color: "#ff6b6b" });
     }
   }
 

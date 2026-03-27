@@ -1,11 +1,23 @@
-RUN IN PAGE CONSOLE (F12 on the Onshape tab):
+== TAB TYPE DUMP (paste on any doc with mixed tab types) ==
 
-STEP 1 — Start observer, then manually create/add different tab types
-(Part Studio, Assembly, Drawing, Feature Studio, Variable Studio):
-
-window.__dc=[]; window.__obs=new MutationObserver(function(muts){muts.forEach(function(m){m.addedNodes.forEach(function(node){if(node.nodeType!==1)return;var r=node.getBoundingClientRect();window.__dc.push({tag:node.tagName,cls:(node.className||"").toString().slice(0,150),text:node.textContent.trim().slice(0,120),w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.left),y:Math.round(r.top),html:node.outerHTML.slice(0,300)})})})});window.__obs.observe(document.body,{childList:true,subtree:true});console.log("Observer started");
+JSON.stringify(Array.from(document.querySelectorAll('.os-tab-bar-tab')).map(function(t){var n=t.querySelector('.os-tab-name');return{name:n?n.textContent.trim():'?',iconSrc:t.getAttribute('data-icon-src'),isFolder:t.classList.contains('os-tab-bar-tab-group')}}),null,2)
 
 
-STEP 2 — After creating the tabs, paste this to dump all tab elements with full class info:
+== INTERFERENCE DETECTION — Observer flow ==
 
-window.__obs.disconnect();var tabs=document.querySelectorAll('.os-tab-bar-tab');var info=[];for(var t of tabs){var n=t.querySelector('.os-tab-name');var icon=t.querySelector('svg use, [class*="icon"], [class*="svg"]');info.push({name:n?n.textContent.trim():'?',cls:t.className.toString(),isFolder:t.classList.contains('os-tab-bar-tab-group'),svgHref:(icon&&(icon.getAttribute('href')||icon.getAttribute('xlink:href')))||'none',iconCls:(icon&&icon.className.toString())||'none',allAttrs:Array.from(t.attributes).map(function(a){return a.name+'='+a.value.slice(0,80)})})};console.log(JSON.stringify(info,null,2));
+Open an ASSEMBLY tab first, then follow these steps:
+
+STEP 1 — Start observer (paste this, then manually trigger interference
+detection through the Onshape UI: usually Evaluate menu or toolbar):
+
+window.__dc=[]; window.__obs=new MutationObserver(function(muts){muts.forEach(function(m){m.addedNodes.forEach(function(node){if(node.nodeType!==1)return;var r=node.getBoundingClientRect();window.__dc.push({action:'added',tag:node.tagName,cls:(node.className||'').toString().slice(0,200),text:node.textContent.trim().slice(0,200),w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.left),y:Math.round(r.top),id:node.id||'',attrs:Array.from(node.attributes||[]).map(function(a){return a.name+'='+a.value.slice(0,100)}).slice(0,15),html:node.outerHTML.slice(0,500)})})})});window.__obs.observe(document.body,{childList:true,subtree:true});console.log("Observer started — now trigger interference detection from the UI");
+
+
+STEP 2 — After the interference dialog/results appear, paste this:
+
+window.__obs.disconnect();var items=window.__dc.filter(function(x){return x.w>20&&x.h>10&&x.text.length>0});console.log(JSON.stringify(items,null,2));
+
+
+STEP 3 — Also dump the toolbar/menu area to find the interference button:
+
+JSON.stringify(Array.from(document.querySelectorAll('[data-bs-original-title], [title], [aria-label]')).filter(function(el){var t=(el.getAttribute('data-bs-original-title')||el.getAttribute('title')||el.getAttribute('aria-label')||'').toLowerCase();return t.includes('interfer')||t.includes('collisi')||t.includes('evaluate')||t.includes('inspect')||t.includes('check')}).map(function(el){var r=el.getBoundingClientRect();return{tag:el.tagName,title:el.getAttribute('data-bs-original-title')||el.getAttribute('title')||'',aria:el.getAttribute('aria-label')||'',cls:(el.className||'').toString().slice(0,150),x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)}}),null,2)
