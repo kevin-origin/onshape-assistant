@@ -1139,6 +1139,9 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       });
     });
 
+    // Wait for debugger banner to appear and page layout to stabilize
+    await new Promise(r => setTimeout(r, 500));
+
     for (let i = 0; i < folderNames.length; i++) {
       const name = folderNames[i];
       sendProgress(i + 1, folderNames.length, name, "creating");
