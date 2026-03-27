@@ -1794,35 +1794,29 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
             await cdpClick(tabId, bodiesToCheck.result.value.x, bodiesToCheck.result.value.y);
             await new Promise(r => setTimeout(r, 500));
 
-            // Click instance entries in the left sidebar to select them
-            const sidebarItems = await cdpSend(tabId, "Runtime.evaluate", {
+            // Click the top-level assembly entry in the sidebar (sufficient for interference check)
+            const asmEntry = await cdpSend(tabId, "Runtime.evaluate", {
               expression: `(() => {
                 const dialog = document.querySelector('#interference-detection-dialog');
                 const labels = document.querySelectorAll('.os-list-item-label');
-                const items = [];
                 for (const el of labels) {
                   if (dialog && dialog.contains(el)) continue;
                   if (el.offsetWidth === 0) continue;
                   const text = el.textContent.trim();
-                  const r = el.getBoundingClientRect();
-                  items.push({ text, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) });
+                  if (text === ${JSON.stringify(asm.name)} || (text && text !== 'Origin' && !text.includes('<'))) {
+                    const r = el.getBoundingClientRect();
+                    return { text, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                  }
                 }
-                return items.slice(0, 30);
+                return null;
               })()`,
               returnByValue: true,
             });
 
-            const entries = sidebarItems.result?.value || [];
-            let clicked = 0;
-            for (const entry of entries) {
-              if (!entry.text || entry.text === "Origin") continue;
-              // Skip non-instance entries
-              if (/^(Mate|Fasten|Revolute|Slider|Planar|Cylindrical|Pin|Ball|Parallel|Tangent|Linear|Circular|Items|Loads|Connectors)/i.test(entry.text)) continue;
-              await cdpClick(tabId, entry.x, entry.y);
-              await new Promise(r => setTimeout(r, 300));
-              clicked++;
+            if (asmEntry.result?.value) {
+              console.log(`[Interference] Clicking assembly entry: "${asmEntry.result.value.text}"`);
+              await cdpClick(tabId, asmEntry.result.value.x, asmEntry.result.value.y);
             }
-            console.log(`[Interference] Clicked ${clicked} sidebar instance(s)`);
 
             // Wait for instances to populate (up to 5s)
             const populated = await waitForElement(tabId, `(() => {
