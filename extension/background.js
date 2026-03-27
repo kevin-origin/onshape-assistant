@@ -1764,35 +1764,66 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
           continue;
         }
 
-        // Dump dialog DOM for diagnostics — need to see what buttons/controls exist
-        const dialogDump = await cdpSend(tabId, "Runtime.evaluate", {
+        // Check if instances are already populated (auto-populated in manual flow)
+        const hasInstances = await cdpSend(tabId, "Runtime.evaluate", {
           expression: `(() => {
             const dialog = document.querySelector('#interference-detection-dialog');
-            if (!dialog) return [];
-            const out = [];
-            dialog.querySelectorAll('*').forEach(el => {
-              if (el.offsetHeight === 0) return;
-              const tag = el.tagName;
-              const cls = (el.className || '').toString().slice(0, 120);
-              const text = el.children.length <= 1 ? el.textContent.trim().slice(0, 60) : '';
-              const title = el.getAttribute('title') || '';
-              const dataParam = el.getAttribute('data-parameter-id') || '';
-              const role = el.getAttribute('role') || '';
-              const type = el.type || '';
-              const r = el.getBoundingClientRect();
-              if (dataParam || role || tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT'
-                  || el.children.length <= 1 || cls.includes('btn') || cls.includes('button')
-                  || cls.includes('check') || cls.includes('compute') || cls.includes('select')) {
-                out.push({ tag, cls, text, title, dataParam, role, type,
-                  x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2),
-                  w: Math.round(r.width), h: Math.round(r.height) });
-              }
-            });
-            return out.slice(0, 60);
+            if (!dialog) return 0;
+            const container = dialog.querySelector('[data-parameter-id="bodiesToCheck"]');
+            if (!container) return 0;
+            return container.querySelectorAll('.os-selection-item-line').length;
           })()`,
           returnByValue: true,
         });
-        console.log("[Interference] Dialog DOM dump:", JSON.stringify(dialogDump.result?.value, null, 2));
+        const instanceCount = hasInstances.result?.value || 0;
+        console.log(`[Interference] Instances already populated: ${instanceCount}`);
+
+        if (instanceCount === 0) {
+          // Click the bodiesToCheck area to activate selection mode
+          const bodiesToCheck = await cdpSend(tabId, "Runtime.evaluate", {
+            expression: `(() => {
+              const dialog = document.querySelector('#interference-detection-dialog');
+              if (!dialog) return null;
+              const el = dialog.querySelector('[data-parameter-id="bodiesToCheck"]');
+              if (el && el.offsetWidth > 0) {
+                const r = el.getBoundingClientRect();
+                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+              }
+              return null;
+            })()`,
+            returnByValue: true,
+          });
+
+          if (bodiesToCheck.result?.value) {
+            console.log(`[Interference] Clicking bodiesToCheck at (${bodiesToCheck.result.value.x}, ${bodiesToCheck.result.value.y})`);
+            await cdpClick(tabId, bodiesToCheck.result.value.x, bodiesToCheck.result.value.y);
+            await new Promise(r => setTimeout(r, 500));
+
+            // Ctrl+A to select all parts in the assembly
+            console.log("[Interference] Pressing Ctrl+A to select all instances");
+            await cdpSend(tabId, "Input.dispatchKeyEvent", {
+              type: "keyDown", key: "a", code: "KeyA",
+              windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65,
+              modifiers: 2, // Ctrl
+            });
+            await cdpSend(tabId, "Input.dispatchKeyEvent", {
+              type: "keyUp", key: "a", code: "KeyA",
+              windowsVirtualKeyCode: 65, nativeVirtualKeyCode: 65,
+              modifiers: 2,
+            });
+
+            // Wait for instances to populate (up to 5s)
+            const populated = await waitForElement(tabId, `(() => {
+              const dialog = document.querySelector('#interference-detection-dialog');
+              if (!dialog) return null;
+              const container = dialog.querySelector('[data-parameter-id="bodiesToCheck"]');
+              if (!container) return null;
+              const items = container.querySelectorAll('.os-selection-item-line');
+              return items.length > 0 ? items.length : null;
+            })()`, 5000);
+            console.log(`[Interference] After Ctrl+A: ${populated || 0} instance(s) selected`);
+          }
+        }
 
         // Wait for computation to complete — poll until dialog text stabilizes (up to 15s)
         let lastText = "";
