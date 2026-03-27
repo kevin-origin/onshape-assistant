@@ -1794,7 +1794,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
             await cdpClick(tabId, bodiesToCheck.result.value.x, bodiesToCheck.result.value.y);
             await new Promise(r => setTimeout(r, 500));
 
-            // Click the top-level assembly entry in the sidebar (sufficient for interference check)
+            // Click the top-level assembly entry text in the sidebar (right side to avoid left icons)
             const asmEntry = await cdpSend(tabId, "Runtime.evaluate", {
               expression: `(() => {
                 const dialog = document.querySelector('#interference-detection-dialog');
@@ -1803,9 +1803,9 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
                   if (dialog && dialog.contains(el)) continue;
                   if (el.offsetWidth === 0) continue;
                   const text = el.textContent.trim();
-                  if (text === ${JSON.stringify(asm.name)} || (text && text !== 'Origin' && !text.includes('<'))) {
+                  if (text === ${JSON.stringify(asm.name)}) {
                     const r = el.getBoundingClientRect();
-                    return { text, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                    return { text, x: Math.round(r.right - 20), y: Math.round(r.top + r.height / 2) };
                   }
                 }
                 return null;
@@ -1814,7 +1814,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
             });
 
             if (asmEntry.result?.value) {
-              console.log(`[Interference] Clicking assembly entry: "${asmEntry.result.value.text}"`);
+              console.log(`[Interference] Clicking assembly entry: "${asmEntry.result.value.text}" at (${asmEntry.result.value.x}, ${asmEntry.result.value.y})`);
               await cdpClick(tabId, asmEntry.result.value.x, asmEntry.result.value.y);
             }
 
