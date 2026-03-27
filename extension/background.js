@@ -1560,8 +1560,30 @@ async function sortStrayTabs(tabId, senderTabId) {
         returnByValue: true,
       });
 
-      const src = srcResult.result?.value;
+      let src = srcResult.result?.value;
       const tgt = tgtResult.result?.value;
+      // Retry once after 500ms if source not found (DOM reflow after prior drag)
+      if (!src) {
+        await new Promise(r => setTimeout(r, 500));
+        const retry = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const tabs = document.querySelectorAll('.os-tab-bar-tab');
+            for (const tab of tabs) {
+              if (tab.classList.contains('os-tab-bar-tab-group')) continue;
+              if (tab.parentElement?.closest('.os-tab-bar-tab-group')) continue;
+              const nameEl = tab.querySelector('.os-tab-name');
+              if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(stray.name)}) {
+                const r = tab.getBoundingClientRect();
+                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+              }
+            }
+            return null;
+          })()`,
+          returnByValue: true,
+        });
+        src = retry.result?.value;
+        if (src) console.log(`[TabSort] "${stray.name}" found on retry`);
+      }
       if (!src) { console.log(`[TabSort] "${stray.name}" no longer at root, skipping`); skipped++; continue; }
       if (!tgt) { console.log(`[TabSort] Folder "${targetFolder}" not found, skipping`); skipped++; continue; }
 
@@ -1587,6 +1609,71 @@ async function sortStrayTabs(tabId, senderTabId) {
         console.log(`[TabSort] "${stray.name}" moved successfully`); sorted++;
       } else {
         console.log(`[TabSort] "${stray.name}" move not confirmed`); skipped++;
+      }
+    }
+
+    // Re-scan: check for any remaining strays and do a second pass
+    if (skipped > 0) {
+      await new Promise(r => setTimeout(r, 500));
+      const rescan = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-bar-tab');
+          const strays = [];
+          for (const tab of tabs) {
+            if (tab.classList.contains('os-tab-bar-tab-group')) continue;
+            if (tab.parentElement?.closest('.os-tab-bar-tab-group')) continue;
+            const nameEl = tab.querySelector('.os-tab-name');
+            const iconSrc = tab.getAttribute('data-icon-src') || '';
+            if (nameEl && tab.offsetWidth > 0) strays.push({ name: nameEl.textContent.trim(), iconSrc });
+          }
+          return strays;
+        })()`,
+        returnByValue: true,
+      });
+      const remaining = (rescan.result?.value || []).filter(s => TAB_ICON_FOLDER_MAP[s.iconSrc] && folders.includes(TAB_ICON_FOLDER_MAP[s.iconSrc]));
+      if (remaining.length > 0) {
+        console.log(`[TabSort] Re-scan: ${remaining.length} stray(s) still at root, second pass`);
+        for (const stray of remaining) {
+          const targetFolder = TAB_ICON_FOLDER_MAP[stray.iconSrc];
+          const srcR = await cdpSend(tabId, "Runtime.evaluate", {
+            expression: `(() => {
+              const tabs = document.querySelectorAll('.os-tab-bar-tab');
+              for (const tab of tabs) {
+                if (tab.classList.contains('os-tab-bar-tab-group')) continue;
+                if (tab.parentElement?.closest('.os-tab-bar-tab-group')) continue;
+                const nameEl = tab.querySelector('.os-tab-name');
+                if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(stray.name)}) {
+                  const r = tab.getBoundingClientRect();
+                  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                }
+              }
+              return null;
+            })()`,
+            returnByValue: true,
+          });
+          const tgtR = await cdpSend(tabId, "Runtime.evaluate", {
+            expression: `(() => {
+              const tabs = document.querySelectorAll('.os-tab-name');
+              for (const t of tabs) {
+                const container = t.closest('.os-tab-bar-tab');
+                if (container && container.classList.contains('os-tab-bar-tab-group') && t.textContent.trim() === ${JSON.stringify(targetFolder)}) {
+                  const r = container.getBoundingClientRect();
+                  return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+                }
+              }
+              return null;
+            })()`,
+            returnByValue: true,
+          });
+          const s = srcR.result?.value, t = tgtR.result?.value;
+          if (s && t) {
+            console.log(`[TabSort] Re-scan: dragging "${stray.name}" -> "${targetFolder}"`);
+            await cdpDrag(tabId, s.x, s.y, t.x, t.y);
+            await new Promise(r => setTimeout(r, 800));
+            sorted++;
+            skipped--;
+          }
+        }
       }
     }
 
