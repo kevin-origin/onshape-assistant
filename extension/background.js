@@ -1417,6 +1417,9 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       }
     }
 
+    // Move default tabs into their folders (debugger still attached)
+    await sortDefaultTabs(tabId);
+
     sendDone(true);
   } catch (e) {
     console.error("[CDP-Folders] Error:", e.message);
@@ -1425,6 +1428,53 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     sendDone(false, e.message);
   } finally {
     chrome.debugger.detach({ tabId }, () => {});
+  }
+}
+
+// Move default Onshape tabs into their folders after folder creation
+async function sortDefaultTabs(tabId) {
+  const defaults = [
+    { name: "Part Studio 1", folder: "Part Studios" },
+    { name: "Assembly 1", folder: "Assemblies" },
+  ];
+
+  await new Promise(r => setTimeout(r, 500)); // Let folders settle
+
+  for (const { name, folder } of defaults) {
+    const positions = await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        let src = null, tgt = null;
+        const tabs = document.querySelectorAll('.os-tab-bar-tab');
+        for (const tab of tabs) {
+          if (tab.classList.contains('os-tab-bar-tab-group')) {
+            const nameEl = tab.querySelector('.os-tab-name');
+            if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(folder)} && tab.offsetWidth > 0) {
+              const r = tab.getBoundingClientRect();
+              tgt = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+            continue;
+          }
+          if (tab.parentElement?.closest('.os-tab-bar-tab-group')) continue;
+          const nameEl = tab.querySelector('.os-tab-name');
+          if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(name)} && tab.offsetWidth > 0) {
+            const r = tab.getBoundingClientRect();
+            src = { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+          }
+        }
+        return (src && tgt) ? { src, tgt } : null;
+      })()`,
+      returnByValue: true,
+    });
+
+    const pos = positions.result?.value;
+    if (!pos) {
+      console.log(`[CDP-Folders] Default tab "${name}" or folder "${folder}" not found, skipping`);
+      continue;
+    }
+
+    console.log(`[CDP-Folders] Moving "${name}" -> "${folder}"`);
+    await cdpDrag(tabId, pos.src.x, pos.src.y, pos.tgt.x, pos.tgt.y);
+    await new Promise(r => setTimeout(r, 800));
   }
 }
 
