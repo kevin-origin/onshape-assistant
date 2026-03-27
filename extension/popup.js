@@ -393,9 +393,8 @@ function showSingleResult(result) {
 // ---------------------------------------------------------------------------
 
 function loadViolations() {
-  chrome.storage.local.get(["violations", "interferenceResults"], (data) => {
+  chrome.storage.local.get("violations", (data) => {
     const violations = data.violations || {};
-    const intResults = data.interferenceResults || {};
     const $list = document.getElementById("violationsList");
     const $none = document.getElementById("noViolations");
     $list.innerHTML = "";
@@ -430,56 +429,6 @@ function loadViolations() {
       }
     }
 
-    // Interference results for current doc
-    chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-      let hasInterference = false;
-      if (tabs.length > 0) {
-        const url = tabs[0].url || "";
-        const m = url.match(/\/documents\/([a-f0-9]+)/);
-        if (m) {
-          const currentDocId = m[1];
-          const docInt = intResults[currentDocId];
-          if (docInt && Object.keys(docInt.assemblies || {}).length > 0) {
-            hasInterference = true;
-            const intHeader = document.createElement("div");
-            intHeader.className = "result-item";
-            if (docIds.length > 0) intHeader.style.marginTop = "8px";
-            const intTitle = document.createElement("span");
-            intTitle.className = "result-name";
-            intTitle.textContent = "Interference Check";
-            intHeader.appendChild(intTitle);
-            const intBadge = document.createElement("span");
-            intBadge.className = "badge " + (docInt.totalInterferences > 0 ? "badge-warn" : "badge-ok");
-            intBadge.textContent = docInt.totalInterferences > 0 ? docInt.totalInterferences : "OK";
-            intHeader.appendChild(intBadge);
-            const intTs = document.createElement("span");
-            intTs.style.cssText = "font-size:9px;color:#666;margin-left:6px;";
-            intTs.textContent = docInt.timestamp;
-            intHeader.appendChild(intTs);
-            $list.appendChild(intHeader);
-
-            for (const [asmName, asmData] of Object.entries(docInt.assemblies)) {
-              const line = document.createElement("div");
-              line.className = "result-item";
-              line.style.paddingLeft = "20px";
-              if (asmData.count > 0) {
-                line.style.color = "#ffa500";
-                const pairs = asmData.interferences.join(", ");
-                line.textContent = `${asmName}: ${asmData.count} interference${asmData.count > 1 ? "s" : ""} (${pairs})`;
-              } else if (asmData.error) {
-                line.style.color = "#ff6b6b";
-                line.textContent = `${asmName}: Error - ${asmData.error}`;
-              } else {
-                line.style.color = "#95d5b2";
-                line.textContent = `${asmName}: No interferences`;
-              }
-              $list.appendChild(line);
-            }
-          }
-        }
-      }
-
-      $none.style.display = (docIds.length === 0 && !hasInterference) ? "block" : "none";
-    });
+    $none.style.display = docIds.length === 0 ? "block" : "none";
   });
 }
