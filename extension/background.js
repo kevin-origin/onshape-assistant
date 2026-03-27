@@ -335,6 +335,25 @@ async function createDrawingsForUrl(url) {
   }
 
   broadcastDrawLog(`Complete: ${created} created, ${failed} failed`, created > 0 ? "log-ok" : "log-err");
+
+  // Sort new drawings into Drawings folder
+  if (created > 0) {
+    broadcastDrawLog("Sorting drawings into folders...");
+    try {
+      const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
+      const tab = tabs.find(t => t.url && t.url.includes(docId));
+      if (tab) {
+        // Navigate back to the document first (may be on a drawing tab)
+        await navigateTab(tab.id, `https://cad.onshape.com/documents/${docId}/w/${wid}`);
+        await new Promise(r => setTimeout(r, 2000));
+        await sortStrayTabs(tab.id, tab.id);
+        broadcastDrawLog("Drawings sorted into folders", "log-ok");
+      }
+    } catch (e) {
+      broadcastDrawLog(`Sort failed: ${e.message} (drawings created but not sorted)`, "log-err");
+    }
+  }
+
   chrome.runtime.sendMessage({ type: "draw-done", created, failed }).catch(() => {});
 }
 
