@@ -343,9 +343,9 @@ async function createDrawingsForUrl(url) {
       const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
       const tab = tabs.find(t => t.url && t.url.includes(docId));
       if (tab) {
-        // Navigate back to the document first (may be on a drawing tab)
+        // Navigate back to the document and wait for drawings to finish generating
         await navigateTab(tab.id, `https://cad.onshape.com/documents/${docId}/w/${wid}`);
-        await new Promise(r => setTimeout(r, 2000));
+        await new Promise(r => setTimeout(r, 10000));
         await sortStrayTabs(tab.id, tab.id);
         broadcastDrawLog("Drawings sorted into folders", "log-ok");
       }
