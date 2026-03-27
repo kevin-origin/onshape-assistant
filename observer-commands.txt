@@ -1,23 +1,6 @@
-== TAB TYPE DUMP (paste on any doc with mixed tab types) ==
+== INTERFERENCE DETECTION — BROAD SEARCH ==
 
-JSON.stringify(Array.from(document.querySelectorAll('.os-tab-bar-tab')).map(function(t){var n=t.querySelector('.os-tab-name');return{name:n?n.textContent.trim():'?',iconSrc:t.getAttribute('data-icon-src'),isFolder:t.classList.contains('os-tab-bar-tab-group')}}),null,2)
+Trigger interference detection in the UI, keep the panel open,
+then paste this (searches entire page for anything interference-related):
 
-
-== INTERFERENCE DETECTION — Observer flow ==
-
-Open an ASSEMBLY tab first, then follow these steps:
-
-STEP 1 — Start observer (paste this, then manually trigger interference
-detection through the Onshape UI: usually Evaluate menu or toolbar):
-
-window.__dc=[]; window.__obs=new MutationObserver(function(muts){muts.forEach(function(m){m.addedNodes.forEach(function(node){if(node.nodeType!==1)return;var r=node.getBoundingClientRect();window.__dc.push({action:'added',tag:node.tagName,cls:(node.className||'').toString().slice(0,200),text:node.textContent.trim().slice(0,200),w:Math.round(r.width),h:Math.round(r.height),x:Math.round(r.left),y:Math.round(r.top),id:node.id||'',attrs:Array.from(node.attributes||[]).map(function(a){return a.name+'='+a.value.slice(0,100)}).slice(0,15),html:node.outerHTML.slice(0,500)})})})});window.__obs.observe(document.body,{childList:true,subtree:true});console.log("Observer started — now trigger interference detection from the UI");
-
-
-STEP 2 — After the interference dialog/results appear, paste this:
-
-window.__obs.disconnect();var items=window.__dc.filter(function(x){return x.w>20&&x.h>10&&x.text.length>0});console.log(JSON.stringify(items,null,2));
-
-
-STEP 3 — Also dump the toolbar/menu area to find the interference button:
-
-JSON.stringify(Array.from(document.querySelectorAll('[data-bs-original-title], [title], [aria-label]')).filter(function(el){var t=(el.getAttribute('data-bs-original-title')||el.getAttribute('title')||el.getAttribute('aria-label')||'').toLowerCase();return t.includes('interfer')||t.includes('collisi')||t.includes('evaluate')||t.includes('inspect')||t.includes('check')}).map(function(el){var r=el.getBoundingClientRect();return{tag:el.tagName,title:el.getAttribute('data-bs-original-title')||el.getAttribute('title')||'',aria:el.getAttribute('aria-label')||'',cls:(el.className||'').toString().slice(0,150),x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)}}),null,2)
+JSON.stringify(Array.from(document.querySelectorAll('*')).filter(function(el){if(el.offsetWidth<5||el.offsetHeight<5)return false;var text=(el.textContent||'').toLowerCase();var title=(el.getAttribute('title')||'').toLowerCase();var cls=(el.className||'').toString().toLowerCase();return(text.includes('interfer')||title.includes('interfer')||cls.includes('interfer'))&&el.children.length<10}).map(function(el){var r=el.getBoundingClientRect();return{tag:el.tagName,cls:(el.className||'').toString().slice(0,200),text:el.textContent.trim().slice(0,200),title:el.getAttribute('title')||'',x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height),html:el.outerHTML.slice(0,400)}}).slice(0,30),null,2)
