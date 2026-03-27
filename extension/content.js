@@ -205,14 +205,6 @@
       }, 2000);
     }
 
-    // --- Interference check: auto-check assemblies after scan + sort settle ---
-    setTimeout(() => {
-      const wid = getWidFromUrl();
-      if (result.doc_id && wid) {
-        console.log("[Scanner] Triggering interference check");
-        chrome.runtime.sendMessage({ type: "check-interference", docId: result.doc_id, wid });
-      }
-    }, 5000);
   }
 
   async function waitForTabBar() {

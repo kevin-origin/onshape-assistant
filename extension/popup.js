@@ -22,6 +22,34 @@ document.getElementById("btnBackFromDrawing").addEventListener("click", () => sh
 document.getElementById("btnBackFromScanner").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnBackFromViolations").addEventListener("click", () => showSection("sectionMenu"));
 
+// Interference Check button
+document.getElementById("btnRunInterference").addEventListener("click", () => {
+  const btn = document.getElementById("btnRunInterference");
+  btn.disabled = true;
+  btn.querySelector(".menu-desc").textContent = "Running interference check...";
+
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) { btn.disabled = false; return; }
+    const url = tabs[0].url || "";
+    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
+    const widMatch = url.match(/\/w\/([a-f0-9]+)/);
+    if (!docMatch || !widMatch) {
+      btn.querySelector(".menu-desc").textContent = "Not an Onshape document";
+      btn.disabled = false;
+      return;
+    }
+
+    chrome.runtime.sendMessage({
+      type: "check-interference",
+      docId: docMatch[1],
+      wid: widMatch[1],
+    }, (response) => {
+      btn.disabled = false;
+      btn.querySelector(".menu-desc").textContent = "Check all assemblies in the current document for interferences";
+    });
+  });
+});
+
 // Check if opened via notification click — navigate to target section
 chrome.storage.local.get("popupTargetSection", (data) => {
   if (data.popupTargetSection) {

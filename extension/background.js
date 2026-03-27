@@ -1831,27 +1831,27 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
           }
         }
 
-        // Wait for computation to complete — poll until dialog text stabilizes (up to 15s)
-        let lastText = "";
-        let stableCount = 0;
-        for (let poll = 0; poll < 15; poll++) {
+        // Wait for interference results to compute (poll interferenceBodies for up to 20s)
+        console.log("[Interference] Waiting for results to compute...");
+        let resultsReady = false;
+        for (let poll = 0; poll < 20; poll++) {
           await new Promise(r => setTimeout(r, 1000));
           const snap = await cdpSend(tabId, "Runtime.evaluate", {
             expression: `(() => {
               const dialog = document.querySelector('#interference-detection-dialog');
-              if (!dialog) return '';
-              return dialog.textContent.trim();
+              if (!dialog) return { open: false };
+              const container = dialog.querySelector('[data-parameter-id="interferenceBodies"]');
+              const items = container ? container.querySelectorAll('.os-selection-item-line').length : 0;
+              const noInt = !!dialog.querySelector('[title="No interferences"]');
+              const text = dialog.textContent.toLowerCase();
+              const noIntText = text.includes('no interference');
+              return { open: true, items, noInt: noInt || noIntText };
             })()`,
             returnByValue: true,
           });
-          const txt = snap.result?.value || "";
-          if (txt.length > 0 && txt === lastText) {
-            stableCount++;
-            if (stableCount >= 2) break; // stable for 2 consecutive polls
-          } else {
-            stableCount = 0;
-          }
-          lastText = txt;
+          const s = snap.result?.value || {};
+          if (!s.open) { console.log("[Interference] Dialog closed unexpectedly"); break; }
+          if (s.items > 0 || s.noInt) { resultsReady = true; break; }
         }
 
         // Read interference results from dialog
@@ -2144,11 +2144,22 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
 
   } else if (msg.type === "check-interference") {
-    // Interference detection via CDP — triggered from content.js after scan
-    const tabId = sender.tab?.id;
+    // Interference detection via CDP — triggered from popup or content.js
     const { docId, wid } = msg;
-    if (!tabId || !docId) { sendResponse({ error: "Missing tab or docId" }); return; }
-    checkInterference(tabId, tabId, docId, wid);
+    // sender.tab exists when from content.js; from popup we need to find the Onshape tab
+    const fromTab = sender.tab?.id;
+    if (fromTab) {
+      checkInterference(fromTab, fromTab, docId, wid);
+    } else {
+      chrome.tabs.query({ url: "https://cad.onshape.com/*" }, (tabs) => {
+        const tab = tabs.find(t => t.url && t.url.includes(docId));
+        if (tab) {
+          checkInterference(tab.id, tab.id, docId, wid);
+        } else {
+          sendResponse({ error: "No matching Onshape tab" });
+        }
+      });
+    }
     sendResponse({ ok: true });
     return;
 
