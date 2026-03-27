@@ -1631,30 +1631,30 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
     });
     needsDetach = true;
 
+    // Wait for debugger banner to appear and page layout to stabilize
+    await new Promise(r => setTimeout(r, 500));
+
     const results = { assemblies: {}, totalInterferences: 0 };
 
     // Check if assemblies are inside a folder — look for "Assemblies" folder tab
-    const folderInfo = await cdpSend(tabId, "Runtime.evaluate", {
-      expression: `(() => {
-        const tabs = document.querySelectorAll('.os-tab-bar-tab-group');
-        for (const t of tabs) {
-          const nameEl = t.querySelector('.os-tab-name');
-          if (nameEl && nameEl.textContent.trim() === 'Assemblies' && t.offsetWidth > 0) {
-            const r = t.getBoundingClientRect();
-            return { hasFolder: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-          }
+    // (queried AFTER debugger banner settles so coordinates are accurate)
+    const folder = await waitForElement(tabId, `(() => {
+      const tabs = document.querySelectorAll('.os-tab-bar-tab-group');
+      for (const t of tabs) {
+        const nameEl = t.querySelector('.os-tab-name');
+        if (nameEl && nameEl.textContent.trim() === 'Assemblies' && t.offsetWidth > 0) {
+          const r = t.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
         }
-        return { hasFolder: false };
-      })()`,
-      returnByValue: true,
-    });
+      }
+      return null;
+    })()`, 2000);
 
-    const folder = folderInfo.result?.value;
     let enteredFolder = false;
 
-    if (folder?.hasFolder) {
+    if (folder) {
       // Enter the Assemblies folder to reveal assembly tabs
-      console.log("[Interference] Entering Assemblies folder");
+      console.log(`[Interference] Entering Assemblies folder at (${folder.x}, ${folder.y})`);
       await cdpClick(tabId, folder.x, folder.y);
       // Wait for folder contents to render (assembly tabs appear inside)
       const folderReady = await waitForElement(tabId, `(() => {
@@ -1670,6 +1670,8 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
       } else {
         console.log("[Interference] Assemblies folder contents did not load, trying without folder");
       }
+    } else {
+      console.log("[Interference] No Assemblies folder found, looking for assembly tabs at root");
     }
 
     for (let i = 0; i < assemblyElements.length; i++) {
