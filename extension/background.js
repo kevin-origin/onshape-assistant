@@ -1656,8 +1656,20 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
       // Enter the Assemblies folder to reveal assembly tabs
       console.log("[Interference] Entering Assemblies folder");
       await cdpClick(tabId, folder.x, folder.y);
-      await new Promise(r => setTimeout(r, 1000));
-      enteredFolder = true;
+      // Wait for folder contents to render (assembly tabs appear inside)
+      const folderReady = await waitForElement(tabId, `(() => {
+        const tabs = document.querySelectorAll('.os-tab-bar-tab[data-icon-src="assembly"]');
+        for (const t of tabs) {
+          if (t.offsetWidth > 0) return true;
+        }
+        return null;
+      })()`, 5000);
+      if (folderReady) {
+        enteredFolder = true;
+        console.log("[Interference] Assemblies folder contents loaded");
+      } else {
+        console.log("[Interference] Assemblies folder contents did not load, trying without folder");
+      }
     }
 
     for (let i = 0; i < assemblyElements.length; i++) {
@@ -1666,32 +1678,29 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
       console.log(`[Interference] ${i + 1}/${assemblyElements.length}: ${asm.name}`);
 
       try {
-        // Find assembly tab by name and icon
-        const tabPos = await cdpSend(tabId, "Runtime.evaluate", {
-          expression: `(() => {
-            const tabs = document.querySelectorAll('.os-tab-bar-tab');
-            for (const t of tabs) {
-              if (t.classList.contains('os-tab-bar-tab-group')) continue;
-              const nameEl = t.querySelector('.os-tab-name');
-              const iconSrc = t.getAttribute('data-icon-src') || '';
-              if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(asm.name)} && iconSrc === 'assembly' && t.offsetWidth > 0) {
-                const r = t.getBoundingClientRect();
-                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-              }
+        // Find assembly tab — poll up to 3s (may still be rendering after folder entry)
+        const tabPos = await waitForElement(tabId, `(() => {
+          const tabs = document.querySelectorAll('.os-tab-bar-tab');
+          for (const t of tabs) {
+            if (t.classList.contains('os-tab-bar-tab-group')) continue;
+            const nameEl = t.querySelector('.os-tab-name');
+            const iconSrc = t.getAttribute('data-icon-src') || '';
+            if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(asm.name)} && iconSrc === 'assembly' && t.offsetWidth > 0) {
+              const r = t.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
             }
-            return null;
-          })()`,
-          returnByValue: true,
-        });
+          }
+          return null;
+        })()`, 3000);
 
-        if (!tabPos.result?.value) {
-          console.log(`[Interference] Tab "${asm.name}" not found, skipping`);
+        if (!tabPos) {
+          console.log(`[Interference] Tab "${asm.name}" not found after 3s, skipping`);
           results.assemblies[asm.name] = { interferences: [], count: 0, error: "Tab not found" };
           continue;
         }
 
         // Click assembly tab to activate
-        await cdpClick(tabId, tabPos.result.value.x, tabPos.result.value.y);
+        await cdpClick(tabId, tabPos.x, tabPos.y);
 
         // Wait for assembly to load: poll for "Show analysis tools" button (up to 15s)
         const analysisBtn = await waitForElement(tabId, `(() => {
@@ -1747,6 +1756,36 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
           results.assemblies[asm.name] = { interferences: [], count: 0, error: "Dialog not found" };
           continue;
         }
+
+        // Dump dialog DOM for diagnostics — need to see what buttons/controls exist
+        const dialogDump = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const dialog = document.querySelector('#interference-detection-dialog');
+            if (!dialog) return [];
+            const out = [];
+            dialog.querySelectorAll('*').forEach(el => {
+              if (el.offsetHeight === 0) return;
+              const tag = el.tagName;
+              const cls = (el.className || '').toString().slice(0, 120);
+              const text = el.children.length <= 1 ? el.textContent.trim().slice(0, 60) : '';
+              const title = el.getAttribute('title') || '';
+              const dataParam = el.getAttribute('data-parameter-id') || '';
+              const role = el.getAttribute('role') || '';
+              const type = el.type || '';
+              const r = el.getBoundingClientRect();
+              if (dataParam || role || tag === 'BUTTON' || tag === 'INPUT' || tag === 'SELECT'
+                  || el.children.length <= 1 || cls.includes('btn') || cls.includes('button')
+                  || cls.includes('check') || cls.includes('compute') || cls.includes('select')) {
+                out.push({ tag, cls, text, title, dataParam, role, type,
+                  x: Math.round(r.left + r.width/2), y: Math.round(r.top + r.height/2),
+                  w: Math.round(r.width), h: Math.round(r.height) });
+              }
+            });
+            return out.slice(0, 60);
+          })()`,
+          returnByValue: true,
+        });
+        console.log("[Interference] Dialog DOM dump:", JSON.stringify(dialogDump.result?.value, null, 2));
 
         // Wait for computation to complete — poll until dialog text stabilizes (up to 15s)
         let lastText = "";
