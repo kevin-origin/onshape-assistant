@@ -204,6 +204,15 @@
         chrome.runtime.sendMessage({ type: "sort-tabs" });
       }, 2000);
     }
+
+    // --- Interference check: auto-check assemblies after scan + sort settle ---
+    setTimeout(() => {
+      const wid = getWidFromUrl();
+      if (result.doc_id && wid) {
+        console.log("[Scanner] Triggering interference check");
+        chrome.runtime.sendMessage({ type: "check-interference", docId: result.doc_id, wid });
+      }
+    }, 5000);
   }
 
   async function waitForTabBar() {
@@ -414,6 +423,22 @@
     } else if (msg.type === "tab-sort-done") {
       if (msg.sorted > 0) {
         showProgressToast(`Sorted ${msg.sorted} tab(s) into folders`);
+        setTimeout(removeProgressToast, 3000);
+      } else {
+        removeProgressToast();
+      }
+
+    } else if (msg.type === "interference-progress") {
+      showProgressToast(msg.message);
+
+    } else if (msg.type === "interference-done") {
+      const results = msg.results || {};
+      if (results.totalInterferences > 0) {
+        const toast = showProgressToast(`${results.totalInterferences} interference(s) detected`);
+        toast.style.background = "#7c4a00";
+        setTimeout(removeProgressToast, 5000);
+      } else if (!results.error) {
+        showProgressToast("No interferences found");
         setTimeout(removeProgressToast, 3000);
       } else {
         removeProgressToast();

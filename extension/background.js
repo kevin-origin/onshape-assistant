@@ -417,6 +417,9 @@ async function storeDocScanResult(result) {
       console.log(`[Scanner] ${assemblies.length} assembly(s) found:`,
         assemblies.map(a => a.name));
 
+      // Store assembly element IDs for interference checker (0 extra API calls)
+      result.assemblyElements = assemblies.map(a => ({ id: a.id, name: a.name }));
+
       if (result.folders["Assemblies"]) {
         result.folders["Assemblies"].assemblies = assemblies.length;
         console.log("[Scanner] Set Assemblies folder count to " + assemblies.length);
@@ -1567,6 +1570,320 @@ async function sortStrayTabs(tabId, senderTabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Interference Detection — CDP automation for assembly interference checks
+// ---------------------------------------------------------------------------
+
+let _interferenceInProgress = false;
+
+async function checkInterference(tabId, senderTabId, docId, wid) {
+  if (_interferenceInProgress) {
+    console.log("[Interference] Already in progress, skipping");
+    return;
+  }
+  // Wait for tab sort to finish (up to 30s)
+  for (let i = 0; i < 60 && _sortingInProgress; i++) {
+    await new Promise(r => setTimeout(r, 500));
+  }
+  _interferenceInProgress = true;
+
+  function sendProgress(message) {
+    chrome.tabs.sendMessage(senderTabId, { type: "interference-progress", message }).catch(() => {});
+  }
+  function sendDone(results) {
+    chrome.tabs.sendMessage(senderTabId, { type: "interference-done", results }).catch(() => {});
+  }
+
+  let needsDetach = false;
+
+  try {
+    // Get assembly elements from stored scan results (0 API calls)
+    const data = await chrome.storage.local.get("docScanResults");
+    const docScan = (data.docScanResults || {})[docId];
+    const assemblyElements = docScan?.assemblyElements || [];
+
+    if (assemblyElements.length === 0) {
+      console.log("[Interference] No assemblies found for", docId);
+      sendDone({ totalInterferences: 0, assemblies: {} });
+      return;
+    }
+
+    console.log(`[Interference] Checking ${assemblyElements.length} assembly(s):`,
+      assemblyElements.map(a => a.name));
+    sendProgress(`Starting interference check (${assemblyElements.length} assembly${assemblyElements.length > 1 ? "s" : ""})...`);
+
+    // Attach debugger
+    await new Promise((resolve, reject) => {
+      chrome.debugger.attach({ tabId }, "1.3", () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
+      });
+    });
+    needsDetach = true;
+
+    const results = { assemblies: {}, totalInterferences: 0 };
+
+    // Check if assemblies are inside a folder — look for "Assemblies" folder tab
+    const folderInfo = await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const tabs = document.querySelectorAll('.os-tab-bar-tab-group');
+        for (const t of tabs) {
+          const nameEl = t.querySelector('.os-tab-name');
+          if (nameEl && nameEl.textContent.trim() === 'Assemblies' && t.offsetWidth > 0) {
+            const r = t.getBoundingClientRect();
+            return { hasFolder: true, x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+          }
+        }
+        return { hasFolder: false };
+      })()`,
+      returnByValue: true,
+    });
+
+    const folder = folderInfo.result?.value;
+    let enteredFolder = false;
+
+    if (folder?.hasFolder) {
+      // Enter the Assemblies folder to reveal assembly tabs
+      console.log("[Interference] Entering Assemblies folder");
+      await cdpClick(tabId, folder.x, folder.y);
+      await new Promise(r => setTimeout(r, 1000));
+      enteredFolder = true;
+    }
+
+    for (let i = 0; i < assemblyElements.length; i++) {
+      const asm = assemblyElements[i];
+      sendProgress(`Checking interference: ${asm.name} (${i + 1}/${assemblyElements.length})...`);
+      console.log(`[Interference] ${i + 1}/${assemblyElements.length}: ${asm.name}`);
+
+      try {
+        // Find assembly tab by name and icon
+        const tabPos = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const tabs = document.querySelectorAll('.os-tab-bar-tab');
+            for (const t of tabs) {
+              if (t.classList.contains('os-tab-bar-tab-group')) continue;
+              const nameEl = t.querySelector('.os-tab-name');
+              const iconSrc = t.getAttribute('data-icon-src') || '';
+              if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(asm.name)} && iconSrc === 'assembly' && t.offsetWidth > 0) {
+                const r = t.getBoundingClientRect();
+                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+              }
+            }
+            return null;
+          })()`,
+          returnByValue: true,
+        });
+
+        if (!tabPos.result?.value) {
+          console.log(`[Interference] Tab "${asm.name}" not found, skipping`);
+          results.assemblies[asm.name] = { interferences: [], count: 0, error: "Tab not found" };
+          continue;
+        }
+
+        // Click assembly tab to activate
+        await cdpClick(tabId, tabPos.result.value.x, tabPos.result.value.y);
+
+        // Wait for assembly to load: poll for "Show analysis tools" button (up to 15s)
+        const analysisBtn = await waitForElement(tabId, `(() => {
+          const btn = document.querySelector('[data-bs-original-title="Show analysis tools"], [title="Show analysis tools"]');
+          if (btn && btn.offsetWidth > 0) {
+            const r = btn.getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+          }
+          return null;
+        })()`, 15000);
+
+        if (!analysisBtn) {
+          console.log(`[Interference] Analysis tools button not found for "${asm.name}"`);
+          results.assemblies[asm.name] = { interferences: [], count: 0, error: "Analysis tools not found" };
+          continue;
+        }
+
+        // Click "Show analysis tools"
+        await cdpClick(tabId, analysisBtn.x, analysisBtn.y);
+
+        // Wait for "Interference detection..." menu item (up to 3s)
+        const interferenceItem = await waitForElement(tabId, `(() => {
+          const items = document.querySelectorAll('span.context-menu-item-span');
+          for (const item of items) {
+            if (item.textContent.trim().toLowerCase().includes('interference')) {
+              const r = item.getBoundingClientRect();
+              if (r.width > 0) return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: item.textContent.trim() };
+            }
+          }
+          return null;
+        })()`, 3000);
+
+        if (!interferenceItem) {
+          console.log(`[Interference] Interference menu item not found for "${asm.name}"`);
+          await cdpPressKey(tabId, "Escape", 27);
+          results.assemblies[asm.name] = { interferences: [], count: 0, error: "Menu item not found" };
+          continue;
+        }
+
+        console.log(`[Interference] Clicking "${interferenceItem.text}"`);
+        await cdpClick(tabId, interferenceItem.x, interferenceItem.y);
+
+        // Wait for interference detection dialog (up to 5s)
+        const dialogFound = await waitForElement(tabId, `(() => {
+          const dialog = document.querySelector('#interference-detection-dialog');
+          if (dialog && dialog.offsetWidth > 0) return true;
+          return null;
+        })()`, 5000);
+
+        if (!dialogFound) {
+          console.log(`[Interference] Dialog not found for "${asm.name}"`);
+          await cdpPressKey(tabId, "Escape", 27);
+          results.assemblies[asm.name] = { interferences: [], count: 0, error: "Dialog not found" };
+          continue;
+        }
+
+        // Wait for computation to complete — poll until dialog text stabilizes (up to 15s)
+        let lastText = "";
+        let stableCount = 0;
+        for (let poll = 0; poll < 15; poll++) {
+          await new Promise(r => setTimeout(r, 1000));
+          const snap = await cdpSend(tabId, "Runtime.evaluate", {
+            expression: `(() => {
+              const dialog = document.querySelector('#interference-detection-dialog');
+              if (!dialog) return '';
+              return dialog.textContent.trim();
+            })()`,
+            returnByValue: true,
+          });
+          const txt = snap.result?.value || "";
+          if (txt.length > 0 && txt === lastText) {
+            stableCount++;
+            if (stableCount >= 2) break; // stable for 2 consecutive polls
+          } else {
+            stableCount = 0;
+          }
+          lastText = txt;
+        }
+
+        // Read interference results from dialog
+        const intResult = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const dialog = document.querySelector('#interference-detection-dialog');
+            if (!dialog) return { interferences: [], count: 0 };
+            // "No interferences" indicator
+            if (dialog.querySelector('[title="No interferences"]')) return { interferences: [], count: 0 };
+            // Read interference pairs from results list
+            const container = dialog.querySelector('[data-parameter-id="interferenceBodies"]');
+            const items = (container || dialog).querySelectorAll('.os-selection-item-line');
+            const pairs = [];
+            for (const item of items) {
+              const text = item.textContent.trim();
+              if (text) pairs.push(text);
+            }
+            // Fallback: check text content for "no interference"
+            if (pairs.length === 0 && dialog.textContent.toLowerCase().includes('no interference')) {
+              return { interferences: [], count: 0 };
+            }
+            return { interferences: pairs, count: pairs.length };
+          })()`,
+          returnByValue: true,
+        });
+
+        const intData = intResult.result?.value || { interferences: [], count: 0 };
+        results.assemblies[asm.name] = intData;
+        results.totalInterferences += intData.count;
+        console.log(`[Interference] ${asm.name}: ${intData.count} interference(s)`, intData.interferences);
+
+        // Close dialog
+        const closeBtnPos = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const dialog = document.querySelector('#interference-detection-dialog');
+            if (!dialog) return null;
+            const btn = dialog.querySelector('.btn-close.ns-dialog-button-close')
+              || dialog.querySelector('.btn-close')
+              || dialog.querySelector('[class*="close"]');
+            if (btn && btn.offsetWidth > 0) {
+              const r = btn.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+            return null;
+          })()`,
+          returnByValue: true,
+        });
+
+        if (closeBtnPos.result?.value) {
+          await cdpClick(tabId, closeBtnPos.result.value.x, closeBtnPos.result.value.y);
+        } else {
+          await cdpPressKey(tabId, "Escape", 27);
+        }
+        await new Promise(r => setTimeout(r, 500));
+
+      } catch (asmErr) {
+        console.error(`[Interference] Error on "${asm.name}":`, asmErr.message);
+        results.assemblies[asm.name] = { interferences: [], count: 0, error: asmErr.message };
+        try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
+      }
+    }
+
+    // Navigate back to root if we entered a folder
+    if (enteredFolder) {
+      const allTabsBtn = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const crumbs = document.querySelectorAll('.os-tab-bar-breadcrumb');
+          for (const c of crumbs) {
+            if (c.getAttribute('title') === 'All tabs' || c.textContent.trim() === 'All tabs') {
+              const r = c.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+          }
+          if (crumbs.length > 0) {
+            const r = crumbs[0].getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+          }
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+      if (allTabsBtn.result?.value) {
+        await cdpClick(tabId, allTabsBtn.result.value.x, allTabsBtn.result.value.y);
+        await new Promise(r => setTimeout(r, 500));
+      }
+    }
+
+    // Store results in chrome.storage.local
+    const stored = await chrome.storage.local.get("interferenceResults");
+    const allResults = stored.interferenceResults || {};
+    allResults[docId] = {
+      timestamp: new Date().toLocaleTimeString("en-IN", {
+        hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
+      }),
+      assemblies: results.assemblies,
+      totalInterferences: results.totalInterferences,
+    };
+    await chrome.storage.local.set({ interferenceResults: allResults });
+
+    sendDone(results);
+
+    // Browser notification if interferences found
+    if (results.totalInterferences > 0) {
+      const docName = docScan?.doc_name || docId;
+      const affectedCount = Object.values(results.assemblies).filter(a => a.count > 0).length;
+      chrome.notifications.create(`interference-${docId}-${Date.now()}`, {
+        type: "basic",
+        iconUrl: "icons/icon128.png",
+        title: docName,
+        message: `${results.totalInterferences} interference(s) detected in ${affectedCount} assembl${affectedCount === 1 ? "y" : "ies"}`,
+      });
+    }
+
+    console.log(`[Interference] Done: ${results.totalInterferences} total across ${assemblyElements.length} assembly(s)`);
+
+  } catch (e) {
+    console.error("[Interference] Fatal error:", e.message);
+    try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
+    sendDone({ totalInterferences: 0, assemblies: {}, error: e.message });
+  } finally {
+    _interferenceInProgress = false;
+    if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -1620,6 +1937,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!tabId) { sendResponse({ error: "No tab" }); return; }
     sortStrayTabs(tabId, tabId).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
     return true;
+
+  } else if (msg.type === "check-interference") {
+    // Interference detection via CDP — triggered from content.js after scan
+    const tabId = sender.tab?.id;
+    const { docId, wid } = msg;
+    if (!tabId || !docId) { sendResponse({ error: "Missing tab or docId" }); return; }
+    checkInterference(tabId, tabId, docId, wid);
+    sendResponse({ ok: true });
+    return;
 
   } else if (msg.type === "discover-context-menu") {
     // Discovery helper — run once to find context menu selectors
@@ -1778,7 +2104,7 @@ chrome.notifications.onClicked.addListener((notificationId) => {
   let section = "";
   if (notificationId.startsWith("folder-scan-")) {
     section = "scanner";
-  } else if (notificationId.startsWith("violations-")) {
+  } else if (notificationId.startsWith("violations-") || notificationId.startsWith("interference-")) {
     section = "violations";
   }
   if (section) {
