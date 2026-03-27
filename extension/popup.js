@@ -21,20 +21,27 @@ document.getElementById("btnGoViolations").addEventListener("click", () => {
 document.getElementById("btnBackFromDrawing").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnBackFromScanner").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnBackFromViolations").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnGoInterference").addEventListener("click", () => {
+  showSection("sectionInterference");
+  loadInterferenceResults();
+});
+document.getElementById("btnBackFromInterference").addEventListener("click", () => showSection("sectionMenu"));
 
-// Interference Check button
+// Interference Check — run button
 document.getElementById("btnRunInterference").addEventListener("click", () => {
   const btn = document.getElementById("btnRunInterference");
+  const $status = document.getElementById("interferenceStatus");
   btn.disabled = true;
-  btn.querySelector(".menu-desc").textContent = "Running interference check...";
+  $status.style.display = "block";
+  $status.textContent = "Running interference check...";
 
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (tabs.length === 0) { btn.disabled = false; return; }
+    if (tabs.length === 0) { btn.disabled = false; $status.textContent = "No active tab"; return; }
     const url = tabs[0].url || "";
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
     if (!docMatch || !widMatch) {
-      btn.querySelector(".menu-desc").textContent = "Not an Onshape document";
+      $status.textContent = "Not an Onshape document";
       btn.disabled = false;
       return;
     }
@@ -43,12 +50,94 @@ document.getElementById("btnRunInterference").addEventListener("click", () => {
       type: "check-interference",
       docId: docMatch[1],
       wid: widMatch[1],
-    }, (response) => {
-      btn.disabled = false;
-      btn.querySelector(".menu-desc").textContent = "Check all assemblies in the current document for interferences";
     });
+    // Results arrive via storage — poll for completion
+    const startTime = Date.now();
+    const pollInterval = setInterval(() => {
+      if (Date.now() - startTime > 120000) { clearInterval(pollInterval); btn.disabled = false; $status.textContent = "Timed out"; return; }
+      chrome.storage.local.get("interferenceResults", (data) => {
+        const results = data.interferenceResults || {};
+        // Find result for this doc that's newer than when we started
+        const docResult = results[docMatch[1]];
+        if (docResult) {
+          const resultTime = new Date();
+          // Check if any assembly has results (not just errors)
+          const hasResults = Object.values(docResult.assemblies || {}).some(a => a.count >= 0 && !a.error?.includes("not found"));
+          if (hasResults || Object.keys(docResult.assemblies || {}).length > 0) {
+            clearInterval(pollInterval);
+            btn.disabled = false;
+            $status.style.display = "none";
+            loadInterferenceResults();
+          }
+        }
+      });
+    }, 2000);
   });
 });
+
+function loadInterferenceResults() {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) return;
+    const url = tabs[0].url || "";
+    const m = url.match(/\/documents\/([a-f0-9]+)/);
+    if (!m) return;
+    const docId = m[1];
+
+    chrome.storage.local.get("interferenceResults", (data) => {
+      const results = data.interferenceResults || {};
+      const $list = document.getElementById("interferenceResults");
+      const $status = document.getElementById("interferenceStatus");
+      $list.innerHTML = "";
+
+      const docResult = results[docId];
+      if (!docResult) {
+        $list.innerHTML = '<div style="color:#666;font-size:13px;padding:10px 0;">No results yet. Click "Run Check" to scan.</div>';
+        return;
+      }
+
+      // Timestamp
+      const ts = document.createElement("div");
+      ts.style.cssText = "font-size:11px;color:#666;margin-bottom:6px;";
+      ts.textContent = "Last checked: " + docResult.timestamp;
+      $list.appendChild(ts);
+
+      // Summary
+      const total = docResult.totalInterferences || 0;
+      const summary = document.createElement("div");
+      summary.className = "result-item";
+      const sumName = document.createElement("span");
+      sumName.className = "result-name";
+      sumName.textContent = total > 0 ? `${total} interference(s) found` : "No interferences";
+      summary.appendChild(sumName);
+      const sumBadge = document.createElement("span");
+      sumBadge.className = "badge " + (total > 0 ? "badge-warn" : "badge-ok");
+      sumBadge.textContent = total > 0 ? total : "OK";
+      summary.appendChild(sumBadge);
+      $list.appendChild(summary);
+
+      // Per-assembly results
+      for (const [asmName, asmData] of Object.entries(docResult.assemblies || {})) {
+        const line = document.createElement("div");
+        line.className = "result-item";
+        line.style.paddingLeft = "20px";
+        if (asmData.error) {
+          line.style.color = "#ff6b6b";
+          line.textContent = `${asmName}: Error - ${asmData.error}`;
+        } else if (asmData.count > 0) {
+          line.style.color = "#ffa500";
+          const pairs = asmData.interferences.join(", ");
+          line.textContent = `${asmName}: ${asmData.count} interference${asmData.count > 1 ? "s" : ""} (${pairs})`;
+        } else {
+          line.style.color = "#95d5b2";
+          line.textContent = `${asmName}: No interferences`;
+        }
+        $list.appendChild(line);
+      }
+
+      $status.style.display = "none";
+    });
+  });
+}
 
 // Check if opened via notification click — navigate to target section
 chrome.storage.local.get("popupTargetSection", (data) => {

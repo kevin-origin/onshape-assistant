@@ -176,7 +176,7 @@
       Violations
       <div class="menu-desc">Documents exceeding best practice limits</div>
     </button>
-    <button class="btn-menu" id="btnRunInterference">
+    <button class="btn-menu" id="btnGoInterference">
       Interference Check
       <div class="menu-desc">Check all assemblies in the current document for interferences</div>
     </button>
@@ -215,6 +215,16 @@
       <div class="summary" id="summaryText"></div>
       <div id="resultList"></div>
     </div>
+  </div>
+
+  <!-- ============ Interference Check ============ -->
+  <div id="sectionInterference" class="section">
+    <h3><button class="btn-back" id="btnBackFromInterference">Back</button> Interference Check</h3>
+    <div class="btn-row">
+      <button class="btn-rescan" id="btnRunInterference">Run Check</button>
+    </div>
+    <div id="interferenceStatus" style="margin-top:10px;padding:6px 8px;background:#16213e;border-radius:4px;font-size:13px;color:#7ec8e3;display:none;"></div>
+    <div id="interferenceResults" style="margin-top:10px;"></div>
   </div>
 
   <!-- ============ Violations ============ -->
