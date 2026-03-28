@@ -550,9 +550,10 @@
             console.log(`[ExportDetect] Doc has ${response.count} release(s), no banner needed`);
             return;
           }
-          console.log("[ExportDetect] No releases found, showing reminder banner");
+          console.log("[ExportDetect] No releases found, blocking export");
           const modalContent = form.closest(".modal-content");
           if (modalContent) {
+            // Show warning banner
             const banner = document.createElement("div");
             banner.id = "oxt-release-reminder";
             banner.style.cssText = `
@@ -568,6 +569,25 @@
             } else {
               modalContent.insertBefore(banner, modalContent.children[1] || null);
             }
+
+            // Disable the Export/OK submit button
+            const buttons = form.querySelectorAll("button");
+            for (const btn of buttons) {
+              const text = btn.textContent.trim().toLowerCase();
+              if (text === "export" || text === "ok" || btn.type === "submit") {
+                btn.disabled = true;
+                btn.title = "Release required before export";
+                btn.style.opacity = "0.4";
+                btn.style.cursor = "not-allowed";
+                console.log(`[ExportDetect] Disabled button: "${btn.textContent.trim()}"`);
+              }
+            }
+            // Also block form submission directly
+            form.addEventListener("submit", function blockSubmit(e) {
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              console.log("[ExportDetect] Form submit blocked");
+            }, true);
           }
         });
 
