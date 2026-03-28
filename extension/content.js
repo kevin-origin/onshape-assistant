@@ -539,6 +539,26 @@
 
         console.log(`[ExportDetect] Export Drawing dialog opened: "${filename}" as ${format}`);
 
+        // Show release reminder banner inside the export dialog
+        const modalContent = form.closest(".modal-content");
+        if (modalContent) {
+          const banner = document.createElement("div");
+          banner.id = "oxt-release-reminder";
+          banner.style.cssText = `
+            background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+            padding: 10px 14px; margin: 0 16px 12px 16px; font-size: 13px;
+            color: #92400e; font-weight: 500;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          `;
+          banner.textContent = "Please create a release before sending for manufacturing.";
+          const modalBody = modalContent.querySelector(".modal-body, .me-4");
+          if (modalBody) {
+            modalBody.parentNode.insertBefore(banner, modalBody);
+          } else {
+            modalContent.insertBefore(banner, modalContent.children[1] || null);
+          }
+        }
+
         chrome.runtime.sendMessage({
           type: "export-drawing-detected",
           docId: getDocIdFromUrl(),
