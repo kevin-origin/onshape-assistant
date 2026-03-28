@@ -1,3 +1,11 @@
+== WORKSPACE PROTECTION OBSERVER ==
+
+Paste in devtools (top context) on an Onshape doc, then manually
+enable workspace protection. Captures clicks, hovers, new DOM nodes
+(dialogs, toggles, checkboxes). Type stop() when done.
+
+var _obsLog=[];var _obsMut=new MutationObserver(function(muts){muts.forEach(function(m){m.addedNodes.forEach(function(n){if(n.nodeType!==1)return;var text=(n.textContent||'').trim().slice(0,200);var cls=(n.className||'').toString();var html=n.outerHTML||'';if(text.length>1||cls.match(/menu|dropdown|dialog|modal|popup|context|protect|toggle|switch|workspace/i)){var entry={event:'dom-added',tag:n.tagName,text:text.slice(0,200),cls:cls.slice(0,200),html:html.slice(0,500),childCount:n.children?n.children.length:0};_obsLog.push(entry);console.log('[Observer] dom-added:',entry)}})})});_obsMut.observe(document.body,{childList:true,subtree:true});function _obsHandler(e){var el=e.target;var r=el.getBoundingClientRect();var entry={event:e.type,tag:el.tagName,text:(el.textContent||'').trim().slice(0,100),ariaLabel:el.getAttribute('aria-label')||'',title:el.getAttribute('title')||'',cls:(el.className||'').toString().slice(0,200),x:Math.round(r.left),y:Math.round(r.top),w:Math.round(r.width),h:Math.round(r.height)};_obsLog.push(entry);console.log('[Observer] '+e.type+':',entry)}document.addEventListener('contextmenu',_obsHandler,true);document.addEventListener('click',_obsHandler,true);document.addEventListener('mouseover',_obsHandler,true);window.stop=function(){document.removeEventListener('contextmenu',_obsHandler,true);document.removeEventListener('click',_obsHandler,true);document.removeEventListener('mouseover',_obsHandler,true);_obsMut.disconnect();console.log('[Observer] Stopped. Full log ('+_obsLog.length+' events):');console.log(JSON.stringify(_obsLog,null,2))};console.log('[Observer] Running. Enable workspace protection, then type stop() when done.');
+
 == INTERFERENCE DETECTION — BROAD SEARCH ==
 
 Trigger interference detection in the UI, keep the panel open,
