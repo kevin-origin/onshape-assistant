@@ -158,6 +158,85 @@
     #drawLog .log-err { color: #ff6b6b; }
     .section { display: none; }
     .section.active { display: block; }
+    /* Part selection panel */
+    #partSelectPanel {
+      display: none;
+      margin-top: 10px;
+      border: 1px solid #333;
+      border-radius: 6px;
+      background: #16213e;
+      padding: 10px;
+    }
+    #partSelectPanel .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+    }
+    #partSelectPanel .panel-header span {
+      font-size: 14px;
+      font-weight: 600;
+      color: #e0e0e0;
+    }
+    .part-list {
+      max-height: 160px;
+      overflow-y: auto;
+      margin-bottom: 10px;
+    }
+    .part-item {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 5px 6px;
+      border-radius: 3px;
+      font-size: 13px;
+      color: #e0e0e0;
+      cursor: pointer;
+    }
+    .part-item:hover { background: #1a1a40; }
+    .part-item input[type="checkbox"] {
+      accent-color: #7ec8e3;
+      width: 15px;
+      height: 15px;
+      flex-shrink: 0;
+    }
+    .weldment-section {
+      border-top: 1px solid #333;
+      padding-top: 8px;
+      margin-bottom: 10px;
+    }
+    .weldment-section label.weld-toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      color: #e0e0e0;
+      cursor: pointer;
+      margin: 0;
+    }
+    .weldment-opts {
+      display: none;
+      margin-top: 8px;
+      padding: 8px;
+      background: #1a1a2e;
+      border-radius: 4px;
+    }
+    .weldment-opts.active { display: block; }
+    .weldment-opts label {
+      font-size: 12px;
+      color: #aaa;
+      margin-top: 6px;
+      margin-bottom: 2px;
+    }
+    .weldment-opts input[type="text"] {
+      height: 28px;
+      font-size: 13px;
+    }
+    .weldment-info {
+      font-size: 11px;
+      color: #666;
+      margin-top: 4px;
+    }
   </style>
 </head>
 <body>
@@ -190,7 +269,34 @@
     <input type="text" id="partStudioUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
 
     <div class="btn-row">
-      <button class="btn-draw" id="btnCreateDrawings">Create Drawings</button>
+      <button class="btn-draw" id="btnCreateDrawings">Generate Drawings</button>
+    </div>
+
+    <!-- Part selection panel (shown after fetching parts) -->
+    <div id="partSelectPanel">
+      <div class="panel-header">
+        <span>Select Parts</span>
+        <label style="font-size:12px;color:#7ec8e3;cursor:pointer;margin:0;">
+          <input type="checkbox" id="chkSelectAll" checked> Select All
+        </label>
+      </div>
+      <div class="part-list" id="partList"></div>
+
+      <div class="weldment-section">
+        <label class="weld-toggle">
+          <input type="checkbox" id="chkWeldment"> Create as weldment drawing
+        </label>
+        <div class="weldment-opts" id="weldmentOpts">
+          <label>Drawing name</label>
+          <input type="text" id="weldmentName" placeholder="Weldment Drawing">
+          <div class="weldment-info">Selected parts will be placed on separate sheets within a single drawing tab.</div>
+        </div>
+      </div>
+
+      <div class="btn-row">
+        <button class="btn-draw" id="btnConfirmDrawings">Create</button>
+        <button class="btn-rescan" id="btnCancelDrawings">Cancel</button>
+      </div>
     </div>
 
     <div id="drawLog"></div>

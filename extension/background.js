@@ -117,7 +117,7 @@ async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
   return false;
 }
 
-async function createDrawingsForUrl(url) {
+async function createDrawingsForUrl(url, selectedParts) {
   const parsed = parsePartStudioUrl(url);
   if (!parsed) {
     broadcastDrawLog("Invalid Part Studio URL", "log-err");
@@ -129,24 +129,27 @@ async function createDrawingsForUrl(url) {
   broadcastDrawLog(`Workspace: ${wid}`);
   broadcastDrawLog(`Part Studio: ${eid}`);
 
-  // 1. Fetch parts list
-  broadcastDrawLog("Fetching parts...");
+  // Use pre-selected parts if provided, otherwise fetch (legacy fallback)
   let parts;
-  try {
-    parts = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}`);
-  } catch (e) {
-    broadcastDrawLog(`Failed to fetch parts: ${e.message}`, "log-err");
-    chrome.runtime.sendMessage({ type: "draw-done", error: e.message }).catch(() => {});
-    return;
+  if (selectedParts && selectedParts.length > 0) {
+    parts = selectedParts;
+    broadcastDrawLog(`${parts.length} part(s) selected`);
+  } else {
+    broadcastDrawLog("Fetching parts...");
+    try {
+      parts = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}`);
+    } catch (e) {
+      broadcastDrawLog(`Failed to fetch parts: ${e.message}`, "log-err");
+      chrome.runtime.sendMessage({ type: "draw-done", error: e.message }).catch(() => {});
+      return;
+    }
+    if (!parts || parts.length === 0) {
+      broadcastDrawLog("No parts found in Part Studio", "log-err");
+      chrome.runtime.sendMessage({ type: "draw-done", error: "No parts" }).catch(() => {});
+      return;
+    }
+    broadcastDrawLog(`Found ${parts.length} part(s)`);
   }
-
-  if (!parts || parts.length === 0) {
-    broadcastDrawLog("No parts found in Part Studio", "log-err");
-    chrome.runtime.sendMessage({ type: "draw-done", error: "No parts" }).catch(() => {});
-    return;
-  }
-
-  broadcastDrawLog(`Found ${parts.length} part(s)`);
   let created = 0;
   let failed = 0;
 
@@ -2252,8 +2255,25 @@ async function readInterferenceObserver() {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (msg.type === "create-drawings") {
-    createDrawingsForUrl(msg.url);
+  if (msg.type === "fetch-parts") {
+    // Fetch parts list and return to popup for selection
+    (async () => {
+      const parsed = parsePartStudioUrl(msg.url || "");
+      if (!parsed) { sendResponse({ error: "Invalid Part Studio URL" }); return; }
+      try {
+        const parts = await onshapeFetch(`/api/v10/parts/d/${parsed.docId}/w/${parsed.wid}/e/${parsed.eid}`);
+        if (!parts || parts.length === 0) { sendResponse({ error: "No parts found" }); return; }
+        // Return minimal part data to popup
+        const partList = parts.map(p => ({ partId: p.partId, name: p.name || "Unnamed" }));
+        sendResponse({ parts: partList });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true; // async sendResponse
+
+  } else if (msg.type === "create-drawings") {
+    createDrawingsForUrl(msg.url, msg.selectedParts || null);
     sendResponse({ ok: true });
     return;
 

@@ -202,6 +202,17 @@ function validateFolders(result) {
 const $partStudioUrl   = document.getElementById("partStudioUrl");
 const $btnCreateDraw   = document.getElementById("btnCreateDrawings");
 const $drawLog         = document.getElementById("drawLog");
+const $partSelectPanel = document.getElementById("partSelectPanel");
+const $partList        = document.getElementById("partList");
+const $chkSelectAll    = document.getElementById("chkSelectAll");
+const $chkWeldment     = document.getElementById("chkWeldment");
+const $weldmentOpts    = document.getElementById("weldmentOpts");
+const $weldmentName    = document.getElementById("weldmentName");
+const $btnConfirm      = document.getElementById("btnConfirmDrawings");
+const $btnCancel       = document.getElementById("btnCancelDrawings");
+
+// Cached parts list after fetch
+let _fetchedParts = [];
 
 // Scanner elements
 const $btnRescan    = document.getElementById("btnRescan");
@@ -252,6 +263,7 @@ function appendDrawLog(text, cls) {
   $drawLog.scrollTop = $drawLog.scrollHeight;
 }
 
+// "Generate Drawings" — fetch parts and show selection panel
 $btnCreateDraw.addEventListener("click", () => {
   chrome.storage.local.set({ partStudioUrl: $partStudioUrl.value.trim() });
 
@@ -263,9 +275,110 @@ $btnCreateDraw.addEventListener("click", () => {
 
   $btnCreateDraw.disabled = true;
   $drawLog.innerHTML = "";
-  appendDrawLog("Starting drawing creation...");
+  $partSelectPanel.style.display = "none";
+  appendDrawLog("Fetching parts...");
 
-  chrome.runtime.sendMessage({ type: "create-drawings", url }, (response) => {
+  chrome.runtime.sendMessage({ type: "fetch-parts", url }, (response) => {
+    $btnCreateDraw.disabled = false;
+    if (!response || response.error) {
+      appendDrawLog(response ? response.error : "No response from background", "log-err");
+      return;
+    }
+    _fetchedParts = response.parts || [];
+    if (_fetchedParts.length === 0) {
+      appendDrawLog("No parts found in Part Studio", "log-err");
+      return;
+    }
+    $drawLog.style.display = "none";
+    $drawLog.innerHTML = "";
+    showPartSelection(_fetchedParts);
+  });
+});
+
+function showPartSelection(parts) {
+  $partList.innerHTML = "";
+  $chkSelectAll.checked = true;
+  $chkWeldment.checked = false;
+  $weldmentOpts.classList.remove("active");
+  $weldmentName.value = "";
+
+  parts.forEach((part, i) => {
+    const div = document.createElement("div");
+    div.className = "part-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.dataset.index = i;
+    cb.className = "part-cb";
+    const label = document.createElement("span");
+    label.textContent = part.name || `Part ${i + 1}`;
+    div.appendChild(cb);
+    div.appendChild(label);
+    div.addEventListener("click", (e) => {
+      if (e.target !== cb) cb.checked = !cb.checked;
+      updateSelectAll();
+    });
+    $partList.appendChild(div);
+  });
+
+  $partSelectPanel.style.display = "block";
+}
+
+function updateSelectAll() {
+  const boxes = $partList.querySelectorAll(".part-cb");
+  const allChecked = Array.from(boxes).every(cb => cb.checked);
+  $chkSelectAll.checked = allChecked;
+}
+
+$chkSelectAll.addEventListener("change", () => {
+  const checked = $chkSelectAll.checked;
+  $partList.querySelectorAll(".part-cb").forEach(cb => cb.checked = checked);
+});
+
+$chkWeldment.addEventListener("change", () => {
+  $weldmentOpts.classList.toggle("active", $chkWeldment.checked);
+});
+
+// Cancel — hide panel
+$btnCancel.addEventListener("click", () => {
+  $partSelectPanel.style.display = "none";
+  _fetchedParts = [];
+});
+
+// Confirm — send selected parts to background for drawing creation
+$btnConfirm.addEventListener("click", () => {
+  const boxes = $partList.querySelectorAll(".part-cb");
+  const selectedParts = [];
+  boxes.forEach(cb => {
+    if (cb.checked) selectedParts.push(_fetchedParts[parseInt(cb.dataset.index)]);
+  });
+
+  if (selectedParts.length === 0) {
+    appendDrawLog("No parts selected", "log-err");
+    $drawLog.style.display = "block";
+    return;
+  }
+
+  const isWeldment = $chkWeldment.checked;
+  const weldmentDrawingName = $weldmentName.value.trim() || "Weldment Drawing";
+
+  $partSelectPanel.style.display = "none";
+  $drawLog.innerHTML = "";
+  $btnCreateDraw.disabled = true;
+
+  if (isWeldment) {
+    appendDrawLog(`Weldment mode: ${selectedParts.length} part(s) -> "${weldmentDrawingName}"`);
+    appendDrawLog("Sheet creation not yet implemented -- only individual drawings will be created for now");
+  }
+
+  appendDrawLog(`Creating drawings for ${selectedParts.length} part(s)...`);
+
+  chrome.runtime.sendMessage({
+    type: "create-drawings",
+    url: $partStudioUrl.value.trim(),
+    selectedParts: selectedParts,
+    weldment: isWeldment ? { name: weldmentDrawingName } : null,
+  }, (response) => {
     if (!response) {
       appendDrawLog("No response from background -- try reloading extension", "log-err");
       $btnCreateDraw.disabled = false;
