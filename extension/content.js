@@ -161,23 +161,21 @@
     await waitForTabBar();
     console.log("[Scanner] Tab bar ready");
 
-    const result = await scanTabFolders();
-    if (!result) return;
+    // Quick check: do folders exist? If so, sort first — the single
+    // scan runs after sort-done. If no folders, scan immediately.
+    const tabs = getTabNames();
+    const hasFolders = tabs.some(t => t.isFolder);
 
-    // --- New doc detection: offer folder structure creation ---
-    maybeOfferFolderCreation(result);
-
-    // --- Tab sorter first, then scan ---
-    // Sort stray root tabs into matching folders BEFORE storing the scan
-    // result, so the reported state reflects the post-sort structure.
-    const hasFolders = Object.keys(result.folders || {}).length > 0;
     if (hasFolders) {
-      console.log("[Scanner] Triggering tab sort before final scan (folders exist)");
+      // Offer folder creation check (won't show since folders exist, but keeps logic)
+      console.log("[Scanner] Folders detected, sorting tabs first");
       chrome.runtime.sendMessage({ type: "sort-tabs" });
-      // sort-done message will trigger the post-sort re-scan via
-      // the "tab-sort-done" handler below.
+      // The single scan happens in the "tab-sort-done" handler.
     } else {
-      // No folders — store result as-is and check for issues
+      // No folders — scan now, also check if we should offer folder creation
+      const result = await scanTabFolders();
+      if (!result) return;
+      maybeOfferFolderCreation(result);
       sendScanResult(result);
     }
 
@@ -420,11 +418,14 @@
       } else {
         removeProgressToast();
       }
-      // Re-scan after sort completes so stored result reflects post-sort state
-      console.log("[Scanner] Post-sort re-scan starting");
+      // Single scan after sort completes — this is the only scan when folders exist
+      console.log("[Scanner] Sort done, running scan");
       setTimeout(async () => {
         const result = await scanTabFolders();
-        if (result) sendScanResult(result);
+        if (result) {
+          maybeOfferFolderCreation(result);
+          sendScanResult(result);
+        }
       }, 1000);
 
     } else if (msg.type === "interference-progress") {
