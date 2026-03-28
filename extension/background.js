@@ -2290,8 +2290,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       message: "Incorrect folder structure, please take action.",
     });
 
-  } else if (msg.type === "export-drawing-detected") {
-    console.log(`[ExportDetect] Drawing export: "${msg.filename}" as ${msg.format} (doc: ${msg.docName})`);
+  } else if (msg.type === "check-releases") {
+    (async () => {
+      try {
+        const data = await onshapeFetch(`/api/v10/revisions/d/${msg.docId}`);
+        const items = data.items || [];
+        console.log(`[ExportDetect] Doc ${msg.docId}: ${items.length} revision(s)`);
+        sendResponse({ hasReleases: items.length > 0, count: items.length });
+      } catch (e) {
+        console.log(`[ExportDetect] Release check failed: ${e.message}`);
+        sendResponse({ hasReleases: false, count: 0, error: e.message });
+      }
+    })();
+    return true; // async sendResponse
 
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
