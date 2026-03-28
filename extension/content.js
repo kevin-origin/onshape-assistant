@@ -164,11 +164,28 @@
     const result = await scanTabFolders();
     if (!result) return;
 
-    // Send to background for per-doc storage
+    // --- New doc detection: offer folder structure creation ---
+    maybeOfferFolderCreation(result);
+
+    // --- Tab sorter first, then scan ---
+    // Sort stray root tabs into matching folders BEFORE storing the scan
+    // result, so the reported state reflects the post-sort structure.
+    const hasFolders = Object.keys(result.folders || {}).length > 0;
+    if (hasFolders) {
+      console.log("[Scanner] Triggering tab sort before final scan (folders exist)");
+      chrome.runtime.sendMessage({ type: "sort-tabs" });
+      // sort-done message will trigger the post-sort re-scan via
+      // the "tab-sort-done" handler below.
+    } else {
+      // No folders — store result as-is and check for issues
+      sendScanResult(result);
+    }
+
+  }
+
+  function sendScanResult(result) {
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
 
-    // Notify after 10s if issues found (delay lives here in the content
-    // script because the service worker may sleep before a setTimeout fires)
     const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
     const folderData = result.folders || {};
     const folders = Object.keys(folderData);
@@ -189,22 +206,6 @@
         });
       }, 10000);
     }
-
-    // --- New doc detection: offer folder structure creation ---
-    maybeOfferFolderCreation(result);
-
-    // --- Tab sorter: move stray root tabs into matching folders ---
-    // Always trigger if folders exist — sortStrayTabs does its own fresh DOM
-    // pre-check and exits early if nothing to sort. The scan result may miss
-    // strays due to tab bar load timing, so don't gate on hasStrays here.
-    const hasFolders = Object.keys(result.folders || {}).length > 0;
-    if (hasFolders) {
-      setTimeout(() => {
-        console.log("[Scanner] Triggering tab sort (folders exist)");
-        chrome.runtime.sendMessage({ type: "sort-tabs" });
-      }, 2000);
-    }
-
   }
 
   async function waitForTabBar() {
@@ -419,6 +420,12 @@
       } else {
         removeProgressToast();
       }
+      // Re-scan after sort completes so stored result reflects post-sort state
+      console.log("[Scanner] Post-sort re-scan starting");
+      setTimeout(async () => {
+        const result = await scanTabFolders();
+        if (result) sendScanResult(result);
+      }, 1000);
 
     } else if (msg.type === "interference-progress") {
       showProgressToast(msg.message);
