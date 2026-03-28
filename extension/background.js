@@ -8,8 +8,6 @@ const COMPANY_ID   = "6810c247e7c40668c32816a6";
 // Scan timeout per document (ms) — if content.js doesn't respond in time
 const DOC_SCAN_TIMEOUT = 30000;
 
-// Release tracker — alert when versions exceed this without a release
-const VERSION_RELEASE_THRESHOLD = 15;
 
 // ---------------------------------------------------------------------------
 // Onshape API via session cookies (no API keys, zero quota cost)
@@ -494,45 +492,6 @@ async function checkDocViolations(docId, docName, wid) {
       const vc = vcData.versionCounts || {};
       vc[docId] = versions.length;
       await chrome.storage.local.set({ versionCounts: vc });
-    }
-
-    // 1. Versions since last release
-    if (Array.isArray(versions) && versions.length > 0) {
-      // Sort by createdAt ascending
-      const sorted = [...versions].sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
-
-      // Debug: log ALL unique purpose values and all version names
-      const purposeMap = {};
-      for (const v of sorted) {
-        const p = String(v.purpose ?? "null");
-        if (!purposeMap[p]) purposeMap[p] = [];
-        purposeMap[p].push(v.name);
-      }
-      console.log(`[Violations] ${docName}: ${versions.length} versions, purposes=` +
-        JSON.stringify(purposeMap));
-
-      // Find last release version by purpose field
-      let lastReleaseIdx = -1;
-      for (let i = sorted.length - 1; i >= 0; i--) {
-        const p = sorted[i].purpose;
-        if (p && p !== 0 && p !== "0") {
-          lastReleaseIdx = i;
-          break;
-        }
-      }
-
-      // Count only versions created after the last release
-      const versionsSinceRelease = lastReleaseIdx >= 0
-        ? sorted.length - 1 - lastReleaseIdx
-        : sorted.length;
-
-      console.log(`[Violations] ${docName}: lastReleaseIdx=${lastReleaseIdx}, sinceRelease=${versionsSinceRelease}`);
-
-      if (versionsSinceRelease >= VERSION_RELEASE_THRESHOLD) {
-        violations.push(`${versionsSinceRelease} versions since last release (limit: ${VERSION_RELEASE_THRESHOLD})`);
-      }
-    } else {
-      console.log(`[Violations] ${docName}: versions response:`, versions);
     }
 
     // Unwrap elements (API may return array or { items: [...] })
@@ -1699,31 +1658,19 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
 }
 
 async function setupNewDoc(tabId, docId, wid) {
-  console.log(`[NewDocSetup] Starting setup for ${docId}`);
+  console.log(`[NewDocSetup] Starting setup for ${docId}, wid=${wid}`);
 
   // Step 1: Create initial version via API (1 API call)
   const vResult = await createInitialVersion(docId, wid);
-  if (vResult.error) {
-    console.error("[NewDocSetup] Aborting — version creation failed");
-    chrome.tabs.sendMessage(tabId, {
-      type: "setup-new-doc-done",
-      success: false,
-      error: `Version creation failed: ${vResult.error}`,
-    }).catch(() => {});
-    return;
-  }
-
-  // Step 2: Enable workspace protection via CDP UI automation
-  const pResult = await enableWorkspaceProtection(tabId, tabId);
 
   chrome.tabs.sendMessage(tabId, {
     type: "setup-new-doc-done",
-    success: !pResult.error,
+    success: !vResult.error,
     versionCreated: !vResult.error,
-    protectionEnabled: !pResult.error && !pResult.skipped,
-    protectionSkipped: !!pResult.skipped,
-    error: pResult.error || null,
+    error: vResult.error || null,
   }).catch(() => {});
+
+  // TODO: Step 2 — enable workspace protection via CDP (not yet working)
 }
 
 // ---------------------------------------------------------------------------

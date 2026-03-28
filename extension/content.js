@@ -486,11 +486,7 @@
 
     } else if (msg.type === "setup-new-doc-done") {
       if (msg.success) {
-        const parts = [];
-        if (msg.versionCreated) parts.push("Initial version created");
-        if (msg.protectionEnabled) parts.push("workspace protected");
-        else if (msg.protectionSkipped) parts.push("already protected");
-        showProgressToast(parts.join(", ") || "Setup complete");
+        showProgressToast("Initial version created");
         setTimeout(removeProgressToast, 4000);
       } else {
         const toast = showProgressToast(`Setup error: ${msg.error || "Unknown"}`);
