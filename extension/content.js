@@ -503,4 +503,64 @@
       runOnDocLoad();
     }
   }, 2000);
+
+  // ---------------------------------------------------------------------------
+  // Export Drawing detection
+  // ---------------------------------------------------------------------------
+  // Watches for the "Export Drawing" modal dialog to appear.
+  // Fires when the user right-clicks a drawing tab and clicks "Export...".
+  // Selectors from observer data:
+  //   Modal:  div.modal.fade.show
+  //   Form:   form.export-dxf-or-dwg-dialog
+  //   Title:  span.title-description  (text: "Export Drawing")
+  //   Format: select inside form (options: PDF, DWG, DXF, etc.)
+  //   Filename: #drawing-export-filename-input
+
+  let _exportDetected = false;
+
+  const exportObserver = new MutationObserver((mutations) => {
+    if (_exportDetected) return;
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        // The modal wrapper has class "modal fade" and contains the export form
+        const form = node.querySelector
+          ? node.querySelector("form.export-dxf-or-dwg-dialog")
+          : null;
+        if (!form) continue;
+
+        _exportDetected = true;
+        const filenameInput = form.querySelector("#drawing-export-filename-input");
+        const formatSelect = form.querySelector("select");
+        const filename = filenameInput ? filenameInput.value : "";
+        const format = formatSelect
+          ? formatSelect.options[formatSelect.selectedIndex]?.label || ""
+          : "";
+
+        console.log(`[ExportDetect] Export Drawing dialog opened: "${filename}" as ${format}`);
+
+        chrome.runtime.sendMessage({
+          type: "export-drawing-detected",
+          docId: getDocIdFromUrl(),
+          docName: getDocName(),
+          filename: filename,
+          format: format,
+        });
+
+        // Reset flag when modal is removed
+        const modalEl = node.closest ? node : node.parentElement;
+        const removeObserver = new MutationObserver(() => {
+          if (!document.querySelector("form.export-dxf-or-dwg-dialog")) {
+            _exportDetected = false;
+            removeObserver.disconnect();
+            console.log("[ExportDetect] Export dialog closed");
+          }
+        });
+        removeObserver.observe(document.body, { childList: true, subtree: true });
+        return;
+      }
+    }
+  });
+
+  exportObserver.observe(document.body, { childList: true, subtree: true });
 })();

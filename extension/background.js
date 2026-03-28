@@ -2290,6 +2290,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       message: "Incorrect folder structure, please take action.",
     });
 
+  } else if (msg.type === "export-drawing-detected") {
+    console.log(`[ExportDetect] Drawing export: "${msg.filename}" as ${msg.format} (doc: ${msg.docName})`);
+
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
