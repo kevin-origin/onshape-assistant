@@ -324,6 +324,8 @@
       if (!offered.includes(docId)) offered.push(docId);
       await chrome.storage.local.set({ folderCreationOffered: offered });
       overlay.remove();
+      // Trigger new-doc setup: initial version + workspace protection
+      triggerNewDocSetup();
     });
 
     const createBtn = document.createElement("button");
@@ -353,6 +355,20 @@
     card.appendChild(btnRow);
     overlay.appendChild(card);
     document.body.appendChild(overlay);
+  }
+
+  function triggerNewDocSetup() {
+    const docId = getDocIdFromUrl();
+    const wid = getWidFromUrl();
+    if (!docId || !wid) {
+      console.log("[NewDocSetup] Missing docId or wid, skipping setup");
+      return;
+    }
+    console.log(`[NewDocSetup] Triggering setup for ${docId}`);
+    // Small delay to let folder creation/skip settle before CDP attaches
+    setTimeout(() => {
+      chrome.runtime.sendMessage({ type: "setup-new-doc", docId, wid });
+    }, 2000);
   }
 
   function showProgressToast(text) {
@@ -456,9 +472,28 @@
             chrome.storage.local.set({ folderCreationOffered: offered });
           });
         }
+        // Trigger new-doc setup: initial version + workspace protection
+        triggerNewDocSetup();
         setTimeout(removeProgressToast, 3000);
       } else {
         const toast = showProgressToast(`Error: ${msg.error || "Unknown error"}`);
+        toast.style.background = "#dc2626";
+        setTimeout(removeProgressToast, 5000);
+      }
+
+    } else if (msg.type === "setup-new-doc-progress") {
+      showProgressToast(msg.message);
+
+    } else if (msg.type === "setup-new-doc-done") {
+      if (msg.success) {
+        const parts = [];
+        if (msg.versionCreated) parts.push("Initial version created");
+        if (msg.protectionEnabled) parts.push("workspace protected");
+        else if (msg.protectionSkipped) parts.push("already protected");
+        showProgressToast(parts.join(", ") || "Setup complete");
+        setTimeout(removeProgressToast, 4000);
+      } else {
+        const toast = showProgressToast(`Setup error: ${msg.error || "Unknown"}`);
         toast.style.background = "#dc2626";
         setTimeout(removeProgressToast, 5000);
       }

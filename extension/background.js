@@ -1482,6 +1482,251 @@ async function sortDefaultTabs(tabId) {
 }
 
 // ---------------------------------------------------------------------------
+// New-doc setup: create initial version + enable workspace protection
+// ---------------------------------------------------------------------------
+
+async function createInitialVersion(docId, wid) {
+  console.log(`[NewDocSetup] Creating initial version for ${docId}`);
+  try {
+    const result = await onshapePost(`/api/v10/documents/d/${docId}/versions`, {
+      name: "Initial version",
+      documentId: docId,
+      workspaceId: wid,
+    });
+    console.log(`[NewDocSetup] Version created: ${result.id || result.name || "ok"}`);
+    return { ok: true, versionId: result.id };
+  } catch (e) {
+    console.error(`[NewDocSetup] Version creation failed: ${e.message}`);
+    return { error: e.message };
+  }
+}
+
+async function enableWorkspaceProtection(tabId, senderTabId) {
+  console.log("[NewDocSetup] Enabling workspace protection via CDP");
+
+  function sendSetupProgress(message) {
+    chrome.tabs.sendMessage(senderTabId, {
+      type: "setup-new-doc-progress",
+      message,
+    }).catch(() => {});
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      chrome.debugger.attach({ tabId }, "1.3", () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
+      });
+    });
+
+    // Wait for debugger banner to appear and layout to stabilize
+    await new Promise(r => setTimeout(r, 500));
+
+    // Step 1: Check if workspace is already protected (lock icon visible)
+    const alreadyProtected = await waitForElement(tabId, `(() => {
+      const lock = document.querySelector('svg.branch-lock-icon');
+      return lock && lock.offsetWidth > 0 ? true : null;
+    })()`, 500);
+
+    if (alreadyProtected) {
+      console.log("[NewDocSetup] Workspace already protected, skipping");
+      return { ok: true, skipped: true };
+    }
+
+    sendSetupProgress("Opening versions panel...");
+
+    // Step 2: Click "Versions and history" panel button
+    const vhBtn = await waitForElement(tabId, `(() => {
+      // Search by tooltip
+      const byTooltip = document.querySelector('[data-bs-original-title="Versions and history"], [title="Versions and history"]');
+      if (byTooltip && byTooltip.offsetHeight > 0) {
+        const r = byTooltip.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      }
+      // Fallback: search panel selector buttons
+      const btns = document.querySelectorAll('.os-panel-selector-button');
+      for (const btn of btns) {
+        const tip = btn.getAttribute('data-bs-original-title') || btn.getAttribute('title') || '';
+        if (tip.includes('ersion')) {
+          const r = btn.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        }
+      }
+      return null;
+    })()`, 5000);
+
+    if (!vhBtn) throw new Error("Versions and history button not found");
+
+    console.log(`[NewDocSetup] Versions button at (${vhBtn.x}, ${vhBtn.y})`);
+    await cdpClick(tabId, vhBtn.x, vhBtn.y);
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Step 3: Right-click on workspace "Main"
+    sendSetupProgress("Right-clicking workspace...");
+
+    const wsMain = await waitForElement(tabId, `(() => {
+      const spans = document.querySelectorAll('span.workspace-name');
+      for (const s of spans) {
+        if (s.offsetHeight > 0) {
+          const r = s.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: s.textContent.trim() };
+        }
+      }
+      return null;
+    })()`, 5000);
+
+    if (!wsMain) throw new Error("Workspace name element not found in versions panel");
+
+    console.log(`[NewDocSetup] Workspace "${wsMain.text}" at (${wsMain.x}, ${wsMain.y})`);
+    await cdpRightClick(tabId, wsMain.x, wsMain.y);
+    await new Promise(r => setTimeout(r, 800));
+
+    // Step 4: Click "Workspace protection..." in context menu
+    sendSetupProgress("Opening protection dialog...");
+
+    const protectItem = await waitForElement(tabId, `(() => {
+      const items = document.querySelectorAll('.dropdown-item, [role="menuitem"], .dropdown-menu a, .dropdown-menu li');
+      for (const el of items) {
+        const text = el.textContent.trim().toLowerCase();
+        if (text.includes('workspace protection') || text.includes('protect')) {
+          const r = el.getBoundingClientRect();
+          if (r.width > 20 && r.height > 5) {
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: el.textContent.trim() };
+          }
+        }
+      }
+      return null;
+    })()`, 3000);
+
+    if (!protectItem) {
+      await cdpPressKey(tabId, "Escape", 27);
+      throw new Error("'Workspace protection...' menu item not found");
+    }
+
+    console.log(`[NewDocSetup] Protection item "${protectItem.text}" at (${protectItem.x}, ${protectItem.y})`);
+    await cdpClick(tabId, protectItem.x, protectItem.y);
+    await new Promise(r => setTimeout(r, 1000));
+
+    // Step 5: Wait for protection dialog to appear
+    const dialogReady = await waitForElement(tabId, `(() => {
+      const dialog = document.querySelector('.workspace-permissions-dialog, .modal.workspace-permissions-dialog, [class*="workspace-permissions"]');
+      return dialog && dialog.offsetHeight > 0 ? true : null;
+    })()`, 5000);
+
+    if (!dialogReady) throw new Error("Workspace protection dialog did not appear");
+
+    // Step 6: Check the "Enable workspace protection" checkbox
+    sendSetupProgress("Enabling protection...");
+
+    const checkbox = await waitForElement(tabId, `(() => {
+      const cb = document.querySelector('#enable-workspace-protection');
+      if (cb && cb.offsetHeight > 0) {
+        const r = cb.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), checked: cb.checked };
+      }
+      return null;
+    })()`, 3000);
+
+    if (!checkbox) throw new Error("Enable workspace protection checkbox not found");
+
+    if (!checkbox.checked) {
+      console.log(`[NewDocSetup] Clicking checkbox at (${checkbox.x}, ${checkbox.y})`);
+      await cdpClick(tabId, checkbox.x, checkbox.y);
+      await new Promise(r => setTimeout(r, 500));
+    } else {
+      console.log("[NewDocSetup] Checkbox already checked");
+    }
+
+    // Step 7: Wait for Apply button to become enabled, then click it
+    const applyBtn = await waitForElement(tabId, `(() => {
+      const btn = document.querySelector('#workspace-protection-apply');
+      if (btn && btn.offsetHeight > 0 && !btn.disabled) {
+        const r = btn.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      }
+      return null;
+    })()`, 3000);
+
+    if (!applyBtn) throw new Error("Apply button not found or still disabled");
+
+    console.log(`[NewDocSetup] Clicking Apply at (${applyBtn.x}, ${applyBtn.y})`);
+    await cdpClick(tabId, applyBtn.x, applyBtn.y);
+    await new Promise(r => setTimeout(r, 1500));
+
+    // Step 8: Verify success — look for success message bubble or lock icon
+    const success = await waitForElement(tabId, `(() => {
+      const bubble = document.querySelector('.osx-message-bubble-inner-container');
+      if (bubble && bubble.textContent.includes('protection settings updated')) return 'bubble';
+      const lock = document.querySelector('svg.branch-lock-icon');
+      if (lock && lock.offsetWidth > 0) return 'lock';
+      return null;
+    })()`, 5000);
+
+    if (success) {
+      console.log(`[NewDocSetup] Workspace protection enabled (confirmed via ${success})`);
+    } else {
+      console.log("[NewDocSetup] Warning: protection confirmation not detected, may still have worked");
+    }
+
+    // Step 9: Close the versions panel by clicking the button again
+    const vhBtnClose = await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const byTooltip = document.querySelector('[data-bs-original-title="Versions and history"], [title="Versions and history"]');
+        if (byTooltip && byTooltip.offsetHeight > 0) {
+          const r = byTooltip.getBoundingClientRect();
+          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        }
+        return null;
+      })()`,
+      returnByValue: true,
+    });
+    const closePos = vhBtnClose.result?.value;
+    if (closePos) {
+      await cdpClick(tabId, closePos.x, closePos.y);
+    }
+
+    sendSetupProgress("Workspace protection enabled");
+    return { ok: true };
+
+  } catch (e) {
+    console.error("[NewDocSetup] Error:", e.message);
+    try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
+    sendSetupProgress(`Error: ${e.message}`);
+    return { error: e.message };
+  } finally {
+    chrome.debugger.detach({ tabId }, () => {});
+  }
+}
+
+async function setupNewDoc(tabId, docId, wid) {
+  console.log(`[NewDocSetup] Starting setup for ${docId}`);
+
+  // Step 1: Create initial version via API (1 API call)
+  const vResult = await createInitialVersion(docId, wid);
+  if (vResult.error) {
+    console.error("[NewDocSetup] Aborting — version creation failed");
+    chrome.tabs.sendMessage(tabId, {
+      type: "setup-new-doc-done",
+      success: false,
+      error: `Version creation failed: ${vResult.error}`,
+    }).catch(() => {});
+    return;
+  }
+
+  // Step 2: Enable workspace protection via CDP UI automation
+  const pResult = await enableWorkspaceProtection(tabId, tabId);
+
+  chrome.tabs.sendMessage(tabId, {
+    type: "setup-new-doc-done",
+    success: !pResult.error,
+    versionCreated: !vResult.error,
+    protectionEnabled: !pResult.error && !pResult.skipped,
+    protectionSkipped: !!pResult.skipped,
+    error: pResult.error || null,
+  }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 // Tab Sorter — persistent, moves stray root-level tabs into matching folders
 // Runs independently of folder creation: after every scan, or on demand.
 // ---------------------------------------------------------------------------
@@ -2472,6 +2717,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse(result);
     });
     return true;
+
+  } else if (msg.type === "setup-new-doc") {
+    // New doc setup: create initial version + enable workspace protection
+    const tabId = sender.tab?.id;
+    const { docId, wid } = msg;
+    if (!tabId || !docId || !wid) {
+      sendResponse({ error: "Missing tab, docId, or wid" });
+      return;
+    }
+    setupNewDoc(tabId, docId, wid);
+    sendResponse({ ok: true });
+    return;
   }
 });
 
