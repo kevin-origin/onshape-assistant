@@ -510,6 +510,7 @@ async function checkDocViolations(docId, docName, wid, tabId) {
       const partStudios = userElements.filter(e =>
         (e.elementType || e.type || "") === "PARTSTUDIO"
       );
+      console.log(`[Violations] ${partStudios.length} Part Studio(s), ${userElements.length} user elements, versions=${Array.isArray(versions) ? versions.length : "null"}, tabId=${tabId || "none"}`);
       let totalFeatures = 0;
       for (const ps of partStudios) {
         try {
@@ -529,9 +530,10 @@ async function checkDocViolations(docId, docName, wid, tabId) {
         } catch (_) { /* skip */ }
       }
 
-      // Auto-create "Initial" version when: 0 versions + >= 10 features
+      // Auto-create "Initial" version when: 0 versions + >= 3 features
       // Then enable workspace protection after successful version creation
       const versionCount = Array.isArray(versions) ? versions.length : -1;
+      console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=3`);
       if (versionCount === 0 && totalFeatures >= 3) {
         console.log(`[NewDocSetup] 0 versions + ${totalFeatures} features — creating initial version`);
         const vResult = await createInitialVersion(docId, wid);
