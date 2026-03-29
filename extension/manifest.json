@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "Onshape Tools",
+  "name": "Onshape Assistant",
   "version": "1.1",
-  "description": "Onshape tab folder scanner + drawing creator",
+  "description": "Onshape assistant — drawing creator, doc scanner, violations & interference checker",
   "permissions": ["activeTab", "storage", "tabs", "scripting", "cookies", "notifications", "webNavigation", "debugger"],
   "host_permissions": [
     "https://cad.onshape.com/*",
@@ -23,6 +23,6 @@
   },
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Scan Tab Folders"
+    "default_title": "Onshape Assistant"
   }
 }

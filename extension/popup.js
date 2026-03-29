@@ -1,4 +1,4 @@
-// popup.js — Onshape Tools popup logic
+// popup.js — Onshape Assistant popup logic
 
 // ---------------------------------------------------------------------------
 // Section navigation
