@@ -184,10 +184,11 @@ function validateFolders(result) {
     }
   }
 
+  if (folders.length === 0) {
+    return { ok: false, badgeClass: "badge-err", badgeText: "No folders", details };
+  }
   if (details.length === 0) {
-    const label = folders.length > 0
-      ? `${folders.length} folder${folders.length > 1 ? "s" : ""}`
-      : "no folders";
+    const label = `${folders.length} folder${folders.length > 1 ? "s" : ""}`;
     return { ok: true, badgeClass: "badge-ok", badgeText: label, details };
   }
   return {

@@ -181,10 +181,8 @@
       const result = await scanTabFolders();
       if (!result) return;
       const overlayShown = await maybeOfferFolderCreation(result);
-      // Don't fire "incorrect structure" notification if folder overlay is showing
-      if (!overlayShown) {
-        sendScanResult(result);
-      }
+      // Always send scan result so "no folders" notification fires
+      sendScanResult(result);
     }
 
   }
@@ -203,7 +201,7 @@
     const multiAssembly = Object.entries(folderData).some(
       ([, data]) => typeof data === "object" && data.assemblies > 1
     );
-    if (illegal.length > 0 || multiAssembly) {
+    if (illegal.length > 0 || multiAssembly || folders.length === 0) {
       setTimeout(() => {
         chrome.runtime.sendMessage({
           type: "folder-scan-notify",
