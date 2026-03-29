@@ -469,7 +469,7 @@ const PARTS_LIMIT = 25;
 const FEATURES_LIMIT = 250;
 const TABS_LIMIT = 40;
 
-async function checkDocViolations(docId, docName, wid) {
+async function checkDocViolations(docId, docName, wid, tabId) {
   const violations = [];
   console.log(`[Violations] Checking ${docName} (${docId}), wid=${wid || "null"}`);
 
@@ -530,10 +530,15 @@ async function checkDocViolations(docId, docName, wid) {
       }
 
       // Auto-create "Initial" version when: 0 versions + >= 10 features
+      // Then enable workspace protection after successful version creation
       const versionCount = Array.isArray(versions) ? versions.length : -1;
       if (versionCount === 0 && totalFeatures >= 10) {
         console.log(`[NewDocSetup] 0 versions + ${totalFeatures} features — creating initial version`);
-        createInitialVersion(docId, wid);
+        const vResult = await createInitialVersion(docId, wid);
+        if (!vResult.error && tabId) {
+          console.log("[NewDocSetup] Version created, enabling workspace protection");
+          enableWorkspaceProtection(tabId, tabId);
+        }
       }
 
       // 4. Tabs > 5 (excluding BOMs)
@@ -1666,20 +1671,6 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
   }
 }
 
-async function setupNewDoc(tabId, docId, wid) {
-  console.log(`[NewDocSetup] Starting workspace protection for ${docId}`);
-
-  const pResult = await enableWorkspaceProtection(tabId, tabId);
-
-  chrome.tabs.sendMessage(tabId, {
-    type: "setup-new-doc-done",
-    success: !pResult.error,
-    protectionEnabled: !pResult.error && !pResult.skipped,
-    protectionSkipped: !!pResult.skipped,
-    error: pResult.error || null,
-  }).catch(() => {});
-}
-
 // ---------------------------------------------------------------------------
 // Tab Sorter — persistent, moves stray root-level tabs into matching folders
 // Runs independently of folder creation: after every scan, or on demand.
@@ -2514,7 +2505,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   } else if (msg.type === "check-versions") {
     const { docId, docName, wid } = msg;
-    checkDocViolations(docId, docName, wid);
+    const tabId = sender.tab?.id;
+    checkDocViolations(docId, docName, wid, tabId);
 
   } else if (msg.type === "create-folders") {
     // Folder creation via CDP — triggered from content.js overlay
@@ -2671,18 +2663,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse(result);
     });
     return true;
-
-  } else if (msg.type === "setup-new-doc") {
-    // New doc setup: create initial version + enable workspace protection
-    const tabId = sender.tab?.id;
-    const { docId, wid } = msg;
-    if (!tabId || !docId || !wid) {
-      sendResponse({ error: "Missing tab, docId, or wid" });
-      return;
-    }
-    setupNewDoc(tabId, docId, wid);
-    sendResponse({ ok: true });
-    return;
   }
 });
 

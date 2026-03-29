@@ -324,8 +324,6 @@
       if (!offered.includes(docId)) offered.push(docId);
       await chrome.storage.local.set({ folderCreationOffered: offered });
       overlay.remove();
-      // Trigger new-doc setup: initial version + workspace protection
-      triggerNewDocSetup();
     });
 
     const createBtn = document.createElement("button");
@@ -355,20 +353,6 @@
     card.appendChild(btnRow);
     overlay.appendChild(card);
     document.body.appendChild(overlay);
-  }
-
-  function triggerNewDocSetup() {
-    const docId = getDocIdFromUrl();
-    const wid = getWidFromUrl();
-    if (!docId || !wid) {
-      console.log("[NewDocSetup] Missing docId or wid, skipping setup");
-      return;
-    }
-    console.log(`[NewDocSetup] Triggering setup for ${docId}`);
-    // Small delay to let folder creation/skip settle before CDP attaches
-    setTimeout(() => {
-      chrome.runtime.sendMessage({ type: "setup-new-doc", docId, wid });
-    }, 2000);
   }
 
   function showProgressToast(text) {
@@ -472,8 +456,6 @@
             chrome.storage.local.set({ folderCreationOffered: offered });
           });
         }
-        // Trigger new-doc setup: initial version + workspace protection
-        triggerNewDocSetup();
         setTimeout(removeProgressToast, 3000);
       } else {
         const toast = showProgressToast(`Error: ${msg.error || "Unknown error"}`);
