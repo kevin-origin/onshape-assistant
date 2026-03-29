@@ -1,0 +1,15 @@
+# Sensitive / credentials
+CONTEXT.md
+
+# Python
+*.py
+__pycache__/
+*.pyc
+
+# Build artifacts
+*.crx
+
+# Misc
+metrics.json
+test_flat.js
+.claude/
