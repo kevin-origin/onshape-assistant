@@ -539,6 +539,8 @@
 
   // Small delay to let Onshape fully initialize
   let _lastDocId = null;
+  let _scanTimer = null;
+  let _violationsTimer = null;
 
   function runOnDocLoad() {
     const docId = getDocIdFromUrl();
@@ -546,10 +548,21 @@
     _lastDocId = docId;
     console.log("[Scanner] Doc detected:", docId);
 
-    setTimeout(() => autoScan(), 8000);
+    // Cancel any pending timers from a previous doc
+    if (_scanTimer) { clearTimeout(_scanTimer); _scanTimer = null; }
+    if (_violationsTimer) { clearTimeout(_violationsTimer); _violationsTimer = null; }
+
+    _scanTimer = setTimeout(() => { _scanTimer = null; autoScan(); }, 8000);
 
     // Check violations (versions, parts, features, tabs) for release tracker
-    setTimeout(() => {
+    _violationsTimer = setTimeout(() => {
+      _violationsTimer = null;
+      // Re-read from URL in case doc changed during the delay
+      const currentDocId = getDocIdFromUrl();
+      if (currentDocId !== docId) {
+        console.log("[Scanner] Doc changed during delay, skipping violations for", docId);
+        return;
+      }
       const wid = getWidFromUrl();
       const docName = getDocName();
       if (docId) {
