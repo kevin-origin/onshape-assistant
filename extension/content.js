@@ -8,6 +8,7 @@
   const CLICK_DELAY = 500;   // ms after clicking a folder before reading children
   const ROOT_DELAY  = 500;   // ms after clicking "All tabs" breadcrumb
   let _scanning = false;     // lock to prevent concurrent scans
+  let _folderCreationInProgress = false; // suppress scans during folder creation
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -153,6 +154,10 @@
   // ---------------------------------------------------------------------------
 
   async function autoScan() {
+    if (_folderCreationInProgress) {
+      console.log("[Scanner] autoScan skipped: folder creation in progress");
+      return;
+    }
     const docId = getDocIdFromUrl();
     if (!docId) { console.log("[Scanner] autoScan: no docId"); return; }
     console.log("[Scanner] autoScan starting for", docId);
@@ -342,6 +347,7 @@
       }
       // Remove the full overlay so CDP can reach the tab bar
       overlay.remove();
+      _folderCreationInProgress = true;
       // Show a small non-blocking toast for progress
       showProgressToast("Starting folder creation...");
 
@@ -445,6 +451,7 @@
       }
 
     } else if (msg.type === "folder-creation-done") {
+      _folderCreationInProgress = false;
       if (msg.success) {
         showProgressToast("All folders created!");
         // Save docId to offered list so overlay doesn't reappear
