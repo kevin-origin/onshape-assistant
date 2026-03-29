@@ -426,8 +426,7 @@ async function storeDocScanResult(result) {
   // Enrich with assembly count from API
   // Onshape API doesn't expose tab group membership, so we count total
   // assemblies and attribute them to the "Assemblies" folder if it exists
-  const folders = Object.keys(result.folders || {});
-  if (result.wid && folders.length > 0) {
+  if (result.wid) {
     try {
       const rawElements = await onshapeFetch(
         `/api/v10/documents/d/${result.doc_id}/w/${result.wid}/elements`
@@ -440,18 +439,15 @@ async function storeDocScanResult(result) {
       // Store assembly element IDs for interference checker (0 extra API calls)
       result.assemblyElements = assemblies.map(a => ({ id: a.id, name: a.name }));
 
-      if (result.folders["Assemblies"]) {
+      if (result.folders && result.folders["Assemblies"]) {
         result.folders["Assemblies"].assemblies = assemblies.length;
         console.log("[Scanner] Set Assemblies folder count to " + assemblies.length);
-      } else {
-        console.log("[Scanner] No 'Assemblies' folder in scan result to enrich");
       }
     } catch (e) {
       console.error("[Scanner] Elements API error:", e.message);
     }
   } else {
-    console.log("[Scanner] Skipping API enrichment: wid=" + (result.wid || "none") +
-      ", folderCount=" + folders.length);
+    console.log("[Scanner] Skipping API enrichment: no wid");
   }
 
   const data = await chrome.storage.local.get("docScanResults");
