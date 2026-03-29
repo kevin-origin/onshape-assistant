@@ -395,6 +395,40 @@
   }
 
   // ---------------------------------------------------------------------------
+  // CDP automation overlay — shown while debugger is attached
+  // ---------------------------------------------------------------------------
+
+  function showCdpOverlay() {
+    if (document.getElementById("oxt-cdp-overlay")) return;
+    const overlay = document.createElement("div");
+    overlay.id = "oxt-cdp-overlay";
+    overlay.style.cssText = `
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.35); z-index: 999998;
+      display: flex; align-items: center; justify-content: center;
+      pointer-events: all;
+    `;
+    const card = document.createElement("div");
+    card.style.cssText = `
+      background: #1e293b; color: #fff; padding: 20px 32px;
+      border-radius: 10px; text-align: center;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    `;
+    card.innerHTML = `
+      <div style="font-size:16px;font-weight:600;margin-bottom:8px;">Onshape Assistant is running</div>
+      <div style="font-size:13px;color:#94a3b8;">Please do not use the mouse or keyboard.</div>
+    `;
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
+
+  function removeCdpOverlay() {
+    const overlay = document.getElementById("oxt-cdp-overlay");
+    if (overlay) overlay.remove();
+  }
+
+  // ---------------------------------------------------------------------------
   // Message handler — background.js can trigger a scan on demand
   // ---------------------------------------------------------------------------
 
@@ -490,6 +524,12 @@
         toast.style.background = "#dc2626";
         setTimeout(removeProgressToast, 5000);
       }
+
+    } else if (msg.type === "cdp-overlay-show") {
+      showCdpOverlay();
+
+    } else if (msg.type === "cdp-overlay-hide") {
+      removeCdpOverlay();
     }
   });
 

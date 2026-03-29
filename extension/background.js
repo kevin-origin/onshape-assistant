@@ -536,11 +536,16 @@ async function checkDocViolations(docId, docName, wid, tabId) {
       const hasInitialVersion = Array.isArray(versions) && versions.some(v => v.name === "Initial");
       console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=3, hasInitial=${hasInitialVersion}`);
       if (versionCount <= 1 && totalFeatures >= 3 && !hasInitialVersion) {
-        console.log(`[NewDocSetup] 0 versions + ${totalFeatures} features — creating initial version`);
+        console.log(`[NewDocSetup] ${versionCount} versions + ${totalFeatures} features — creating initial version`);
         const vResult = await createInitialVersion(docId, wid);
-        if (!vResult.error && tabId) {
-          console.log("[NewDocSetup] Version created, enabling workspace protection");
-          enableWorkspaceProtection(tabId, tabId);
+        if (!vResult.error) {
+          // Create Development branch from the new version
+          await createDevelopmentBranch(docId, vResult.versionId);
+          // Enable workspace protection on Main via CDP
+          if (tabId) {
+            console.log("[NewDocSetup] Enabling workspace protection");
+            enableWorkspaceProtection(tabId, tabId);
+          }
         }
       }
 
@@ -879,6 +884,14 @@ async function exploreInsertViewDialog() {
 // CDP helpers — chrome.debugger wrappers for trusted input events
 // ---------------------------------------------------------------------------
 
+function showCdpOverlay(tabId) {
+  chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-show" }).catch(() => {});
+}
+
+function hideCdpOverlay(tabId) {
+  chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
+}
+
 function cdpSend(tabId, method, params = {}) {
   return new Promise((resolve, reject) => {
     chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
@@ -1095,6 +1108,7 @@ async function discoverContextMenu(tabId) {
 
 async function createTabFolders(tabId, senderTabId, folderNames) {
   console.log("[CDP-Folders] Starting folder creation:", folderNames);
+  showCdpOverlay(senderTabId);
 
   function sendProgress(index, total, name, status) {
     chrome.tabs.sendMessage(senderTabId, {
@@ -1406,6 +1420,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
     sendDone(false, e.message);
   } finally {
+    hideCdpOverlay(senderTabId);
     chrome.debugger.detach({ tabId }, () => {});
   }
 }
@@ -1477,8 +1492,24 @@ async function createInitialVersion(docId, wid) {
   }
 }
 
+async function createDevelopmentBranch(docId, versionId) {
+  console.log(`[NewDocSetup] Creating Development branch from version ${versionId}`);
+  try {
+    const result = await onshapePost(`/api/v10/documents/d/${docId}/workspaces`, {
+      name: "Development",
+      versionId: versionId,
+    });
+    console.log(`[NewDocSetup] Branch created: ${result.id || "ok"}`);
+    return { ok: true, workspaceId: result.id };
+  } catch (e) {
+    console.error(`[NewDocSetup] Branch creation failed: ${e.message}`);
+    return { error: e.message };
+  }
+}
+
 async function enableWorkspaceProtection(tabId, senderTabId) {
   console.log("[NewDocSetup] Enabling workspace protection via CDP");
+  showCdpOverlay(senderTabId);
 
   function sendSetupProgress(message) {
     chrome.tabs.sendMessage(senderTabId, {
@@ -1670,6 +1701,7 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
     sendSetupProgress(`Error: ${e.message}`);
     return { error: e.message };
   } finally {
+    hideCdpOverlay(senderTabId);
     chrome.debugger.detach({ tabId }, () => {});
   }
 }
@@ -1704,6 +1736,7 @@ async function sortStrayTabs(tabId, senderTabId) {
     chrome.tabs.sendMessage(senderTabId, { type: "tab-sort-done", sorted, skipped }).catch(() => {});
   }
 
+  showCdpOverlay(senderTabId);
   let needsDetach = false;
   let sorted = 0;
   let skipped = 0;
@@ -1931,6 +1964,7 @@ async function sortStrayTabs(tabId, senderTabId) {
     return { sorted, skipped, error: e.message };
   } finally {
     _sortingInProgress = false;
+    hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
   }
 }
@@ -1951,6 +1985,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
     await new Promise(r => setTimeout(r, 500));
   }
   _interferenceInProgress = true;
+  showCdpOverlay(senderTabId);
 
   function sendProgress(message) {
     chrome.tabs.sendMessage(senderTabId, { type: "interference-progress", message }).catch(() => {});
@@ -2328,6 +2363,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
     sendDone({ totalInterferences: 0, assemblies: {}, error: e.message });
   } finally {
     _interferenceInProgress = false;
+    hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
   }
 }
