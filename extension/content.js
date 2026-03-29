@@ -180,8 +180,11 @@
       // No folders — scan now, also check if we should offer folder creation
       const result = await scanTabFolders();
       if (!result) return;
-      maybeOfferFolderCreation(result);
-      sendScanResult(result);
+      const overlayShown = await maybeOfferFolderCreation(result);
+      // Don't fire "incorrect structure" notification if folder overlay is showing
+      if (!overlayShown) {
+        sendScanResult(result);
+      }
     }
 
   }
@@ -231,20 +234,20 @@
 
   async function maybeOfferFolderCreation(scanResult) {
     const docId = scanResult.doc_id;
-    if (!docId) { console.log("[FolderSetup] No docId"); return; }
+    if (!docId) { console.log("[FolderSetup] No docId"); return false; }
 
     const folders = Object.keys(scanResult.folders || {});
     const rootTabs = scanResult.root_tabs || [];
     console.log(`[FolderSetup] docId=${docId}, folders=${folders.length}, rootTabs=${rootTabs.length}`);
 
     // Only offer if: no folders, few root tabs, not already offered
-    if (folders.length > 0) { console.log("[FolderSetup] Skipped: has folders"); return; }
-    if (rootTabs.length >= 5) { console.log("[FolderSetup] Skipped: too many root tabs"); return; }
+    if (folders.length > 0) { console.log("[FolderSetup] Skipped: has folders"); return false; }
+    if (rootTabs.length >= 5) { console.log("[FolderSetup] Skipped: too many root tabs"); return false; }
 
     // Check if already offered for this doc
     const stored = await chrome.storage.local.get("folderCreationOffered");
     const offered = stored.folderCreationOffered || [];
-    if (offered.includes(docId)) { console.log("[FolderSetup] Skipped: already offered"); return; }
+    if (offered.includes(docId)) { console.log("[FolderSetup] Skipped: already offered"); return false; }
 
     // Check version count (stored by checkDocViolations, zero extra API calls)
     const vcData = await chrome.storage.local.get("versionCounts");
@@ -257,15 +260,16 @@
       const vcRetry = await chrome.storage.local.get("versionCounts");
       const retryCount = (vcRetry.versionCounts || {})[docId];
       console.log(`[FolderSetup] Retry versionCount=${retryCount}`);
-      if (retryCount !== undefined && retryCount > 1) { console.log("[FolderSetup] Skipped: too many versions after retry"); return; }
+      if (retryCount !== undefined && retryCount > 1) { console.log("[FolderSetup] Skipped: too many versions after retry"); return false; }
       // If still undefined, this is likely a brand-new doc — proceed
     } else if (versionCount > 1) {
       console.log("[FolderSetup] Skipped: too many versions");
-      return; // Not a new doc
+      return false; // Not a new doc
     }
 
     console.log("[FolderSetup] Showing overlay!");
     showFolderOverlay(docId);
+    return true;
   }
 
   function showFolderOverlay(docId) {
