@@ -533,8 +533,9 @@ async function checkDocViolations(docId, docName, wid, tabId) {
       // Auto-create "Initial" version when: 0 versions + >= 3 features
       // Then enable workspace protection after successful version creation
       const versionCount = Array.isArray(versions) ? versions.length : -1;
-      console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=3`);
-      if (versionCount === 0 && totalFeatures >= 3) {
+      const hasInitialVersion = Array.isArray(versions) && versions.some(v => v.name === "Initial");
+      console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=3, hasInitial=${hasInitialVersion}`);
+      if (versionCount <= 1 && totalFeatures >= 3 && !hasInitialVersion) {
         console.log(`[NewDocSetup] 0 versions + ${totalFeatures} features — creating initial version`);
         const vResult = await createInitialVersion(docId, wid);
         if (!vResult.error && tabId) {
