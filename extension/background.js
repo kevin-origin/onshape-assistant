@@ -510,6 +510,7 @@ async function checkDocViolations(docId, docName, wid) {
       const partStudios = userElements.filter(e =>
         (e.elementType || e.type || "") === "PARTSTUDIO"
       );
+      let totalFeatures = 0;
       for (const ps of partStudios) {
         try {
           const [partsResp, featResp] = await Promise.all([
@@ -518,6 +519,7 @@ async function checkDocViolations(docId, docName, wid) {
           ]);
           const partCount = Array.isArray(partsResp) ? partsResp.length : 0;
           const featureCount = Array.isArray(featResp?.features) ? featResp.features.length : 0;
+          totalFeatures += featureCount;
           if (partCount > PARTS_LIMIT) {
             violations.push(`"${ps.name}" has ${partCount} parts (limit: ${PARTS_LIMIT})`);
           }
@@ -525,6 +527,13 @@ async function checkDocViolations(docId, docName, wid) {
             violations.push(`"${ps.name}" has ${featureCount} features (limit: ${FEATURES_LIMIT})`);
           }
         } catch (_) { /* skip */ }
+      }
+
+      // Auto-create "Initial" version when: 0 versions + >= 10 features
+      const versionCount = Array.isArray(versions) ? versions.length : -1;
+      if (versionCount === 0 && totalFeatures >= 10) {
+        console.log(`[NewDocSetup] 0 versions + ${totalFeatures} features — creating initial version`);
+        createInitialVersion(docId, wid);
       }
 
       // 4. Tabs > 5 (excluding BOMs)
@@ -1448,7 +1457,7 @@ async function createInitialVersion(docId, wid) {
   console.log(`[NewDocSetup] Creating initial version for ${docId}`);
   try {
     const result = await onshapePost(`/api/v10/documents/d/${docId}/versions`, {
-      name: "Initial version",
+      name: "Initial",
       documentId: docId,
       workspaceId: wid,
     });
@@ -1658,19 +1667,17 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
 }
 
 async function setupNewDoc(tabId, docId, wid) {
-  console.log(`[NewDocSetup] Starting setup for ${docId}, wid=${wid}`);
+  console.log(`[NewDocSetup] Starting workspace protection for ${docId}`);
 
-  // Step 1: Create initial version via API (1 API call)
-  const vResult = await createInitialVersion(docId, wid);
+  const pResult = await enableWorkspaceProtection(tabId, tabId);
 
   chrome.tabs.sendMessage(tabId, {
     type: "setup-new-doc-done",
-    success: !vResult.error,
-    versionCreated: !vResult.error,
-    error: vResult.error || null,
+    success: !pResult.error,
+    protectionEnabled: !pResult.error && !pResult.skipped,
+    protectionSkipped: !!pResult.skipped,
+    error: pResult.error || null,
   }).catch(() => {});
-
-  // TODO: Step 2 — enable workspace protection via CDP (not yet working)
 }
 
 // ---------------------------------------------------------------------------

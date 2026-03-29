@@ -486,10 +486,14 @@
 
     } else if (msg.type === "setup-new-doc-done") {
       if (msg.success) {
-        showProgressToast("Initial version created");
-        setTimeout(removeProgressToast, 4000);
+        if (msg.protectionSkipped) {
+          // Already protected, no toast needed
+        } else {
+          showProgressToast("Workspace protection enabled");
+          setTimeout(removeProgressToast, 4000);
+        }
       } else {
-        const toast = showProgressToast(`Setup error: ${msg.error || "Unknown"}`);
+        const toast = showProgressToast(`Protection error: ${msg.error || "Unknown"}`);
         toast.style.background = "#dc2626";
         setTimeout(removeProgressToast, 5000);
       }
@@ -509,7 +513,7 @@
     _lastDocId = docId;
     console.log("[Scanner] Doc detected:", docId);
 
-    setTimeout(() => autoScan(), 3000);
+    setTimeout(() => autoScan(), 8000);
 
     // Check violations (versions, parts, features, tabs) for release tracker
     setTimeout(() => {
@@ -518,7 +522,7 @@
       if (docId) {
         chrome.runtime.sendMessage({ type: "check-versions", docId, docName, wid });
       }
-    }, 3000);
+    }, 8000);
   }
 
   // Initial page load
