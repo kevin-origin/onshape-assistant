@@ -1693,12 +1693,18 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
     }
 
     sendSetupProgress("Workspace protection enabled");
+    setTimeout(() => {
+      chrome.tabs.sendMessage(senderTabId, { type: "remove-progress-toast" }).catch(() => {});
+    }, 3000);
     return { ok: true };
 
   } catch (e) {
     console.error("[NewDocSetup] Error:", e.message);
     try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
     sendSetupProgress(`Error: ${e.message}`);
+    setTimeout(() => {
+      chrome.tabs.sendMessage(senderTabId, { type: "remove-progress-toast" }).catch(() => {});
+    }, 5000);
     return { error: e.message };
   } finally {
     hideCdpOverlay(senderTabId);

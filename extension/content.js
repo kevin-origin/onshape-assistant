@@ -525,6 +525,9 @@
         setTimeout(removeProgressToast, 5000);
       }
 
+    } else if (msg.type === "remove-progress-toast") {
+      removeProgressToast();
+
     } else if (msg.type === "cdp-overlay-show") {
       showCdpOverlay();
 
