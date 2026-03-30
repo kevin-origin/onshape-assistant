@@ -893,7 +893,7 @@
     card.appendChild(title);
 
     const subtitle = document.createElement("div");
-    subtitle.textContent = `Only selected users can merge branches in "${docName}"`;
+    subtitle.textContent = `Select a 2nd merge owner for "${docName}"`;
     subtitle.style.cssText = "font-size: 12px; color: #666; margin-bottom: 16px;";
     card.appendChild(subtitle);
 
@@ -912,21 +912,22 @@
     creatorRow.appendChild(creatorLabel);
     card.appendChild(creatorRow);
 
-    // Other team members
+    // Other team members (radio — exactly 1 must be selected)
     const otherMembers = members.filter(m => m.email !== currentUser.email);
-    const checkboxes = [];
+    const radios = [];
     for (const member of otherMembers) {
       const row = document.createElement("label");
       row.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 4px 0; padding: 6px 8px; cursor: pointer; border-radius: 4px;";
       row.addEventListener("mouseenter", () => row.style.background = "#f5f5f5");
       row.addEventListener("mouseleave", () => row.style.background = "transparent");
-      const cb = document.createElement("input");
-      cb.type = "checkbox";
-      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer;";
-      cb.dataset.email = member.email;
-      cb.dataset.name = member.name;
-      cb.dataset.userId = member.id;
-      row.appendChild(cb);
+      const rb = document.createElement("input");
+      rb.type = "radio";
+      rb.name = "merge-owner-select";
+      rb.style.cssText = "width: 16px; height: 16px; cursor: pointer;";
+      rb.dataset.email = member.email;
+      rb.dataset.name = member.name;
+      rb.dataset.userId = member.id;
+      row.appendChild(rb);
       const label = document.createElement("span");
       label.textContent = member.name;
       label.style.cssText = "font-size: 14px; color: #333;";
@@ -936,7 +937,7 @@
       emailSpan.style.cssText = "font-size: 11px; color: #999; margin-left: auto;";
       row.appendChild(emailSpan);
       card.appendChild(row);
-      checkboxes.push(cb);
+      radios.push(rb);
     }
 
     // Buttons
@@ -959,12 +960,16 @@
       font-weight: 500;
     `;
     saveBtn.addEventListener("click", () => {
-      const owners = [{ email: currentUser.email, name: currentUser.name, id: currentUser.id }];
-      for (const cb of checkboxes) {
-        if (cb.checked) {
-          owners.push({ email: cb.dataset.email, name: cb.dataset.name, id: cb.dataset.userId });
-        }
+      const selected = radios.find(rb => rb.checked);
+      if (!selected) {
+        subtitle.textContent = "Please select a 2nd owner.";
+        subtitle.style.color = "#dc2626";
+        return;
       }
+      const owners = [
+        { email: currentUser.email, name: currentUser.name, id: currentUser.id },
+        { email: selected.dataset.email, name: selected.dataset.name, id: selected.dataset.userId },
+      ];
       chrome.runtime.sendMessage({
         type: "save-merge-owners",
         docId: docId,

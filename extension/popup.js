@@ -643,6 +643,13 @@ async function showEditMergeOwners(docId, docData) {
   if (!container) return;
 
   container.innerHTML = "";
+
+  // Hint text
+  const hint = document.createElement("div");
+  hint.style.cssText = "font-size:11px;color:#7ec8e3;padding:0 0 6px 0;";
+  hint.textContent = "Select exactly 2 owners:";
+  container.appendChild(hint);
+
   const checkboxes = [];
 
   for (const member of members) {
@@ -657,12 +664,23 @@ async function showEditMergeOwners(docId, docData) {
     cb.dataset.email = member.email;
     cb.dataset.name = member.name;
     cb.dataset.userId = member.id;
+    // Enforce max 2 selected
+    cb.addEventListener("change", () => {
+      const checkedCount = checkboxes.filter(c => c.checked).length;
+      if (checkedCount > 2) { cb.checked = false; }
+      hint.style.color = checkedCount === 2 ? "#95d5b2" : "#7ec8e3";
+    });
     row.appendChild(cb);
     const label = document.createElement("span");
     label.style.color = "#e0e0e0";
     label.textContent = `${member.name} (${member.email})`;
     row.appendChild(label);
-    row.addEventListener("click", (e) => { if (e.target !== cb) cb.checked = !cb.checked; });
+    row.addEventListener("click", (e) => {
+      if (e.target !== cb) {
+        cb.checked = !cb.checked;
+        cb.dispatchEvent(new Event("change"));
+      }
+    });
     container.appendChild(row);
     checkboxes.push(cb);
   }
@@ -684,8 +702,9 @@ async function showEditMergeOwners(docId, docData) {
         owners.push({ email: cb.dataset.email, name: cb.dataset.name, id: cb.dataset.userId });
       }
     }
-    if (owners.length === 0) {
-      alert("Select at least one owner");
+    if (owners.length !== 2) {
+      hint.textContent = "Select exactly 2 owners.";
+      hint.style.color = "#ff6b6b";
       return;
     }
     chrome.runtime.sendMessage({
