@@ -580,7 +580,11 @@ function loadMergePermissions() {
     }
     const docId = docMatch[1];
 
-    chrome.storage.local.get("mergePermissions", (data) => {
+    // Fetch session user and merge permissions in parallel
+    Promise.all([
+      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
+      new Promise(resolve => chrome.storage.local.get("mergePermissions", resolve)),
+    ]).then(([sessionUser, data]) => {
       const perms = data.mergePermissions || {};
       const doc = perms[docId];
 
@@ -592,6 +596,7 @@ function loadMergePermissions() {
       $none.style.display = "none";
 
       const owners = doc.owners || [];
+      const isOwner = sessionUser && owners.some(o => o.email === sessionUser.email);
 
       // Doc header
       const header = document.createElement("div");
@@ -619,18 +624,20 @@ function loadMergePermissions() {
       }
       $list.appendChild(ownerContainer);
 
-      // Edit button
-      const editRow = document.createElement("div");
-      editRow.style.cssText = "padding: 4px 0 8px 20px;";
-      const editBtn = document.createElement("button");
-      editBtn.textContent = "Edit";
-      editBtn.style.cssText = `
-        font-size: 12px; padding: 3px 12px; border: 1px solid #444;
-        background: #16213e; color: #7ec8e3; border-radius: 3px; cursor: pointer;
-      `;
-      editBtn.addEventListener("click", () => showEditMergeOwners(docId, doc));
-      editRow.appendChild(editBtn);
-      $list.appendChild(editRow);
+      // Edit button — only visible to merge owners
+      if (isOwner) {
+        const editRow = document.createElement("div");
+        editRow.style.cssText = "padding: 4px 0 8px 20px;";
+        const editBtn = document.createElement("button");
+        editBtn.textContent = "Edit";
+        editBtn.style.cssText = `
+          font-size: 12px; padding: 3px 12px; border: 1px solid #444;
+          background: #16213e; color: #7ec8e3; border-radius: 3px; cursor: pointer;
+        `;
+        editBtn.addEventListener("click", () => showEditMergeOwners(docId, doc));
+        editRow.appendChild(editBtn);
+        $list.appendChild(editRow);
+      }
 
       // Timestamp
       if (doc.updatedAt) {
