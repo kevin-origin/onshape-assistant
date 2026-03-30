@@ -955,14 +955,6 @@
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end;";
 
-    const skipBtn = document.createElement("button");
-    skipBtn.textContent = "Skip";
-    skipBtn.style.cssText = `
-      padding: 8px 18px; border: 1px solid #444; border-radius: 4px;
-      background: #16213e; color: #aaa; font-size: 14px; cursor: pointer;
-    `;
-    skipBtn.addEventListener("click", () => overlay.remove());
-
     const saveBtn = document.createElement("button");
     saveBtn.textContent = "Save";
     saveBtn.style.cssText = `
@@ -993,7 +985,6 @@
       });
     });
 
-    btnRow.appendChild(skipBtn);
     btnRow.appendChild(saveBtn);
     card.appendChild(btnRow);
     overlay.appendChild(card);

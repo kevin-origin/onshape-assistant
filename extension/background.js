@@ -610,7 +610,13 @@ async function checkDocViolations(docId, docName, wid, tabId) {
             await enableWorkspaceProtection(tabId, tabId);
           }
           // Now create Development branch (Onshape will switch to it)
-          await createDevelopmentBranch(docId, vResult.versionId);
+          const branchResult = await createDevelopmentBranch(docId, vResult.versionId);
+          // Navigate back to Main workspace so user stays on protected Main
+          if (branchResult.ok && tabId && wid) {
+            const mainUrl = `${ONSHAPE_BASE}/documents/${docId}/w/${wid}`;
+            console.log(`[NewDocSetup] Navigating back to Main: ${mainUrl}`);
+            chrome.tabs.update(tabId, { url: mainUrl });
+          }
         }
       }
 
