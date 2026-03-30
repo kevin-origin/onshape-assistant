@@ -302,24 +302,25 @@
 
     const card = document.createElement("div");
     card.style.cssText = `
-      background: #fff; border-radius: 8px; padding: 24px 28px;
-      min-width: 340px; max-width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+      background: #1a1a2e; border-radius: 8px; padding: 24px 28px;
+      min-width: 340px; max-width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      border: 1px solid #333;
     `;
 
     const title = document.createElement("h3");
     title.textContent = "Set up folder structure";
-    title.style.cssText = "margin: 0 0 16px 0; font-size: 16px; color: #1a1a1a;";
+    title.style.cssText = "margin: 0 0 16px 0; font-size: 16px; color: #e0e0e0;";
     card.appendChild(title);
 
     const checkboxes = [];
     for (const name of FOLDER_NAMES) {
       const label = document.createElement("label");
-      label.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; color: #333; cursor: pointer;";
+      label.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; color: #e0e0e0; cursor: pointer;";
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = true;
       cb.value = name;
-      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer;";
+      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
       label.appendChild(cb);
       label.appendChild(document.createTextNode(name));
       card.appendChild(label);
@@ -328,7 +329,7 @@
 
     const progressText = document.createElement("div");
     progressText.id = "oxt-folder-progress";
-    progressText.style.cssText = "margin: 12px 0; font-size: 13px; color: #666; min-height: 20px;";
+    progressText.style.cssText = "margin: 12px 0; font-size: 13px; color: #888; min-height: 20px;";
     card.appendChild(progressText);
 
     const btnRow = document.createElement("div");
@@ -337,8 +338,8 @@
     const skipBtn = document.createElement("button");
     skipBtn.textContent = "Skip";
     skipBtn.style.cssText = `
-      padding: 8px 18px; border: 1px solid #ccc; border-radius: 4px;
-      background: #fff; color: #555; font-size: 14px; cursor: pointer;
+      padding: 8px 18px; border: 1px solid #444; border-radius: 4px;
+      background: #16213e; color: #aaa; font-size: 14px; cursor: pointer;
     `;
     skipBtn.addEventListener("click", async () => {
       // Save docId to offered list
@@ -355,7 +356,7 @@
     createBtn.textContent = "Create Folders";
     createBtn.style.cssText = `
       padding: 8px 18px; border: none; border-radius: 4px;
-      background: #2563eb; color: #fff; font-size: 14px; cursor: pointer;
+      background: #1b4332; color: #95d5b2; font-size: 14px; cursor: pointer;
       font-weight: 500;
     `;
     createBtn.addEventListener("click", () => {
@@ -769,9 +770,9 @@
           const banner = document.createElement("div");
           banner.id = "oxt-merge-blocker";
           banner.style.cssText = `
-            background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+            background: #533a0f; border: 1px solid #f59e0b; border-radius: 4px;
             padding: 10px 14px; margin: 10px 16px; font-size: 13px;
-            color: #92400e; font-weight: 500;
+            color: #f0c040; font-weight: 500;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
           `;
           banner.textContent = "You do not have permission to merge branches. Contact the document owner.";
@@ -883,32 +884,33 @@
 
     const card = document.createElement("div");
     card.style.cssText = `
-      background: #fff; border-radius: 8px; padding: 24px 28px;
-      min-width: 360px; max-width: 440px; box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+      background: #1a1a2e; border-radius: 8px; padding: 24px 28px;
+      min-width: 360px; max-width: 440px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      border: 1px solid #333;
     `;
 
     const title = document.createElement("h3");
     title.textContent = "Select Merge Owners";
-    title.style.cssText = "margin: 0 0 6px 0; font-size: 16px; color: #1a1a1a;";
+    title.style.cssText = "margin: 0 0 6px 0; font-size: 16px; color: #e0e0e0;";
     card.appendChild(title);
 
     const subtitle = document.createElement("div");
     subtitle.textContent = `Select a 2nd merge owner for "${docName}"`;
-    subtitle.style.cssText = "font-size: 12px; color: #666; margin-bottom: 16px;";
+    subtitle.style.cssText = "font-size: 12px; color: #888; margin-bottom: 16px;";
     card.appendChild(subtitle);
 
     // Creator row (locked)
     const creatorRow = document.createElement("div");
-    creatorRow.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 8px; background: #f0fdf4; border-radius: 4px;";
+    creatorRow.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 8px; background: #1b4332; border-radius: 4px;";
     const creatorCb = document.createElement("input");
     creatorCb.type = "checkbox";
     creatorCb.checked = true;
     creatorCb.disabled = true;
-    creatorCb.style.cssText = "width: 16px; height: 16px;";
+    creatorCb.style.cssText = "width: 16px; height: 16px; accent-color: #95d5b2;";
     creatorRow.appendChild(creatorCb);
     const creatorLabel = document.createElement("span");
     creatorLabel.textContent = `${currentUser.name} (you)`;
-    creatorLabel.style.cssText = "font-size: 14px; color: #333;";
+    creatorLabel.style.cssText = "font-size: 14px; color: #95d5b2;";
     creatorRow.appendChild(creatorLabel);
     card.appendChild(creatorRow);
 
@@ -918,23 +920,23 @@
     for (const member of otherMembers) {
       const row = document.createElement("label");
       row.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 4px 0; padding: 6px 8px; cursor: pointer; border-radius: 4px;";
-      row.addEventListener("mouseenter", () => row.style.background = "#f5f5f5");
+      row.addEventListener("mouseenter", () => row.style.background = "#16213e");
       row.addEventListener("mouseleave", () => row.style.background = "transparent");
       const rb = document.createElement("input");
       rb.type = "radio";
       rb.name = "merge-owner-select";
-      rb.style.cssText = "width: 16px; height: 16px; cursor: pointer;";
+      rb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
       rb.dataset.email = member.email;
       rb.dataset.name = member.name;
       rb.dataset.userId = member.id;
       row.appendChild(rb);
       const label = document.createElement("span");
       label.textContent = member.name;
-      label.style.cssText = "font-size: 14px; color: #333;";
+      label.style.cssText = "font-size: 14px; color: #e0e0e0;";
       row.appendChild(label);
       const emailSpan = document.createElement("span");
       emailSpan.textContent = member.email;
-      emailSpan.style.cssText = "font-size: 11px; color: #999; margin-left: auto;";
+      emailSpan.style.cssText = "font-size: 11px; color: #666; margin-left: auto;";
       row.appendChild(emailSpan);
       card.appendChild(row);
       radios.push(rb);
@@ -947,8 +949,8 @@
     const skipBtn = document.createElement("button");
     skipBtn.textContent = "Skip";
     skipBtn.style.cssText = `
-      padding: 8px 18px; border: 1px solid #ccc; border-radius: 4px;
-      background: #fff; color: #555; font-size: 14px; cursor: pointer;
+      padding: 8px 18px; border: 1px solid #444; border-radius: 4px;
+      background: #16213e; color: #aaa; font-size: 14px; cursor: pointer;
     `;
     skipBtn.addEventListener("click", () => overlay.remove());
 
@@ -956,14 +958,14 @@
     saveBtn.textContent = "Save";
     saveBtn.style.cssText = `
       padding: 8px 18px; border: none; border-radius: 4px;
-      background: #2563eb; color: #fff; font-size: 14px; cursor: pointer;
+      background: #1b4332; color: #95d5b2; font-size: 14px; cursor: pointer;
       font-weight: 500;
     `;
     saveBtn.addEventListener("click", () => {
       const selected = radios.find(rb => rb.checked);
       if (!selected) {
         subtitle.textContent = "Please select a 2nd owner.";
-        subtitle.style.color = "#dc2626";
+        subtitle.style.color = "#ff6b6b";
         return;
       }
       const owners = [
@@ -977,7 +979,7 @@
         owners: owners,
       }, () => {
         overlay.remove();
-        showProgressToast(`Merge owners saved (${owners.length})`);
+        showProgressToast("Merge owners saved");
         setTimeout(removeProgressToast, 3000);
       });
     });
