@@ -567,8 +567,9 @@ async function checkDocViolations(docId, docName, wid, tabId) {
         } catch (_) { /* skip */ }
       }
 
-      // Auto-create "Initial" version when: 0 versions + >= 3 features
-      // Then enable workspace protection after successful version creation
+      // Auto-create "Initial" version when: 0 versions + >= 10 features
+      // Order: version -> workspace protection on Main -> THEN branch
+      // (branch creation switches Onshape to the new workspace, so protection must run first)
       const versionCount = Array.isArray(versions) ? versions.length : -1;
       const hasInitialVersion = Array.isArray(versions) && versions.some(v => v.name === "Initial");
       console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=10, hasInitial=${hasInitialVersion}`);
@@ -576,13 +577,14 @@ async function checkDocViolations(docId, docName, wid, tabId) {
         console.log(`[NewDocSetup] ${versionCount} versions + ${totalFeatures} features — creating initial version`);
         const vResult = await createInitialVersion(docId, wid);
         if (!vResult.error) {
-          // Create Development branch from the new version
-          await createDevelopmentBranch(docId, vResult.versionId);
-          // Enable workspace protection on Main via CDP
+          // Enable workspace protection on Main BEFORE creating branch
+          // (branch creation switches Onshape to the new workspace)
           if (tabId) {
-            console.log("[NewDocSetup] Enabling workspace protection");
-            enableWorkspaceProtection(tabId, tabId);
+            console.log("[NewDocSetup] Enabling workspace protection on Main");
+            await enableWorkspaceProtection(tabId, tabId);
           }
+          // Now create Development branch (Onshape will switch to it)
+          await createDevelopmentBranch(docId, vResult.versionId);
         }
       }
 
