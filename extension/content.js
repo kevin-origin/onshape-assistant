@@ -187,8 +187,13 @@
 
   }
 
+  let _notifyTimer = null;
+
   function sendScanResult(result) {
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
+
+    // Cancel any pending notification from a previous scan
+    if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = null; }
 
     const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
     const folderData = result.folders || {};
@@ -202,7 +207,18 @@
       ([, data]) => typeof data === "object" && data.assemblies > 1
     );
     if (illegal.length > 0 || multiAssembly || folders.length === 0) {
-      setTimeout(() => {
+      _notifyTimer = setTimeout(() => {
+        _notifyTimer = null;
+        // Re-check: if folder creation happened during the delay, skip notification
+        if (_folderCreationInProgress) return;
+        // Re-read tabs to see if folders now exist (sorter may have run)
+        const currentTabs = getTabNames();
+        const nowHasFolders = currentTabs.some(t => t.isFolder);
+        const nowHasRootTabs = currentTabs.filter(t => !t.isFolder).length > 0;
+        if (nowHasFolders && !nowHasRootTabs) {
+          console.log("[Scanner] Notification suppressed — folders exist and no root tabs after sort");
+          return;
+        }
         chrome.runtime.sendMessage({
           type: "folder-scan-notify",
           docId: result.doc_id,
@@ -556,6 +572,7 @@
     // Cancel any pending timers from a previous doc
     if (_scanTimer) { clearTimeout(_scanTimer); _scanTimer = null; }
     if (_violationsTimer) { clearTimeout(_violationsTimer); _violationsTimer = null; }
+    if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = null; }
 
     _scanTimer = setTimeout(() => { _scanTimer = null; autoScan(); }, 8000);
 
