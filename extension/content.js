@@ -839,10 +839,11 @@
   async function maybeShowMergeOwnerPopup(docId) {
     if (!docId) return;
 
-    // Check if merge owners already set for this doc
-    const stored = await chrome.storage.local.get("mergePermissions");
-    const perms = stored.mergePermissions || {};
-    if (perms[docId]) {
+    // Check if merge owners already set for this doc (via backend + local fallback)
+    const permsResp = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ type: "get-merge-perms", docId }, resolve)
+    );
+    if (permsResp && permsResp.exists) {
       console.log("[MergeOwner] Already set for", docId);
       return;
     }

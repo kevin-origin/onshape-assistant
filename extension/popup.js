@@ -580,13 +580,12 @@ function loadMergePermissions() {
     }
     const docId = docMatch[1];
 
-    // Fetch session user and merge permissions in parallel
+    // Fetch session user and merge permissions in parallel (backend + local fallback)
     Promise.all([
       new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
-      new Promise(resolve => chrome.storage.local.get("mergePermissions", resolve)),
-    ]).then(([sessionUser, data]) => {
-      const perms = data.mergePermissions || {};
-      const doc = perms[docId];
+      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-merge-perms", docId }, resolve)),
+    ]).then(([sessionUser, permsResp]) => {
+      const doc = (permsResp && permsResp.exists) ? permsResp.data : null;
 
       if (!doc) {
         $none.textContent = "No merge permissions set for this document.";

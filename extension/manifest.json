@@ -9,7 +9,8 @@
     "https://cad.onshape.com/*",
     "https://*.onshape.com/*",
     "http://localhost/*",
-    "https://*.onrender.com/*"
+    "https://*.onrender.com/*",
+    "https://*.workers.dev/*"
   ],
   "background": {
     "service_worker": "background.js"

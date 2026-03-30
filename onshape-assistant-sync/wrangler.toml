@@ -1,0 +1,12 @@
+name = "onshape-assistant-sync"
+main = "src/index.js"
+compatibility_date = "2026-03-01"
+
+# Create these with:
+#   wrangler kv namespace create "MERGE_PERMS"
+#   wrangler kv namespace create "MERGE_PERMS" --preview
+# Then paste the IDs below.
+[[kv_namespaces]]
+binding = "MERGE_PERMS"
+id = "REPLACE_WITH_KV_NAMESPACE_ID"
+preview_id = "REPLACE_WITH_KV_PREVIEW_ID"

@@ -5,6 +5,32 @@
 const ONSHAPE_BASE = "https://cad.onshape.com";
 const COMPANY_ID   = "6810c247e7c40668c32816a6";
 
+// Cloudflare Worker sync backend for shared merge permissions
+const SYNC_SERVER  = "https://onshape-assistant-sync.ACCOUNT.workers.dev"; // TODO: replace ACCOUNT
+const SYNC_API_KEY = "REPLACE_WITH_API_KEY"; // TODO: replace after wrangler secret put API_KEY
+
+async function syncFetch(path, options = {}) {
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 4000);
+    const resp = await fetch(`${SYNC_SERVER}${path}`, {
+      ...options,
+      signal: controller.signal,
+      headers: {
+        "Content-Type": "application/json",
+        "X-API-Key": SYNC_API_KEY,
+        ...(options.headers || {}),
+      },
+    });
+    clearTimeout(timeout);
+    if (!resp.ok) return null;
+    return await resp.json();
+  } catch (e) {
+    console.log("[Sync] fetch failed:", e.message);
+    return null;
+  }
+}
+
 // Scan timeout per document (ms) — if content.js doesn't respond in time
 const DOC_SCAN_TIMEOUT = 30000;
 
@@ -2764,14 +2790,29 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   } else if (msg.type === "check-merge-allowed") {
     // Check if current session user is an allowed merge owner for this doc
+    // Try backend first, fall back to local storage
     (async () => {
       const user = await getSessionUser();
       if (!user) return sendResponse({ allowed: false, error: "No session user" });
-      const stored = await chrome.storage.local.get("mergePermissions");
-      const perms = stored.mergePermissions || {};
-      const docPerms = perms[msg.docId];
+
+      // Try backend
+      let docPerms = null;
+      const remote = await syncFetch(`/api/merge-permissions/${msg.docId}`);
+      if (remote && remote.owners) {
+        docPerms = remote;
+        // Cache locally
+        const stored = await chrome.storage.local.get("mergePermissions");
+        const perms = stored.mergePermissions || {};
+        perms[msg.docId] = remote;
+        await chrome.storage.local.set({ mergePermissions: perms });
+      } else {
+        // Fall back to local
+        const stored = await chrome.storage.local.get("mergePermissions");
+        const perms = stored.mergePermissions || {};
+        docPerms = perms[msg.docId];
+      }
+
       if (!docPerms) {
-        // No permissions set for this doc — allow by default
         console.log(`[MergeBlock] No permissions for ${msg.docId}, allowing`);
         return sendResponse({ allowed: true, email: user.email });
       }
@@ -2787,14 +2828,41 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const stored = await chrome.storage.local.get("mergePermissions");
       const perms = stored.mergePermissions || {};
-      perms[msg.docId] = {
+      const entry = {
         docName: msg.docName,
         owners: msg.owners,
         updatedAt: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
       };
+      perms[msg.docId] = entry;
       await chrome.storage.local.set({ mergePermissions: perms });
       console.log(`[MergePerms] Saved ${msg.owners.length} owner(s) for ${msg.docName}`);
       sendResponse({ ok: true });
+      // Fire-and-forget sync to backend
+      syncFetch(`/api/merge-permissions/${msg.docId}`, {
+        method: "PUT",
+        body: JSON.stringify(entry),
+      });
+    })();
+    return true;
+
+  } else if (msg.type === "get-merge-perms") {
+    // Centralized merge-perms reader: try backend first, fall back to local
+    (async () => {
+      const remote = await syncFetch(`/api/merge-permissions/${msg.docId}`);
+      if (remote && remote.owners) {
+        // Cache locally
+        const stored = await chrome.storage.local.get("mergePermissions");
+        const perms = stored.mergePermissions || {};
+        perms[msg.docId] = remote;
+        await chrome.storage.local.set({ mergePermissions: perms });
+        sendResponse({ exists: true, data: remote });
+        return;
+      }
+      // Fall back to local
+      const stored = await chrome.storage.local.get("mergePermissions");
+      const perms = stored.mergePermissions || {};
+      const local = perms[msg.docId];
+      sendResponse(local ? { exists: true, data: local } : { exists: false });
     })();
     return true;
   }
@@ -2874,6 +2942,10 @@ async function cleanupDeletedDocs() {
         console.log(`[Cleanup] Removing ${key} entry for deleted doc ${docId}`);
         delete obj[docId];
         changed = true;
+        // Also remove from backend if this is merge permissions
+        if (key === "mergePermissions") {
+          syncFetch(`/api/merge-permissions/${docId}`, { method: "DELETE" });
+        }
       }
     }
   }
