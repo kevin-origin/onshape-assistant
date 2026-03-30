@@ -560,22 +560,42 @@ function loadViolations() {
 let _teamMembersCache = null;
 
 function loadMergePermissions() {
-  chrome.storage.local.get("mergePermissions", (data) => {
-    const perms = data.mergePermissions || {};
+  // Only show merge permissions for the currently open document
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     const $list = document.getElementById("mergePermsList");
     const $none = document.getElementById("noMergePerms");
     $list.innerHTML = "";
 
-    const docIds = Object.keys(perms);
+    if (tabs.length === 0) {
+      $none.textContent = "No active tab.";
+      $none.style.display = "block";
+      return;
+    }
+    const url = tabs[0].url || "";
+    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
+    if (!docMatch) {
+      $none.textContent = "Not an Onshape document.";
+      $none.style.display = "block";
+      return;
+    }
+    const docId = docMatch[1];
 
-    for (const docId of docIds) {
+    chrome.storage.local.get("mergePermissions", (data) => {
+      const perms = data.mergePermissions || {};
       const doc = perms[docId];
+
+      if (!doc) {
+        $none.textContent = "No merge permissions set for this document.";
+        $none.style.display = "block";
+        return;
+      }
+      $none.style.display = "none";
+
       const owners = doc.owners || [];
 
       // Doc header
       const header = document.createElement("div");
       header.className = "result-item";
-      header.style.cursor = "pointer";
       const nameSpan = document.createElement("span");
       nameSpan.className = "result-name";
       nameSpan.textContent = doc.docName || docId;
@@ -619,9 +639,7 @@ function loadMergePermissions() {
         ts.textContent = "Updated: " + doc.updatedAt;
         $list.appendChild(ts);
       }
-    }
-
-    $none.style.display = docIds.length === 0 ? "block" : "none";
+    });
   });
 }
 

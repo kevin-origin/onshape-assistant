@@ -181,19 +181,27 @@
       const result = await scanTabFolders();
       if (!result) return;
       const overlayShown = await maybeOfferFolderCreation(result);
-      // Always send scan result so "no folders" notification fires
-      sendScanResult(result);
+      // Store scan data for popup, but skip Chrome notification if overlay is showing
+      // (the overlay IS the notification — user is already being prompted)
+      sendScanResult(result, overlayShown);
     }
 
   }
 
   let _notifyTimer = null;
 
-  function sendScanResult(result) {
+  function sendScanResult(result, skipNotification) {
+    // Always store scan data for popup display
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
 
     // Cancel any pending notification from a previous scan
     if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = null; }
+
+    // Skip Chrome notification if folder overlay is showing (user is already prompted)
+    if (skipNotification) {
+      console.log("[Scanner] Notification skipped — folder creation overlay is showing");
+      return;
+    }
 
     const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
     const folderData = result.folders || {};

@@ -2852,3 +2852,40 @@ chrome.notifications.onClicked.addListener((notificationId) => {
   }
   chrome.notifications.clear(notificationId);
 });
+
+// ---------------------------------------------------------------------------
+// Storage cleanup — remove entries for deleted/inaccessible documents
+// ---------------------------------------------------------------------------
+
+async function cleanupDeletedDocs() {
+  const keys = ["docScanResults", "violations", "mergePermissions", "interferenceResults", "versionCounts"];
+  const data = await chrome.storage.local.get(keys);
+  let changed = false;
+
+  for (const key of keys) {
+    const obj = data[key];
+    if (!obj || typeof obj !== "object") continue;
+    const docIds = Object.keys(obj);
+    for (const docId of docIds) {
+      try {
+        await onshapeFetch(`/api/v10/documents/${docId}`);
+      } catch (e) {
+        // 404 or 403 = doc deleted or no access
+        console.log(`[Cleanup] Removing ${key} entry for deleted doc ${docId}`);
+        delete obj[docId];
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    const updates = {};
+    for (const key of keys) { if (data[key]) updates[key] = data[key]; }
+    await chrome.storage.local.set(updates);
+    console.log("[Cleanup] Storage cleaned up");
+  }
+}
+
+// Run cleanup once on service worker startup, then every 6 hours
+cleanupDeletedDocs();
+setInterval(cleanupDeletedDocs, 6 * 60 * 60 * 1000);
