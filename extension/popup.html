@@ -259,6 +259,10 @@
       Interference Check
       <div class="menu-desc">Check all assemblies in the current document for interferences</div>
     </button>
+    <button class="btn-menu" id="btnGoMergePerms">
+      Merge Permissions
+      <div class="menu-desc">Manage who can merge branches per document</div>
+    </button>
   </div>
 
   <!-- ============ Drawing Creator ============ -->
@@ -341,6 +345,15 @@
     <div id="violationsList"></div>
     <div id="noViolations" style="color:#666;font-size:13px;padding:10px 0;">
       No violations detected. Open Onshape documents to check.
+    </div>
+  </div>
+
+  <!-- ============ Merge Permissions ============ -->
+  <div id="sectionMergePerms" class="section">
+    <h3><button class="btn-back" id="btnBackFromMergePerms">Back</button> Merge Permissions</h3>
+    <div id="mergePermsList"></div>
+    <div id="noMergePerms" style="color:#666;font-size:13px;padding:10px 0;">
+      No merge permissions set. Permissions are created when a new document is opened.
     </div>
   </div>
 

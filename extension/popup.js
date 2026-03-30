@@ -26,6 +26,11 @@ document.getElementById("btnGoInterference").addEventListener("click", () => {
   loadInterferenceResults();
 });
 document.getElementById("btnBackFromInterference").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnGoMergePerms").addEventListener("click", () => {
+  showSection("sectionMergePerms");
+  loadMergePermissions();
+});
+document.getElementById("btnBackFromMergePerms").addEventListener("click", () => showSection("sectionMenu"));
 
 // Interference Check — run button
 document.getElementById("btnRunInterference").addEventListener("click", () => {
@@ -546,4 +551,160 @@ function loadViolations() {
 
     $none.style.display = docIds.length === 0 ? "block" : "none";
   });
+}
+
+// ---------------------------------------------------------------------------
+// Merge Permissions display + edit
+// ---------------------------------------------------------------------------
+
+let _teamMembersCache = null;
+
+function loadMergePermissions() {
+  chrome.storage.local.get("mergePermissions", (data) => {
+    const perms = data.mergePermissions || {};
+    const $list = document.getElementById("mergePermsList");
+    const $none = document.getElementById("noMergePerms");
+    $list.innerHTML = "";
+
+    const docIds = Object.keys(perms);
+
+    for (const docId of docIds) {
+      const doc = perms[docId];
+      const owners = doc.owners || [];
+
+      // Doc header
+      const header = document.createElement("div");
+      header.className = "result-item";
+      header.style.cursor = "pointer";
+      const nameSpan = document.createElement("span");
+      nameSpan.className = "result-name";
+      nameSpan.textContent = doc.docName || docId;
+      header.appendChild(nameSpan);
+      const badge = document.createElement("span");
+      badge.className = "badge badge-ok";
+      badge.textContent = `${owners.length} owner${owners.length !== 1 ? "s" : ""}`;
+      header.appendChild(badge);
+      $list.appendChild(header);
+
+      // Owners list
+      const ownerContainer = document.createElement("div");
+      ownerContainer.id = `merge-owners-${docId}`;
+      for (const owner of owners) {
+        const line = document.createElement("div");
+        line.className = "result-item";
+        line.style.paddingLeft = "20px";
+        line.style.color = "#95d5b2";
+        line.textContent = `${owner.name} (${owner.email})`;
+        ownerContainer.appendChild(line);
+      }
+      $list.appendChild(ownerContainer);
+
+      // Edit button
+      const editRow = document.createElement("div");
+      editRow.style.cssText = "padding: 4px 0 8px 20px;";
+      const editBtn = document.createElement("button");
+      editBtn.textContent = "Edit";
+      editBtn.style.cssText = `
+        font-size: 12px; padding: 3px 12px; border: 1px solid #444;
+        background: #16213e; color: #7ec8e3; border-radius: 3px; cursor: pointer;
+      `;
+      editBtn.addEventListener("click", () => showEditMergeOwners(docId, doc));
+      editRow.appendChild(editBtn);
+      $list.appendChild(editRow);
+
+      // Timestamp
+      if (doc.updatedAt) {
+        const ts = document.createElement("div");
+        ts.style.cssText = "font-size:10px;color:#555;padding:0 0 6px 20px;";
+        ts.textContent = "Updated: " + doc.updatedAt;
+        $list.appendChild(ts);
+      }
+    }
+
+    $none.style.display = docIds.length === 0 ? "block" : "none";
+  });
+}
+
+async function showEditMergeOwners(docId, docData) {
+  // Fetch team members if not cached
+  if (!_teamMembersCache) {
+    const resp = await new Promise(resolve =>
+      chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)
+    );
+    _teamMembersCache = resp?.members || [];
+  }
+
+  const members = _teamMembersCache;
+  const currentOwners = (docData.owners || []).map(o => o.email);
+
+  const $list = document.getElementById("mergePermsList");
+  // Replace the owners section with editable checkboxes
+  const container = document.getElementById(`merge-owners-${docId}`);
+  if (!container) return;
+
+  container.innerHTML = "";
+  const checkboxes = [];
+
+  for (const member of members) {
+    const row = document.createElement("div");
+    row.className = "result-item";
+    row.style.paddingLeft = "20px";
+    row.style.cursor = "pointer";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = currentOwners.includes(member.email);
+    cb.style.cssText = "accent-color: #7ec8e3; width: 14px; height: 14px; margin-right: 8px;";
+    cb.dataset.email = member.email;
+    cb.dataset.name = member.name;
+    cb.dataset.userId = member.id;
+    row.appendChild(cb);
+    const label = document.createElement("span");
+    label.style.color = "#e0e0e0";
+    label.textContent = `${member.name} (${member.email})`;
+    row.appendChild(label);
+    row.addEventListener("click", (e) => { if (e.target !== cb) cb.checked = !cb.checked; });
+    container.appendChild(row);
+    checkboxes.push(cb);
+  }
+
+  // Save / Cancel buttons
+  const btnRow = document.createElement("div");
+  btnRow.style.cssText = "display: flex; gap: 6px; padding: 6px 0 0 20px;";
+
+  const saveBtn = document.createElement("button");
+  saveBtn.textContent = "Save";
+  saveBtn.style.cssText = `
+    font-size: 12px; padding: 4px 14px; border: none;
+    background: #1b4332; color: #95d5b2; border-radius: 3px; cursor: pointer;
+  `;
+  saveBtn.addEventListener("click", () => {
+    const owners = [];
+    for (const cb of checkboxes) {
+      if (cb.checked) {
+        owners.push({ email: cb.dataset.email, name: cb.dataset.name, id: cb.dataset.userId });
+      }
+    }
+    if (owners.length === 0) {
+      alert("Select at least one owner");
+      return;
+    }
+    chrome.runtime.sendMessage({
+      type: "save-merge-owners",
+      docId: docId,
+      docName: docData.docName,
+      owners: owners,
+    }, () => loadMergePermissions());
+  });
+
+  const cancelBtn = document.createElement("button");
+  cancelBtn.textContent = "Cancel";
+  cancelBtn.style.cssText = `
+    font-size: 12px; padding: 4px 14px; border: 1px solid #444;
+    background: #16213e; color: #aaa; border-radius: 3px; cursor: pointer;
+  `;
+  cancelBtn.addEventListener("click", () => loadMergePermissions());
+
+  btnRow.appendChild(saveBtn);
+  btnRow.appendChild(cancelBtn);
+  container.appendChild(btnRow);
 }

@@ -8,6 +8,47 @@ const COMPANY_ID   = "6810c247e7c40668c32816a6";
 // Scan timeout per document (ms) — if content.js doesn't respond in time
 const DOC_SCAN_TIMEOUT = 30000;
 
+// ---------------------------------------------------------------------------
+// Session user cache (fetched once per service worker lifetime)
+// ---------------------------------------------------------------------------
+
+let _sessionUser = null; // { email, name, id }
+
+async function getSessionUser() {
+  if (_sessionUser) return _sessionUser;
+  try {
+    const data = await onshapeFetch("/api/v10/users/sessioninfo");
+    _sessionUser = { email: data.email, name: data.name, id: data.id };
+    console.log(`[Session] User: ${_sessionUser.name} (${_sessionUser.email})`);
+    return _sessionUser;
+  } catch (e) {
+    console.error("[Session] Failed to get user info:", e.message);
+    return null;
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Team members cache (fetched once per service worker lifetime)
+// ---------------------------------------------------------------------------
+
+let _teamMembers = null; // [{ email, name, id }]
+
+async function getTeamMembers() {
+  if (_teamMembers) return _teamMembers;
+  try {
+    const data = await onshapeFetch(`/api/v10/companies/${COMPANY_ID}/users?limit=50`);
+    _teamMembers = (data.items || []).map(item => ({
+      email: item.user.email,
+      name: `${item.user.firstName || ""} ${item.user.lastName || ""}`.trim() || item.user.name,
+      id: item.user.id,
+    }));
+    console.log(`[Team] ${_teamMembers.length} member(s) loaded`);
+    return _teamMembers;
+  } catch (e) {
+    console.error("[Team] Failed to fetch team members:", e.message);
+    return [];
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Onshape API via session cookies (no API keys, zero quota cost)
@@ -2703,6 +2744,56 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await storeDocScanResult(result);
       sendResponse(result);
     });
+    return true;
+
+  } else if (msg.type === "get-session-user") {
+    (async () => {
+      const user = await getSessionUser();
+      sendResponse(user || { error: "Could not get session user" });
+    })();
+    return true;
+
+  } else if (msg.type === "get-team-members") {
+    (async () => {
+      const members = await getTeamMembers();
+      sendResponse({ members });
+    })();
+    return true;
+
+  } else if (msg.type === "check-merge-allowed") {
+    // Check if current session user is an allowed merge owner for this doc
+    (async () => {
+      const user = await getSessionUser();
+      if (!user) return sendResponse({ allowed: false, error: "No session user" });
+      const stored = await chrome.storage.local.get("mergePermissions");
+      const perms = stored.mergePermissions || {};
+      const docPerms = perms[msg.docId];
+      if (!docPerms) {
+        // No permissions set for this doc — allow by default
+        console.log(`[MergeBlock] No permissions for ${msg.docId}, allowing`);
+        return sendResponse({ allowed: true, email: user.email });
+      }
+      const owners = docPerms.owners || [];
+      const allowed = owners.some(o => o.email === user.email);
+      console.log(`[MergeBlock] User ${user.email} ${allowed ? "ALLOWED" : "BLOCKED"} for ${msg.docId}`);
+      sendResponse({ allowed, email: user.email, owners });
+    })();
+    return true;
+
+  } else if (msg.type === "save-merge-owners") {
+    // Save merge owners for a doc: { docId, docName, owners: [{email, name, id}] }
+    (async () => {
+      const stored = await chrome.storage.local.get("mergePermissions");
+      const perms = stored.mergePermissions || {};
+      perms[msg.docId] = {
+        docName: msg.docName,
+        owners: msg.owners,
+        updatedAt: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
+      };
+      await chrome.storage.local.set({ mergePermissions: perms });
+      console.log(`[MergePerms] Saved ${msg.owners.length} owner(s) for ${msg.docName}`);
+      sendResponse({ ok: true });
+    })();
     return true;
   }
 });

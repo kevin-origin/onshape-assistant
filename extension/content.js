@@ -331,6 +331,8 @@
       if (!offered.includes(docId)) offered.push(docId);
       await chrome.storage.local.set({ folderCreationOffered: offered });
       overlay.remove();
+      // Show merge owner popup after folder setup is skipped
+      maybeShowMergeOwnerPopup(docId);
     });
 
     const createBtn = document.createElement("button");
@@ -498,6 +500,8 @@
             if (!offered.includes(docId)) offered.push(docId);
             chrome.storage.local.set({ folderCreationOffered: offered });
           });
+          // Show merge owner popup after folders created
+          setTimeout(() => maybeShowMergeOwnerPopup(docId), 3500);
         }
         setTimeout(removeProgressToast, 3000);
       } else {
@@ -697,4 +701,269 @@
   });
 
   exportObserver.observe(document.body, { childList: true, subtree: true });
+
+  // ---------------------------------------------------------------------------
+  // Merge dialog blocker — blocks non-owners from merging branches
+  // ---------------------------------------------------------------------------
+  // Onshape's merge dialog appears when right-clicking a branch in the Versions
+  // panel and selecting "Merge...". We watch for any modal containing "Merge"
+  // in its title/header and block the confirm button for non-owners.
+
+  let _mergeDetected = false;
+
+  const mergeObserver = new MutationObserver((mutations) => {
+    if (_mergeDetected) return;
+    for (const m of mutations) {
+      for (const node of m.addedNodes) {
+        if (node.nodeType !== 1) continue;
+        if (!node.querySelector) continue;
+
+        // Look for modal with merge-related content
+        const modal = node.classList?.contains("modal")
+          ? node
+          : node.querySelector?.(".modal");
+        if (!modal) continue;
+
+        // Check if this modal is about merging — look for title/header text
+        const titleEl = modal.querySelector(".modal-title, .modal-header h4, .modal-header h3, .modal-header span");
+        const titleText = (titleEl?.textContent || "").toLowerCase();
+        if (!titleText.includes("merge")) continue;
+
+        _mergeDetected = true;
+        console.log("[MergeBlock] Merge dialog detected");
+
+        const docId = getDocIdFromUrl();
+        if (!docId) { _mergeDetected = false; continue; }
+
+        // Ask background if current user is allowed
+        chrome.runtime.sendMessage({
+          type: "check-merge-allowed",
+          docId: docId,
+        }, (response) => {
+          if (response && response.allowed) {
+            console.log("[MergeBlock] User is allowed to merge");
+            return;
+          }
+
+          console.log("[MergeBlock] User NOT allowed, blocking merge");
+          const modalContent = modal.querySelector(".modal-content") || modal;
+
+          // Show warning banner
+          const banner = document.createElement("div");
+          banner.id = "oxt-merge-blocker";
+          banner.style.cssText = `
+            background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+            padding: 10px 14px; margin: 10px 16px; font-size: 13px;
+            color: #92400e; font-weight: 500;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          `;
+          banner.textContent = "You do not have permission to merge branches. Contact the document owner.";
+
+          const modalBody = modalContent.querySelector(".modal-body");
+          if (modalBody) {
+            modalBody.parentNode.insertBefore(banner, modalBody);
+          } else {
+            modalContent.insertBefore(banner, modalContent.children[1] || null);
+          }
+
+          // Disable all submit/action buttons in the modal
+          const buttons = modal.querySelectorAll("button");
+          for (const btn of buttons) {
+            const text = btn.textContent.trim().toLowerCase();
+            if (text === "merge" || text === "ok" || text === "apply" || btn.type === "submit") {
+              btn.disabled = true;
+              btn.title = "Merge not allowed — contact document owner";
+              btn.style.opacity = "0.4";
+              btn.style.cursor = "not-allowed";
+              console.log(`[MergeBlock] Disabled button: "${btn.textContent.trim()}"`);
+            }
+          }
+
+          // Block form submission
+          const form = modal.querySelector("form");
+          if (form) {
+            form.addEventListener("submit", function blockMerge(e) {
+              e.preventDefault();
+              e.stopImmediatePropagation();
+              console.log("[MergeBlock] Form submit blocked");
+            }, true);
+          }
+        });
+
+        // Reset flag when modal is removed
+        const removeObserver = new MutationObserver(() => {
+          if (!document.querySelector("#oxt-merge-blocker")) {
+            _mergeDetected = false;
+            removeObserver.disconnect();
+            console.log("[MergeBlock] Merge dialog closed");
+          }
+        });
+        removeObserver.observe(document.body, { childList: true, subtree: true });
+        return;
+      }
+    }
+  });
+
+  mergeObserver.observe(document.body, { childList: true, subtree: true });
+
+  // ---------------------------------------------------------------------------
+  // Merge owner selection popup — shown on new document creation
+  // ---------------------------------------------------------------------------
+
+  async function maybeShowMergeOwnerPopup(docId) {
+    if (!docId) return;
+
+    // Check if merge owners already set for this doc
+    const stored = await chrome.storage.local.get("mergePermissions");
+    const perms = stored.mergePermissions || {};
+    if (perms[docId]) {
+      console.log("[MergeOwner] Already set for", docId);
+      return;
+    }
+
+    // Check version count — only show for new docs (<=1 version)
+    const vcData = await chrome.storage.local.get("versionCounts");
+    const versionCount = (vcData.versionCounts || {})[docId];
+    if (versionCount !== undefined && versionCount > 1) {
+      console.log("[MergeOwner] Not a new doc, skipping");
+      return;
+    }
+
+    // Get current user and team members in parallel
+    const [userResp, teamResp] = await Promise.all([
+      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
+      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
+    ]);
+
+    if (!userResp || userResp.error) {
+      console.log("[MergeOwner] Could not get session user");
+      return;
+    }
+
+    const members = teamResp?.members || [];
+    if (members.length === 0) {
+      console.log("[MergeOwner] No team members found");
+      return;
+    }
+
+    const docName = getDocName();
+    showMergeOwnerOverlay(docId, docName, userResp, members);
+  }
+
+  function showMergeOwnerOverlay(docId, docName, currentUser, members) {
+    // Remove any existing overlay
+    const existing = document.getElementById("oxt-merge-owner-overlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "oxt-merge-owner-overlay";
+    overlay.style.cssText = `
+      position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+      background: rgba(0,0,0,0.5); z-index: 999999;
+      display: flex; align-items: center; justify-content: center;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    `;
+
+    const card = document.createElement("div");
+    card.style.cssText = `
+      background: #fff; border-radius: 8px; padding: 24px 28px;
+      min-width: 360px; max-width: 440px; box-shadow: 0 8px 32px rgba(0,0,0,0.25);
+    `;
+
+    const title = document.createElement("h3");
+    title.textContent = "Select Merge Owners";
+    title.style.cssText = "margin: 0 0 6px 0; font-size: 16px; color: #1a1a1a;";
+    card.appendChild(title);
+
+    const subtitle = document.createElement("div");
+    subtitle.textContent = `Only selected users can merge branches in "${docName}"`;
+    subtitle.style.cssText = "font-size: 12px; color: #666; margin-bottom: 16px;";
+    card.appendChild(subtitle);
+
+    // Creator row (locked)
+    const creatorRow = document.createElement("div");
+    creatorRow.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 8px; background: #f0fdf4; border-radius: 4px;";
+    const creatorCb = document.createElement("input");
+    creatorCb.type = "checkbox";
+    creatorCb.checked = true;
+    creatorCb.disabled = true;
+    creatorCb.style.cssText = "width: 16px; height: 16px;";
+    creatorRow.appendChild(creatorCb);
+    const creatorLabel = document.createElement("span");
+    creatorLabel.textContent = `${currentUser.name} (you)`;
+    creatorLabel.style.cssText = "font-size: 14px; color: #333;";
+    creatorRow.appendChild(creatorLabel);
+    card.appendChild(creatorRow);
+
+    // Other team members
+    const otherMembers = members.filter(m => m.email !== currentUser.email);
+    const checkboxes = [];
+    for (const member of otherMembers) {
+      const row = document.createElement("label");
+      row.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 4px 0; padding: 6px 8px; cursor: pointer; border-radius: 4px;";
+      row.addEventListener("mouseenter", () => row.style.background = "#f5f5f5");
+      row.addEventListener("mouseleave", () => row.style.background = "transparent");
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer;";
+      cb.dataset.email = member.email;
+      cb.dataset.name = member.name;
+      cb.dataset.userId = member.id;
+      row.appendChild(cb);
+      const label = document.createElement("span");
+      label.textContent = member.name;
+      label.style.cssText = "font-size: 14px; color: #333;";
+      row.appendChild(label);
+      const emailSpan = document.createElement("span");
+      emailSpan.textContent = member.email;
+      emailSpan.style.cssText = "font-size: 11px; color: #999; margin-left: auto;";
+      row.appendChild(emailSpan);
+      card.appendChild(row);
+      checkboxes.push(cb);
+    }
+
+    // Buttons
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display: flex; gap: 10px; margin-top: 16px; justify-content: flex-end;";
+
+    const skipBtn = document.createElement("button");
+    skipBtn.textContent = "Skip";
+    skipBtn.style.cssText = `
+      padding: 8px 18px; border: 1px solid #ccc; border-radius: 4px;
+      background: #fff; color: #555; font-size: 14px; cursor: pointer;
+    `;
+    skipBtn.addEventListener("click", () => overlay.remove());
+
+    const saveBtn = document.createElement("button");
+    saveBtn.textContent = "Save";
+    saveBtn.style.cssText = `
+      padding: 8px 18px; border: none; border-radius: 4px;
+      background: #2563eb; color: #fff; font-size: 14px; cursor: pointer;
+      font-weight: 500;
+    `;
+    saveBtn.addEventListener("click", () => {
+      const owners = [{ email: currentUser.email, name: currentUser.name, id: currentUser.id }];
+      for (const cb of checkboxes) {
+        if (cb.checked) {
+          owners.push({ email: cb.dataset.email, name: cb.dataset.name, id: cb.dataset.userId });
+        }
+      }
+      chrome.runtime.sendMessage({
+        type: "save-merge-owners",
+        docId: docId,
+        docName: docName,
+        owners: owners,
+      }, () => {
+        overlay.remove();
+        showProgressToast(`Merge owners saved (${owners.length})`);
+        setTimeout(removeProgressToast, 3000);
+      });
+    });
+
+    btnRow.appendChild(skipBtn);
+    btnRow.appendChild(saveBtn);
+    card.appendChild(btnRow);
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
 })();
