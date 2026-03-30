@@ -6,8 +6,8 @@ const ONSHAPE_BASE = "https://cad.onshape.com";
 const COMPANY_ID   = "6810c247e7c40668c32816a6";
 
 // Cloudflare Worker sync backend for shared merge permissions
-const SYNC_SERVER  = "https://onshape-assistant-sync.ACCOUNT.workers.dev"; // TODO: replace ACCOUNT
-const SYNC_API_KEY = "REPLACE_WITH_API_KEY"; // TODO: replace after wrangler secret put API_KEY
+const SYNC_SERVER  = "https://onshape-assistant-sync.artilabot.workers.dev";
+const SYNC_API_KEY = "artila-onshape-sync-2026";
 
 async function syncFetch(path, options = {}) {
   try {

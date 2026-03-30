@@ -8,5 +8,5 @@ compatibility_date = "2026-03-01"
 # Then paste the IDs below.
 [[kv_namespaces]]
 binding = "MERGE_PERMS"
-id = "REPLACE_WITH_KV_NAMESPACE_ID"
-preview_id = "REPLACE_WITH_KV_PREVIEW_ID"
+id = "253b9336e6c64478a5f7e282c17e9cf7"
+preview_id = "c76001f1e21c407ab4a334a7a38901b8"
