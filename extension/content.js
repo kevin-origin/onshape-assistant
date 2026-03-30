@@ -750,10 +750,11 @@
           : node.querySelector?.(".modal");
         if (!modal) continue;
 
-        // Check if this modal is about merging — look for title/header text
+        // Check if this modal is about merging — check title element first, then full modal text
         const titleEl = modal.querySelector(".modal-title, .modal-header h4, .modal-header h3, .modal-header span");
         const titleText = (titleEl?.textContent || "").toLowerCase();
-        if (!titleText.includes("merge")) continue;
+        const allText = (modal.textContent || "").toLowerCase();
+        if (!titleText.includes("merge") && !allText.includes("merge")) continue;
 
         _mergeDetected = true;
         console.log("[MergeBlock] Merge dialog detected");
