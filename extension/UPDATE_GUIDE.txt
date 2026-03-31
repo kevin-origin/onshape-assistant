@@ -1,0 +1,38 @@
+HOW TO UPDATE THE EXTENSION
+============================
+
+Step 1: Make your code changes on dev (as usual)
+
+
+Step 2: Tell Claude to bump the version and merge to main
+  - Just say: "bump to 1.3 and merge to main" (or whatever version)
+  - Claude handles editing version numbers, committing, merging, and pushing
+
+
+Step 3: Pack the .crx file
+  1. Open Chrome
+  2. Go to chrome://extensions
+  3. Turn on Developer mode (top right toggle)
+  4. Click "Pack extension"
+  5. For "Extension root directory", click Browse and select:
+       C:\Users\kevin\Desktop\OnshapeTools\extension
+  6. For "Private key file", click Browse and select the .pem file you used last time (keeps the same extension ID)
+  7. Click "Pack Extension"
+  8. It creates extension.crx in C:\Users\kevin\Desktop\OnshapeTools\
+
+
+Step 4: Upload to GitHub
+  1. Go to https://github.com/kevin-origin/onshape-assistant/releases
+  2. Click "Draft a new release"
+  3. Click "Choose a tag" -- type the new version (e.g. v1.3) -- click "Create new tag"
+  4. Title: v1.3 (or whatever version)
+  5. Drag extension.crx into the "Attach binaries" area
+     - Rename it to onshape-assistant.crx before dragging (the name in updates.xml must match)
+  6. Click "Publish release"
+
+
+Step 5: Done -- Chrome auto-updates within a few hours
+  To force update on any machine right now:
+  1. Open chrome://extensions
+  2. Toggle Developer mode on
+  3. Click "Update" (top left)
