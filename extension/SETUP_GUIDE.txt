@@ -1,0 +1,219 @@
+===========================================================================
+        ONSHAPE ASSISTANT - SETUP GUIDE
+        For Windows computers. No experience needed.
+===========================================================================
+
+
+---------------------------------------------------------------------------
+STEP 1: INSTALL GIT
+---------------------------------------------------------------------------
+
+   1. Open your web browser (Chrome, Edge, etc.)
+
+   2. Go to this address:
+      https://git-scm.com/download/win
+
+   3. The download should start automatically.
+      If it doesn't, click "Click here to download manually"
+
+   4. Open the downloaded file (it will be called something like
+      "Git-2.xx.x-64-bit.exe")
+
+   5. An installer window will appear. Click "Next" on every screen.
+      DO NOT change any settings. Just keep clicking "Next".
+
+   6. On the last screen, click "Install"
+
+   7. When it finishes, click "Finish"
+
+   8. To verify it worked:
+      - Press the Windows key on your keyboard
+      - Type: cmd
+      - Click "Command Prompt"
+      - Type this and press Enter:
+            git --version
+      - You should see something like "git version 2.xx.x"
+      - If you see an error, restart your computer and try again
+
+
+---------------------------------------------------------------------------
+STEP 2: DOWNLOAD THE EXTENSION
+---------------------------------------------------------------------------
+
+   1. Open Command Prompt if it's not already open:
+      - Press the Windows key
+      - Type: cmd
+      - Click "Command Prompt"
+
+   2. Type this command EXACTLY and press Enter:
+
+         cd %USERPROFILE%\Desktop
+
+      This puts you on your Desktop.
+
+   3. Type this command EXACTLY and press Enter:
+
+         git clone https://github.com/kevin-origin/onshape-assistant.git OnshapeTools
+
+      Wait for it to finish. You will see a new folder called
+      "OnshapeTools" appear on your Desktop.
+
+      NOTE: If it asks for a username and password, enter your
+      GitHub username and a Personal Access Token (NOT your GitHub
+      password). Ask Kevin if you don't have one.
+
+
+---------------------------------------------------------------------------
+STEP 3: INSTALL THE EXTENSION IN CHROME
+---------------------------------------------------------------------------
+
+   1. Open Google Chrome
+
+   2. In the address bar at the top, type this and press Enter:
+
+         chrome://extensions
+
+   3. In the top-right corner of the page, you will see a toggle
+      that says "Developer mode". Click it to turn it ON.
+      It should turn blue.
+
+      +----------------------------------------------+
+      |                              Developer mode [=] |
+      +----------------------------------------------+
+
+   4. Three buttons will appear at the top-left. Click the one
+      that says "Load unpacked"
+
+      +----------------------------------------------+
+      | [Load unpacked] [Pack extension] [Update]    |
+      +----------------------------------------------+
+
+   5. A folder picker window will open. Navigate to:
+
+         Desktop > OnshapeTools > extension
+
+      Click the "extension" folder ONCE to highlight it, then
+      click "Select Folder"
+
+   6. The extension will appear in your list. You should see:
+
+      "Onshape Assistant"
+
+      Make sure the blue toggle next to it is turned ON.
+
+   7. You should now see the extension icon in your Chrome toolbar
+      (top-right area, next to the address bar).
+
+      If you don't see it:
+      - Click the puzzle piece icon in the toolbar
+      - Find "Onshape Assistant" in the list
+      - Click the pin icon next to it
+
+
+---------------------------------------------------------------------------
+STEP 4: SET UP AUTOMATIC UPDATES
+---------------------------------------------------------------------------
+
+   This step makes the extension update itself automatically
+   whenever a new version is released. You only need to do this once.
+
+   1. Open the OnshapeTools folder on your Desktop
+
+   2. Open the "extension" folder inside it
+
+   3. Open the "updater" folder inside that
+
+      You are now at:  Desktop > OnshapeTools > extension > updater
+
+   4. Find the file called "install-task.bat"
+
+   5. RIGHT-CLICK on it and select "Run as administrator"
+
+      +---------------------------+
+      |  Open                     |
+      |  Run as administrator  <------ Click this one
+      |  Edit                     |
+      +---------------------------+
+
+   6. If Windows asks "Do you want to allow this app to make
+      changes to your device?" click "Yes"
+
+   7. A black Command Prompt window will appear. It should say:
+
+      Task "OnshapeAssistantUpdate" created successfully.
+      The extension will auto-pull from main every hour.
+
+   8. Press any key to close the window.
+
+   DONE. The extension will now check for updates every hour
+   and reload itself automatically. You don't need to do
+   anything else.
+
+
+---------------------------------------------------------------------------
+STEP 5: VERIFY EVERYTHING WORKS
+---------------------------------------------------------------------------
+
+   1. Open Chrome and go to https://cad.onshape.com
+
+   2. Open any document
+
+   3. After about 10 seconds, you should see the extension
+      working (it will scan your tabs and check for violations)
+
+   4. Click the extension icon in the toolbar to open the popup
+      and see the different sections (Drawing, Scanner, etc.)
+
+
+===========================================================================
+TROUBLESHOOTING
+===========================================================================
+
+   PROBLEM: "git" is not recognized as a command
+   FIX:     Restart your computer after installing Git, then try again.
+
+   PROBLEM: Clone asks for username/password
+   FIX:     Ask Kevin for a GitHub Personal Access Token.
+            Username = your GitHub username
+            Password = the token (NOT your GitHub password)
+
+   PROBLEM: Extension doesn't appear after loading
+   FIX:     Make sure you selected the "extension" folder,
+            NOT the "OnshapeTools" folder. The correct folder
+            contains files like "manifest.json" and "background.js".
+
+   PROBLEM: "Run as administrator" doesn't appear
+   FIX:     Your Windows account may not have admin rights.
+            Ask your IT admin to run install-task.bat for you.
+
+   PROBLEM: Extension doesn't seem to update
+   FIX:     Open Command Prompt and type:
+               cd %USERPROFILE%\Desktop\OnshapeTools
+               git pull origin main
+            Then go to chrome://extensions and click the
+            reload icon on Onshape Assistant.
+
+   PROBLEM: Extension stopped working after an update
+   FIX:     Go to chrome://extensions, find Onshape Assistant,
+            click the reload arrow icon. If that doesn't work,
+            remove it and redo Step 3.
+
+
+===========================================================================
+UNINSTALLING
+===========================================================================
+
+   To remove the automatic updater:
+   1. Go to Desktop > OnshapeTools > extension > updater
+   2. Right-click "uninstall-task.bat" > Run as administrator
+
+   To remove the extension:
+   1. Go to chrome://extensions
+   2. Find "Onshape Assistant"
+   3. Click "Remove"
+
+   To remove the files:
+   1. Delete the "OnshapeTools" folder from your Desktop
+
+
+===========================================================================
