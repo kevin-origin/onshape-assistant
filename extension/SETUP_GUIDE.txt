@@ -47,16 +47,14 @@ STEP 2: DOWNLOAD THE EXTENSION
 
    2. Type this command EXACTLY and press Enter:
 
-         cd Desktop
-
-      This puts you on your Desktop.
-
-   3. Type this command EXACTLY and press Enter:
-
          git clone https://github.com/kevin-origin/onshape-assistant.git OnshapeTools
 
-      Wait for it to finish. You will see a new folder called
-      "OnshapeTools" appear on your Desktop.
+      Wait for it to finish. A folder called "OnshapeTools" will
+      be created wherever Command Prompt opened (usually C:\Users\YourName).
+
+      To find it later, type this and press Enter:
+
+         explorer OnshapeTools
 
       NOTE: If it asks for a username and password, enter your
       GitHub username and a Personal Access Token (NOT your GitHub
@@ -123,7 +121,8 @@ STEP 4: SET UP AUTOMATIC UPDATES
 
    3. Open the "updater" folder inside that
 
-      You are now at:  Desktop > OnshapeTools > extension > updater
+      (If you can't find OnshapeTools, open Command Prompt and type:
+       explorer OnshapeTools  )
 
    4. Find the file called "install-task.bat"
 
@@ -188,7 +187,7 @@ TROUBLESHOOTING
 
    PROBLEM: Extension doesn't seem to update
    FIX:     Open Command Prompt and type:
-               cd %USERPROFILE%\Desktop\OnshapeTools
+               cd OnshapeTools
                git pull origin main
             Then go to chrome://extensions and click the
             reload icon on Onshape Assistant.
