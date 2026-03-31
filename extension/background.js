@@ -593,13 +593,13 @@ async function checkDocViolations(docId, docName, wid, tabId) {
         } catch (_) { /* skip */ }
       }
 
-      // Auto-create "Initial" version when: 0 versions + >= 10 features
+      // Auto-create "Initial" version when: 0 versions + >= 50 features
       // Order: version -> workspace protection on Main -> THEN branch
       // (branch creation switches Onshape to the new workspace, so protection must run first)
       const versionCount = Array.isArray(versions) ? versions.length : -1;
       const hasInitialVersion = Array.isArray(versions) && versions.some(v => v.name === "Initial");
-      console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=10, hasInitial=${hasInitialVersion}`);
-      if (versionCount <= 1 && totalFeatures >= 10 && !hasInitialVersion) {
+      console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=50, hasInitial=${hasInitialVersion}`);
+      if (versionCount <= 1 && totalFeatures >= 50 && !hasInitialVersion) {
         console.log(`[NewDocSetup] ${versionCount} versions + ${totalFeatures} features — creating initial version`);
         const vResult = await createInitialVersion(docId, wid);
         if (!vResult.error) {

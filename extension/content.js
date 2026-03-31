@@ -580,7 +580,7 @@
   let _scanTimer = null;
   let _violationsTimer = null;
   let _pollInterval = null;
-  const POLL_INTERVAL_MS = 30000; // 30s continuous polling
+  const POLL_INTERVAL_MS = 300000; // 5 min continuous polling
 
   function runOnDocLoad() {
     const docId = getDocIdFromUrl();
