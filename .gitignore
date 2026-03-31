@@ -14,3 +14,4 @@ __pycache__/
 metrics.json
 test_flat.js
 .claude/
+extension/updater/update.log

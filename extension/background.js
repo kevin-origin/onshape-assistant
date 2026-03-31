@@ -2967,3 +2967,33 @@ async function cleanupDeletedDocs() {
 // Run cleanup once on service worker startup, then every 6 hours
 cleanupDeletedDocs();
 setInterval(cleanupDeletedDocs, 6 * 60 * 60 * 1000);
+
+// ---------------------------------------------------------------------------
+// Auto-reload: detect when git pull has updated the local extension files
+// ---------------------------------------------------------------------------
+// For unpacked extensions, chrome.runtime.getURL serves files directly from
+// disk. We compare the on-disk manifest version to the in-memory version
+// (cached at service worker startup). If they differ, git pull has landed
+// new code and we reload the extension automatically.
+
+const _loadedVersion = chrome.runtime.getManifest().version;
+console.log(`[AutoUpdate] Extension loaded, version: ${_loadedVersion}`);
+
+async function checkForLocalUpdate() {
+  try {
+    const resp = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
+    if (!resp.ok) return;
+    const manifest = await resp.json();
+    if (manifest.version !== _loadedVersion) {
+      console.log(`[AutoUpdate] Version changed: ${_loadedVersion} -> ${manifest.version}, reloading...`);
+      chrome.runtime.reload();
+    }
+  } catch (e) {
+    console.log("[AutoUpdate] Check failed:", e.message);
+  }
+}
+
+// Check every 5 minutes
+setInterval(checkForLocalUpdate, 5 * 60 * 1000);
+// Also check shortly after startup (in case git pull ran while Chrome was open)
+setTimeout(checkForLocalUpdate, 30000);
