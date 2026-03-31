@@ -189,6 +189,7 @@
   }
 
   let _notifyTimer = null;
+  let _notifiedDocIds = new Set(); // track docs that already got a Chrome notification
 
   function sendScanResult(result, skipNotification) {
     // Always store scan data for popup display
@@ -215,6 +216,9 @@
       ([, data]) => typeof data === "object" && data.assemblies > 1
     );
     if (illegal.length > 0 || multiAssembly || folders.length === 0) {
+      // Only send Chrome notification once per doc (avoid spamming every 30s poll)
+      if (_notifiedDocIds.has(result.doc_id)) return;
+
       _notifyTimer = setTimeout(() => {
         _notifyTimer = null;
         // Re-check: if folder creation happened during the delay, skip notification
@@ -227,12 +231,16 @@
           console.log("[Scanner] Notification suppressed — folders exist and no root tabs after sort");
           return;
         }
+        _notifiedDocIds.add(result.doc_id);
         chrome.runtime.sendMessage({
           type: "folder-scan-notify",
           docId: result.doc_id,
           docName: result.doc_name,
         });
       }, 10000);
+    } else {
+      // Issues resolved — allow re-notification if problems come back
+      _notifiedDocIds.delete(result.doc_id);
     }
   }
 
@@ -571,6 +579,8 @@
   let _lastDocId = null;
   let _scanTimer = null;
   let _violationsTimer = null;
+  let _pollInterval = null;
+  const POLL_INTERVAL_MS = 30000; // 30s continuous polling
 
   function runOnDocLoad() {
     const docId = getDocIdFromUrl();
@@ -578,10 +588,11 @@
     _lastDocId = docId;
     console.log("[Scanner] Doc detected:", docId);
 
-    // Cancel any pending timers from a previous doc
+    // Cancel any pending timers/intervals from a previous doc
     if (_scanTimer) { clearTimeout(_scanTimer); _scanTimer = null; }
     if (_violationsTimer) { clearTimeout(_violationsTimer); _violationsTimer = null; }
     if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = null; }
+    if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
 
     _scanTimer = setTimeout(() => { _scanTimer = null; autoScan(); }, 8000);
 
@@ -600,6 +611,23 @@
         chrome.runtime.sendMessage({ type: "check-versions", docId, docName, wid });
       }
     }, 8000);
+
+    // Start continuous polling after the initial checks finish (8s + small buffer)
+    _pollInterval = setInterval(() => {
+      const currentDocId = getDocIdFromUrl();
+      if (currentDocId !== docId) return; // doc changed, next runOnDocLoad will reset
+      if (_scanning || _folderCreationInProgress) return; // skip if busy
+
+      console.log("[Poll] Running periodic checks for", docId);
+
+      // Re-run tab scanner
+      autoScan();
+
+      // Re-run violations check
+      const wid = getWidFromUrl();
+      const docName = getDocName();
+      chrome.runtime.sendMessage({ type: "check-versions", docId: currentDocId, docName, wid });
+    }, POLL_INTERVAL_MS);
   }
 
   // Initial page load
@@ -609,6 +637,7 @@
   chrome.runtime.onMessage.addListener((msg) => {
     if (msg.type === "spa-navigated") {
       console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
+      _notifiedDocIds.clear(); // reset notification tracking for new doc
       removeFolderOverlay();
       runOnDocLoad();
     }
