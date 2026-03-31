@@ -47,7 +47,7 @@ STEP 2: DOWNLOAD THE EXTENSION
 
    2. Type this command EXACTLY and press Enter:
 
-         cd %USERPROFILE%\Desktop
+         cd Desktop
 
       This puts you on your Desktop.
 
