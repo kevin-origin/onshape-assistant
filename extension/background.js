@@ -182,11 +182,15 @@ async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
   return false;
 }
 
+let _drawingInProgress = false;
+
 async function createDrawingsForUrl(url, selectedParts) {
+  _drawingInProgress = true;
   const parsed = parsePartStudioUrl(url);
   if (!parsed) {
     broadcastDrawLog("Invalid Part Studio URL", "log-err");
     chrome.runtime.sendMessage({ type: "draw-done", error: "Invalid URL" }).catch(() => {});
+    _drawingInProgress = false;
     return;
   }
   const { docId, wid, eid } = parsed;
@@ -422,6 +426,7 @@ async function createDrawingsForUrl(url, selectedParts) {
     }
   }
 
+  _drawingInProgress = false;
   chrome.runtime.sendMessage({ type: "draw-done", created, failed }).catch(() => {});
 }
 
@@ -2979,21 +2984,41 @@ setInterval(cleanupDeletedDocs, 6 * 60 * 60 * 1000);
 const _loadedVersion = chrome.runtime.getManifest().version;
 console.log(`[AutoUpdate] Extension loaded, version: ${_loadedVersion}`);
 
+function isExtensionBusy() {
+  return _drawingInProgress || _sortingInProgress || _interferenceInProgress;
+}
+
+let _updatePending = false; // true when update detected but waiting for busy ops to finish
+
 async function checkForLocalUpdate() {
   try {
     const resp = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
     if (!resp.ok) return;
     const manifest = await resp.json();
-    if (manifest.version !== _loadedVersion) {
-      console.log(`[AutoUpdate] Version changed: ${_loadedVersion} -> ${manifest.version}, reloading...`);
-      chrome.runtime.reload();
+    if (manifest.version === _loadedVersion) {
+      _updatePending = false;
+      return;
     }
+
+    // Update available — check if busy
+    if (isExtensionBusy()) {
+      if (!_updatePending) {
+        console.log(`[AutoUpdate] Update ${_loadedVersion} -> ${manifest.version} waiting for operations to finish`);
+      }
+      _updatePending = true;
+      return; // will retry on next interval tick
+    }
+
+    console.log(`[AutoUpdate] Version changed: ${_loadedVersion} -> ${manifest.version}, reloading...`);
+    chrome.runtime.reload();
   } catch (e) {
     console.log("[AutoUpdate] Check failed:", e.message);
   }
 }
 
-// Check every 5 minutes
+// Check every 5 minutes (also retries pending updates)
 setInterval(checkForLocalUpdate, 5 * 60 * 1000);
-// Also check shortly after startup (in case git pull ran while Chrome was open)
+// When an update is pending, also check every 30s so we reload soon after ops finish
+setInterval(() => { if (_updatePending) checkForLocalUpdate(); }, 30000);
+// Check shortly after startup (in case git pull ran while Chrome was open)
 setTimeout(checkForLocalUpdate, 30000);
