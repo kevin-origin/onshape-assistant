@@ -128,7 +128,7 @@
 
       // Debug: log detected root items
       console.log("[Scanner] Root items:", rootItems.map(r => ({
-        text: r.text, isFolder: r.isFolder, tabType: r.tabType, classes: r.classes,
+        text: r.text, isFolder: r.isFolder, tabType: r.tabType, iconSrc: r.iconSrc,
       })));
 
       const depthBefore = getBreadcrumbDepth();
@@ -204,13 +204,14 @@
   }
 
   let _notifyTimer = null;
-  let _notifiedDocIds = new Set(); // track docs that already got a Chrome notification
+  // Tracks which docs already triggered a Chrome notification this session.
+  // Prevents spamming the same notification every poll cycle (10 min).
+  // Cleared on SPA navigation (new doc = fresh tracking).
+  let _notifiedDocIds = new Set();
 
   function sendScanResult(result, skipNotification) {
-    // Always store scan data for popup display
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
 
-    // Cancel any pending notification from a previous scan
     if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = null; }
 
     // Skip Chrome notification if folder overlay is showing (user is already prompted)
@@ -287,6 +288,12 @@
 
   const FOLDER_NAMES = ["Part Studios", "Assemblies", "Drawings", "Feature Studios", "Variable Studios"];
 
+  // Show folder creation overlay only on new/empty documents.
+  // Guard conditions: must have 0 folders, <5 root tabs (not a mature doc),
+  // not already offered, and <=1 version (new docs have 0 or 1 auto-version).
+  // Version count is read from chrome.storage (cached by checkDocViolations) —
+  // zero extra API calls. If not yet cached (race with violations check),
+  // waits 3s and retries; if still undefined, assumes brand-new doc.
   async function maybeOfferFolderCreation(scanResult) {
     const docId = scanResult.doc_id;
     if (!docId) { console.log("[FolderSetup] No docId"); return false; }
@@ -295,20 +302,17 @@
     const rootTabs = scanResult.root_tabs || [];
     console.log(`[FolderSetup] docId=${docId}, folders=${folders.length}, rootTabs=${rootTabs.length}`);
 
-    // Only offer if: no folders, few root tabs, not already offered
     if (folders.length > 0) { console.log("[FolderSetup] Skipped: has folders"); return false; }
     if (rootTabs.length >= 5) { console.log("[FolderSetup] Skipped: too many root tabs"); return false; }
 
-    // Check if already offered for this doc
     const stored = await chrome.storage.local.get("folderCreationOffered");
     const offered = stored.folderCreationOffered || [];
     if (offered.includes(docId)) { console.log("[FolderSetup] Skipped: already offered"); return false; }
 
-    // Check version count (stored by checkDocViolations, zero extra API calls)
+    // Version count cached by checkDocViolations (zero extra API calls)
     const vcData = await chrome.storage.local.get("versionCounts");
     const versionCount = (vcData.versionCounts || {})[docId];
     console.log(`[FolderSetup] versionCount=${versionCount}`);
-    // If version count not yet available, wait a bit and retry once
     if (versionCount === undefined) {
       console.log("[FolderSetup] Version count not yet available, waiting 3s...");
       await sleep(3000);
@@ -512,10 +516,11 @@
       const docId = getDocIdFromUrl();
       if (docId) {
         (async () => {
-          const [userResp, teamResp, permsData] = await Promise.all([
+          const [userResp, teamResp, permsData, creatorResp] = await Promise.all([
             new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
             new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
             chrome.storage.local.get("mergePermissions"),
+            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, resolve)),
           ]);
           if (!userResp || userResp.error) { sendResponse({ error: "No session user" }); return; }
           const members = teamResp?.members || [];
@@ -534,8 +539,32 @@
           }
 
           const docName = getDocName();
-          // Pass existing owners so the overlay can pre-check them
-          const currentOwners = (perms && Array.isArray(perms.owners)) ? perms.owners : [];
+          let currentOwners = (perms && Array.isArray(perms.owners)) ? perms.owners : [];
+
+          // Auto-suggest 2 owners when none are set:
+          // If doc creator is a real person (not company), pre-select creator + session user.
+          // If doc creator is the company account, pre-select session user + first other member.
+          if (currentOwners.length === 0 && members.length >= 2) {
+            const creator = creatorResp && !creatorResp.error && !creatorResp.isCompany ? creatorResp : null;
+            const suggestions = [];
+            // Add doc creator if they're a real team member
+            if (creator) {
+              const creatorMember = members.find(m => m.id === creator.id || m.email === creator.email);
+              if (creatorMember) suggestions.push(creatorMember);
+            }
+            // Add session user if not already added
+            if (suggestions.length < 2) {
+              const self = members.find(m => m.id === userResp.id || m.email === userResp.email);
+              if (self && !suggestions.some(s => s.id === self.id)) suggestions.push(self);
+            }
+            // Fill remaining slot with the first other member
+            if (suggestions.length < 2) {
+              const other = members.find(m => !suggestions.some(s => s.id === m.id));
+              if (other) suggestions.push(other);
+            }
+            currentOwners = suggestions;
+          }
+
           showMergeOwnerOverlay(docId, docName, userResp, members, currentOwners);
           sendResponse({ ok: true });
         })();
@@ -646,11 +675,16 @@
   // ---------------------------------------------------------------------------
 
   // Small delay to let Onshape fully initialize
+  // Scan lifecycle: on each new doc, wait 8s (let Onshape SPA init), then:
+  //   1. autoScan() — reads tab bar DOM, triggers sort if folders exist
+  //   2. checkDocViolations — versions/parts/features/tabs limits (via background.js)
+  //   3. Poll both every 10 min to catch changes made during the session.
+  // Timers are cleared and re-created on SPA navigation (doc switch).
   let _lastDocId = null;
   let _scanTimer = null;
   let _violationsTimer = null;
   let _pollInterval = null;
-  const POLL_INTERVAL_MS = 600000; // 10 min continuous polling
+  const POLL_INTERVAL_MS = 600000; // 10 min
 
   function runOnDocLoad() {
     const docId = getDocIdFromUrl();
@@ -730,16 +764,14 @@
   }, 2000);
 
   // ---------------------------------------------------------------------------
-  // Export Drawing detection
+  // Export Drawing detection — blocks export when violations/no releases exist
   // ---------------------------------------------------------------------------
-  // Watches for the "Export Drawing" modal dialog to appear.
-  // Fires when the user right-clicks a drawing tab and clicks "Export...".
-  // Selectors from observer data:
-  //   Modal:  div.modal.fade.show
+  // MutationObserver watches for Onshape's export modal (added dynamically).
+  // Selectors discovered via observe-dom-changes + manual right-click → Export:
   //   Form:   form.export-dxf-or-dwg-dialog
-  //   Title:  span.title-description  (text: "Export Drawing")
-  //   Format: select inside form (options: PDF, DWG, DXF, etc.)
   //   Filename: #drawing-export-filename-input
+  // On detection: checks releases (API) + cached violations (zero API calls).
+  // If blocked: disables submit button + intercepts form submit event.
 
   let _exportDetected = false;
 
@@ -870,9 +902,11 @@
   // ---------------------------------------------------------------------------
   // Merge dialog blocker — blocks non-owners from merging branches
   // ---------------------------------------------------------------------------
-  // Onshape's merge dialog appears when right-clicking a branch in the Versions
-  // panel and selecting "Merge...". We watch for any modal containing "Merge"
-  // in its title/header and block the confirm button for non-owners.
+  // MutationObserver watches for any modal with "merge" in title/text.
+  // On detection: asks background.js if session user is in the doc's merge
+  // owners list (backend → local fallback, zero extra API calls).
+  // If not allowed: inserts warning banner, disables submit button,
+  // intercepts form submit. Resets when modal is removed from DOM.
 
   let _mergeDetected = false;
 

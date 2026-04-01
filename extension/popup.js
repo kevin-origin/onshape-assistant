@@ -281,10 +281,6 @@ const $drawLog         = document.getElementById("drawLog");
 const $partSelectPanel = document.getElementById("partSelectPanel");
 const $partList        = document.getElementById("partList");
 const $chkSelectAll    = document.getElementById("chkSelectAll");
-// Weldment drawing option (disabled for now)
-// const $chkWeldment     = document.getElementById("chkWeldment");
-// const $weldmentOpts    = document.getElementById("weldmentOpts");
-// const $weldmentName    = document.getElementById("weldmentName");
 const $btnConfirm      = document.getElementById("btnConfirmDrawings");
 const $btnCancel       = document.getElementById("btnCancelDrawings");
 
@@ -375,9 +371,6 @@ $btnCreateDraw.addEventListener("click", () => {
 function showPartSelection(parts) {
   $partList.innerHTML = "";
   $chkSelectAll.checked = true;
-  // $chkWeldment.checked = false;
-  // $weldmentOpts.classList.remove("active");
-  // $weldmentName.value = "";
 
   parts.forEach((part, i) => {
     const div = document.createElement("div");
@@ -412,10 +405,6 @@ $chkSelectAll.addEventListener("change", () => {
   $partList.querySelectorAll(".part-cb").forEach(cb => cb.checked = checked);
 });
 
-// $chkWeldment.addEventListener("change", () => {
-//   $weldmentOpts.classList.toggle("active", $chkWeldment.checked);
-// });
-
 // Cancel — hide panel
 $btnCancel.addEventListener("click", () => {
   $partSelectPanel.style.display = "none";
@@ -436,17 +425,9 @@ $btnConfirm.addEventListener("click", () => {
     return;
   }
 
-  // const isWeldment = $chkWeldment.checked;
-  // const weldmentDrawingName = $weldmentName.value.trim() || "Weldment Drawing";
-
   $partSelectPanel.style.display = "none";
   $drawLog.innerHTML = "";
   $btnCreateDraw.disabled = true;
-
-  // if (isWeldment) {
-  //   appendDrawLog(`Weldment mode: ${selectedParts.length} part(s) -> "${weldmentDrawingName}"`);
-  //   appendDrawLog("Sheet creation not yet implemented -- only individual drawings will be created for now");
-  // }
 
   appendDrawLog(`Creating drawings for ${selectedParts.length} part(s)...`);
 
