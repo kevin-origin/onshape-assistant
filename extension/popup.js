@@ -627,8 +627,6 @@ function loadViolations() {
 // Merge Permissions display + edit
 // ---------------------------------------------------------------------------
 
-let _teamMembersCache = null;
-
 function loadMergePermissions() {
   // Only show merge permissions for the currently open document
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -693,21 +691,6 @@ function loadMergePermissions() {
       }
       $list.appendChild(ownerContainer);
 
-      // Edit button — only visible to merge owners
-      if (isOwner) {
-        const editRow = document.createElement("div");
-        editRow.style.cssText = "padding: 4px 0 8px 20px;";
-        const editBtn = document.createElement("button");
-        editBtn.textContent = "Edit";
-        editBtn.style.cssText = `
-          font-size: 12px; padding: 3px 12px; border: 1px solid #444;
-          background: #16213e; color: #7ec8e3; border-radius: 3px; cursor: pointer;
-        `;
-        editBtn.addEventListener("click", () => showEditMergeOwners(docId, doc));
-        editRow.appendChild(editBtn);
-        $list.appendChild(editRow);
-      }
-
       // Timestamp
       if (doc.updatedAt) {
         const ts = document.createElement("div");
@@ -719,105 +702,3 @@ function loadMergePermissions() {
   });
 }
 
-async function showEditMergeOwners(docId, docData) {
-  // Fetch team members if not cached
-  if (!_teamMembersCache) {
-    const resp = await new Promise(resolve =>
-      chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)
-    );
-    _teamMembersCache = resp?.members || [];
-  }
-
-  const members = _teamMembersCache;
-  const currentOwners = (docData.owners || []).map(o => o.email);
-
-  const $list = document.getElementById("mergePermsList");
-  // Replace the owners section with editable checkboxes
-  const container = document.getElementById(`merge-owners-${docId}`);
-  if (!container) return;
-
-  container.innerHTML = "";
-
-  // Hint text
-  const hint = document.createElement("div");
-  hint.style.cssText = "font-size:11px;color:#7ec8e3;padding:0 0 6px 0;";
-  hint.textContent = "Select exactly 2 owners:";
-  container.appendChild(hint);
-
-  const checkboxes = [];
-
-  for (const member of members) {
-    const row = document.createElement("div");
-    row.className = "result-item";
-    row.style.paddingLeft = "20px";
-    row.style.cursor = "pointer";
-    const cb = document.createElement("input");
-    cb.type = "checkbox";
-    cb.checked = currentOwners.includes(member.email);
-    cb.style.cssText = "accent-color: #7ec8e3; width: 14px; height: 14px; margin-right: 8px;";
-    cb.dataset.email = member.email;
-    cb.dataset.name = member.name;
-    cb.dataset.userId = member.id;
-    // Enforce max 2 selected
-    cb.addEventListener("change", () => {
-      const checkedCount = checkboxes.filter(c => c.checked).length;
-      if (checkedCount > 2) { cb.checked = false; }
-      hint.style.color = checkedCount === 2 ? "#95d5b2" : "#7ec8e3";
-    });
-    row.appendChild(cb);
-    const label = document.createElement("span");
-    label.style.color = "#e0e0e0";
-    label.textContent = `${member.name} (${member.email})`;
-    row.appendChild(label);
-    row.addEventListener("click", (e) => {
-      if (e.target !== cb) {
-        cb.checked = !cb.checked;
-        cb.dispatchEvent(new Event("change"));
-      }
-    });
-    container.appendChild(row);
-    checkboxes.push(cb);
-  }
-
-  // Save / Cancel buttons
-  const btnRow = document.createElement("div");
-  btnRow.style.cssText = "display: flex; gap: 6px; padding: 6px 0 0 20px;";
-
-  const saveBtn = document.createElement("button");
-  saveBtn.textContent = "Save";
-  saveBtn.style.cssText = `
-    font-size: 12px; padding: 4px 14px; border: none;
-    background: #1b4332; color: #95d5b2; border-radius: 3px; cursor: pointer;
-  `;
-  saveBtn.addEventListener("click", () => {
-    const owners = [];
-    for (const cb of checkboxes) {
-      if (cb.checked) {
-        owners.push({ email: cb.dataset.email, name: cb.dataset.name, id: cb.dataset.userId });
-      }
-    }
-    if (owners.length !== 2) {
-      hint.textContent = "Select exactly 2 owners.";
-      hint.style.color = "#ff6b6b";
-      return;
-    }
-    chrome.runtime.sendMessage({
-      type: "save-merge-owners",
-      docId: docId,
-      docName: docData.docName,
-      owners: owners,
-    }, () => loadMergePermissions());
-  });
-
-  const cancelBtn = document.createElement("button");
-  cancelBtn.textContent = "Cancel";
-  cancelBtn.style.cssText = `
-    font-size: 12px; padding: 4px 14px; border: 1px solid #444;
-    background: #16213e; color: #aaa; border-radius: 3px; cursor: pointer;
-  `;
-  cancelBtn.addEventListener("click", () => loadMergePermissions());
-
-  btnRow.appendChild(saveBtn);
-  btnRow.appendChild(cancelBtn);
-  container.appendChild(btnRow);
-}

@@ -462,7 +462,7 @@
       position: fixed; top: 0; left: 0; right: 0; bottom: 0;
       background: rgba(0,0,0,0.35); z-index: 999998;
       display: flex; align-items: center; justify-content: center;
-      pointer-events: none;
+      pointer-events: auto;
     `;
     const card = document.createElement("div");
     card.style.cssText = `
@@ -511,19 +511,32 @@
     } else if (msg.type === "show-merge-owner-popup") {
       const docId = getDocIdFromUrl();
       if (docId) {
-        // Force-show: bypass skip/exists checks
         (async () => {
-          const [userResp, teamResp, creatorResp] = await Promise.all([
+          const [userResp, teamResp, permsData] = await Promise.all([
             new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
             new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
-            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, resolve)),
+            chrome.storage.local.get("mergePermissions"),
           ]);
           if (!userResp || userResp.error) { sendResponse({ error: "No session user" }); return; }
           const members = teamResp?.members || [];
           if (members.length === 0) { sendResponse({ error: "No team members" }); return; }
-          const creator = (creatorResp && !creatorResp.error) ? creatorResp : userResp;
+
+          // If owners already set for this doc, only existing owners can edit
+          const perms = (permsData.mergePermissions || {})[docId];
+          if (perms && Array.isArray(perms.owners) && perms.owners.length > 0) {
+            const isOwner = perms.owners.some(o => o.id === userResp.id || o.email === userResp.email);
+            if (!isOwner) {
+              showProgressToast("Only current merge owners can change permissions");
+              setTimeout(removeProgressToast, 3000);
+              sendResponse({ error: "Not a merge owner" });
+              return;
+            }
+          }
+
           const docName = getDocName();
-          showMergeOwnerOverlay(docId, docName, userResp, members, creator);
+          // Pass existing owners so the overlay can pre-check them
+          const currentOwners = (perms && Array.isArray(perms.owners)) ? perms.owners : [];
+          showMergeOwnerOverlay(docId, docName, userResp, members, currentOwners);
           sendResponse({ ok: true });
         })();
         return true;
@@ -963,7 +976,7 @@
   // Merge owner selection overlay — triggered via popup "Set for This Doc" button
   // ---------------------------------------------------------------------------
 
-  function showMergeOwnerOverlay(docId, docName, currentUser, members, creator) {
+  function showMergeOwnerOverlay(docId, docName, currentUser, members, currentOwners) {
     // Remove any existing overlay
     const existing = document.getElementById("oxt-merge-owner-overlay");
     if (existing) existing.remove();
@@ -990,53 +1003,43 @@
     card.appendChild(title);
 
     const subtitle = document.createElement("div");
-    subtitle.textContent = `Select a 2nd merge owner for "${docName}"`;
+    subtitle.textContent = `Select exactly 2 merge owners for "${docName}"`;
     subtitle.style.cssText = "font-size: 12px; color: #888; margin-bottom: 16px;";
     card.appendChild(subtitle);
 
-    // Creator row (locked)
-    const creatorRow = document.createElement("div");
-    creatorRow.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 8px; background: #1b4332; border-radius: 4px;";
-    const creatorCb = document.createElement("input");
-    creatorCb.type = "checkbox";
-    creatorCb.checked = true;
-    creatorCb.disabled = true;
-    creatorCb.style.cssText = "width: 16px; height: 16px; accent-color: #95d5b2;";
-    creatorRow.appendChild(creatorCb);
-    const creatorLabel = document.createElement("span");
-    const isCreator = creator.id === currentUser.id;
-    creatorLabel.textContent = `${creator.name}${isCreator ? " (you)" : " (creator)"}`;
-    creatorLabel.style.cssText = "font-size: 14px; color: #95d5b2;";
-    creatorRow.appendChild(creatorLabel);
-    card.appendChild(creatorRow);
-
-    // Other team members (radio — exactly 1 must be selected)
-    // Exclude the creator (who is the locked first owner)
-    const otherMembers = members.filter(m => m.id !== creator.id);
-    const radios = [];
-    for (const member of otherMembers) {
+    // All team members as checkboxes — pre-check current owners
+    const ownerIds = currentOwners.map(o => o.id || o.email);
+    const checkboxes = [];
+    for (const member of members) {
+      const isChecked = ownerIds.includes(member.id) || ownerIds.includes(member.email);
       const row = document.createElement("label");
       row.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 4px 0; padding: 6px 8px; cursor: pointer; border-radius: 4px;";
       row.addEventListener("mouseenter", () => row.style.background = "#16213e");
       row.addEventListener("mouseleave", () => row.style.background = "transparent");
-      const rb = document.createElement("input");
-      rb.type = "radio";
-      rb.name = "merge-owner-select";
-      rb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
-      rb.dataset.email = member.email;
-      rb.dataset.name = member.name;
-      rb.dataset.userId = member.id;
-      row.appendChild(rb);
-      const label = document.createElement("span");
-      label.textContent = member.name;
-      label.style.cssText = "font-size: 14px; color: #e0e0e0;";
-      row.appendChild(label);
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = isChecked;
+      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
+      cb.dataset.email = member.email;
+      cb.dataset.name = member.name;
+      cb.dataset.userId = member.id;
+      // Enforce max 2 selected
+      cb.addEventListener("change", () => {
+        const checkedCount = checkboxes.filter(c => c.checked).length;
+        if (checkedCount > 2) { cb.checked = false; }
+        subtitle.style.color = checkedCount === 2 ? "#95d5b2" : "#888";
+      });
+      row.appendChild(cb);
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = member.name + (member.id === currentUser.id ? " (you)" : "");
+      nameSpan.style.cssText = "font-size: 14px; color: #e0e0e0;";
+      row.appendChild(nameSpan);
       const emailSpan = document.createElement("span");
       emailSpan.textContent = member.email;
       emailSpan.style.cssText = "font-size: 11px; color: #666; margin-left: auto;";
       row.appendChild(emailSpan);
       card.appendChild(row);
-      radios.push(rb);
+      checkboxes.push(cb);
     }
 
     // Buttons
@@ -1051,16 +1054,15 @@
       font-weight: 500;
     `;
     saveBtn.addEventListener("click", () => {
-      const selected = radios.find(rb => rb.checked);
-      if (!selected) {
-        subtitle.textContent = "Please select a 2nd owner.";
+      const selected = checkboxes.filter(cb => cb.checked);
+      if (selected.length !== 2) {
+        subtitle.textContent = "Please select exactly 2 owners.";
         subtitle.style.color = "#ff6b6b";
         return;
       }
-      const owners = [
-        { email: creator.email, name: creator.name, id: creator.id },
-        { email: selected.dataset.email, name: selected.dataset.name, id: selected.dataset.userId },
-      ];
+      const owners = selected.map(cb => ({
+        email: cb.dataset.email, name: cb.dataset.name, id: cb.dataset.userId,
+      }));
       chrome.runtime.sendMessage({
         type: "save-merge-owners",
         docId: docId,
