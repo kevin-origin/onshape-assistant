@@ -8,6 +8,7 @@
   const CLICK_DELAY = 500;   // ms after clicking a folder before reading children
   const ROOT_DELAY  = 500;   // ms after clicking "All tabs" breadcrumb
   const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
+  const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip all scanning/sorting/violations
   let _scanning = false;     // lock to prevent concurrent scans
   let _folderCreationInProgress = false; // suppress scans during folder creation
   let _unpackInProgress = false; // suppress scans during folder unpacking
@@ -166,6 +167,14 @@
     }
     const docId = getDocIdFromUrl();
     if (!docId) { console.log("[Scanner] autoScan: no docId"); return; }
+
+    // Skip excluded docs (shared libraries that shouldn't be scanned/sorted)
+    const docName = getDocName();
+    if (EXCLUDED_DOC_NAMES.includes(docName)) {
+      console.log(`[Scanner] autoScan skipped: "${docName}" is in EXCLUDED_DOC_NAMES`);
+      return;
+    }
+
     console.log("[Scanner] autoScan starting for", docId);
 
     // Wait for tab bar to be ready
@@ -655,6 +664,10 @@
       }
       const wid = getWidFromUrl();
       const docName = getDocName();
+      if (EXCLUDED_DOC_NAMES.includes(docName)) {
+        console.log(`[Scanner] Violations skipped: "${docName}" is in EXCLUDED_DOC_NAMES`);
+        return;
+      }
       if (docId) {
         chrome.runtime.sendMessage({ type: "check-versions", docId, docName, wid });
       }
@@ -671,10 +684,12 @@
       // Re-run tab scanner
       autoScan();
 
-      // Re-run violations check
+      // Re-run violations check (skip excluded docs)
       const wid = getWidFromUrl();
       const docName = getDocName();
-      chrome.runtime.sendMessage({ type: "check-versions", docId: currentDocId, docName, wid });
+      if (!EXCLUDED_DOC_NAMES.includes(docName)) {
+        chrome.runtime.sendMessage({ type: "check-versions", docId: currentDocId, docName, wid });
+      }
     }, POLL_INTERVAL_MS);
   }
 
@@ -738,19 +753,31 @@
 
         const docId = getDocIdFromUrl();
 
-        // Ask background.js to check releases, then show banner if none
-        chrome.runtime.sendMessage({
-          type: "check-releases",
-          docId: docId,
-        }, (response) => {
-          if (response && response.hasReleases) {
-            console.log(`[ExportDetect] Doc has ${response.count} release(s), no banner needed`);
+        // Check releases AND violations/folder structure in parallel (zero extra API calls for violations)
+        const releaseCheck = new Promise(resolve =>
+          chrome.runtime.sendMessage({ type: "check-releases", docId }, resolve)
+        );
+        const exportCheck = new Promise(resolve =>
+          chrome.runtime.sendMessage({ type: "check-export-allowed", docId }, resolve)
+        );
+
+        Promise.all([releaseCheck, exportCheck]).then(([releaseResp, exportResp]) => {
+          const noReleases = !releaseResp || !releaseResp.hasReleases;
+          const hasIssues = exportResp && exportResp.blocked;
+          const shouldBlock = noReleases || hasIssues;
+
+          if (!shouldBlock) {
+            console.log(`[ExportDetect] Doc has ${releaseResp?.count || 0} release(s), no issues — export allowed`);
             return;
           }
-          console.log("[ExportDetect] No releases found, blocking export");
+
           const modalContent = form.closest(".modal-content");
-          if (modalContent) {
-            // Show warning banner
+          if (!modalContent) return;
+          const modalBody = modalContent.querySelector(".modal-body, .me-4");
+
+          // Banner 1: No releases
+          if (noReleases) {
+            console.log("[ExportDetect] No releases found, showing release banner");
             const banner = document.createElement("div");
             banner.id = "oxt-release-reminder";
             banner.style.cssText = `
@@ -760,32 +787,54 @@
               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             `;
             banner.textContent = "Please create a release before sending for manufacturing.";
-            const modalBody = modalContent.querySelector(".modal-body, .me-4");
             if (modalBody) {
               modalBody.parentNode.insertBefore(banner, modalBody);
             } else {
               modalContent.insertBefore(banner, modalContent.children[1] || null);
             }
-
-            // Disable the Export/OK submit button
-            const buttons = form.querySelectorAll("button");
-            for (const btn of buttons) {
-              const text = btn.textContent.trim().toLowerCase();
-              if (text === "export" || text === "ok" || btn.type === "submit") {
-                btn.disabled = true;
-                btn.title = "Release required before export";
-                btn.style.opacity = "0.4";
-                btn.style.cursor = "not-allowed";
-                console.log(`[ExportDetect] Disabled button: "${btn.textContent.trim()}"`);
-              }
-            }
-            // Also block form submission directly
-            form.addEventListener("submit", function blockSubmit(e) {
-              e.preventDefault();
-              e.stopImmediatePropagation();
-              console.log("[ExportDetect] Form submit blocked");
-            }, true);
           }
+
+          // Banner 2: Violations or folder structure issues
+          if (hasIssues) {
+            console.log("[ExportDetect] Violations/folder issues detected:", exportResp.issues);
+            const banner2 = document.createElement("div");
+            banner2.id = "oxt-export-issues";
+            banner2.style.cssText = `
+              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+              padding: 10px 14px; margin: 0 16px 12px 16px; font-size: 13px;
+              color: #92400e; font-weight: 500;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            `;
+            banner2.textContent = "Violations or incorrect folder structure detected. Please resolve before exporting.";
+            // Insert after the first banner (or before modal body if no release banner)
+            const existingBanner = modalContent.querySelector("#oxt-release-reminder");
+            if (existingBanner && existingBanner.nextSibling) {
+              existingBanner.parentNode.insertBefore(banner2, existingBanner.nextSibling);
+            } else if (modalBody) {
+              modalBody.parentNode.insertBefore(banner2, modalBody);
+            } else {
+              modalContent.insertBefore(banner2, modalContent.children[1] || null);
+            }
+          }
+
+          // Disable the Export/OK submit button
+          const buttons = form.querySelectorAll("button");
+          for (const btn of buttons) {
+            const text = btn.textContent.trim().toLowerCase();
+            if (text === "export" || text === "ok" || btn.type === "submit") {
+              btn.disabled = true;
+              btn.title = noReleases ? "Release required before export" : "Resolve violations before export";
+              btn.style.opacity = "0.4";
+              btn.style.cursor = "not-allowed";
+              console.log(`[ExportDetect] Disabled button: "${btn.textContent.trim()}"`);
+            }
+          }
+          // Block form submission directly
+          form.addEventListener("submit", function blockSubmit(e) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            console.log("[ExportDetect] Form submit blocked");
+          }, true);
         });
 
         // Reset flag when modal is removed

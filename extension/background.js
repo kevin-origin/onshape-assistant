@@ -540,10 +540,17 @@ async function storeDocScanResult(result) {
 const PARTS_LIMIT = 25;
 const FEATURES_LIMIT = 250;
 const TABS_LIMIT = 40;
+const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip violation checks
 
 async function checkDocViolations(docId, docName, wid, tabId) {
   const violations = [];
   console.log(`[Violations] Checking ${docName} (${docId}), wid=${wid || "null"}`);
+
+  // Skip excluded docs (shared libraries — no versions/parts/features checks needed)
+  if (EXCLUDED_DOC_NAMES.includes(docName)) {
+    console.log(`[Violations] Skipped: "${docName}" is in EXCLUDED_DOC_NAMES`);
+    return;
+  }
 
   try {
     // Parallel fetch: versions always, elements if wid available
@@ -2763,6 +2770,45 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return true; // async sendResponse
+
+  } else if (msg.type === "check-export-allowed") {
+    // Check cached violations and folder structure — zero API calls
+    (async () => {
+      try {
+        const docId = msg.docId;
+        const issues = [];
+        const data = await chrome.storage.local.get(["violations", "docScanResults"]);
+
+        // Check cached violations
+        const docViolations = (data.violations || {})[docId];
+        if (Array.isArray(docViolations) && docViolations.length > 0) {
+          issues.push(...docViolations.map(v => `Violation: ${v}`));
+        }
+
+        // Check folder structure from cached scan
+        const scan = (data.docScanResults || {})[docId];
+        if (scan) {
+          const folders = Object.keys(scan.folders || {});
+          const rootTabs = scan.root_tabs || [];
+          if (folders.length === 0) {
+            issues.push("No folder structure — tabs are not organized");
+          }
+          if (rootTabs.length > 0) {
+            issues.push(`${rootTabs.length} tab(s) outside folders`);
+          }
+          const illegalFolders = folders.filter(f => !["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"].includes(f));
+          if (illegalFolders.length > 0) {
+            issues.push(`Non-standard folder(s): ${illegalFolders.join(", ")}`);
+          }
+        }
+
+        sendResponse({ blocked: issues.length > 0, issues });
+      } catch (e) {
+        console.log(`[ExportCheck] Error: ${e.message}`);
+        sendResponse({ blocked: false, issues: [], error: e.message });
+      }
+    })();
+    return true;
 
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
