@@ -7,8 +7,10 @@
 
   const CLICK_DELAY = 500;   // ms after clicking a folder before reading children
   const ROOT_DELAY  = 500;   // ms after clicking "All tabs" breadcrumb
+  const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
   let _scanning = false;     // lock to prevent concurrent scans
   let _folderCreationInProgress = false; // suppress scans during folder creation
+  let _unpackInProgress = false; // suppress scans during folder unpacking
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -158,6 +160,10 @@
       console.log("[Scanner] autoScan skipped: folder creation in progress");
       return;
     }
+    if (_unpackInProgress) {
+      console.log("[Scanner] autoScan skipped: folder unpack in progress");
+      return;
+    }
     const docId = getDocIdFromUrl();
     if (!docId) { console.log("[Scanner] autoScan: no docId"); return; }
     console.log("[Scanner] autoScan starting for", docId);
@@ -204,12 +210,22 @@
       return;
     }
 
-    const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
     const folderData = result.folders || {};
     const folders = Object.keys(folderData);
     const rootTabs = result.root_tabs || [];
+
+    // Auto-unpack illegal folders (names not in ALLOWED_FOLDERS)
+    const illegalFolders = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
+    if (illegalFolders.length > 0 && !_unpackInProgress) {
+      console.log("[Unpack] Found illegal folders:", illegalFolders);
+      _unpackInProgress = true;
+      showProgressToast("Unpacking illegal folders...");
+      chrome.runtime.sendMessage({ type: "unpack-illegal-folders", folders: illegalFolders });
+      return; // sort + re-scan will happen after unpack completes
+    }
+
     const illegal = [
-      ...folders.filter(f => !ALLOWED_FOLDERS.includes(f)),
+      ...illegalFolders,
       ...rootTabs,
     ];
     const multiAssembly = Object.entries(folderData).some(
@@ -502,6 +518,20 @@
           sendResponse({ ok: true });
         })();
         return true;
+      }
+
+    } else if (msg.type === "unpack-progress") {
+      showProgressToast(`Unpacking folder: "${msg.name}"...`);
+
+    } else if (msg.type === "unpack-done") {
+      _unpackInProgress = false;
+      if (msg.error) {
+        const toast = showProgressToast(`Unpack error: ${msg.error}`);
+        toast.style.background = "#dc2626";
+        setTimeout(removeProgressToast, 5000);
+      } else {
+        showProgressToast(`Unpacked ${msg.count} folder(s), sorting...`);
+        // sort-tabs + re-scan happen automatically from background.js
       }
 
     } else if (msg.type === "tab-sort-progress") {

@@ -1793,6 +1793,163 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
 }
 
 // ---------------------------------------------------------------------------
+// Unpack Illegal Folders — CDP right-click > Unpack on non-standard folders
+// ---------------------------------------------------------------------------
+
+let _unpackInProgress = false;
+
+async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
+  if (_unpackInProgress) {
+    console.log("[Unpack] Already in progress, skipping");
+    return;
+  }
+  _unpackInProgress = true;
+
+  // Wait for sort to finish if in progress
+  for (let i = 0; i < 60 && _sortingInProgress; i++) {
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  showCdpOverlay(senderTabId);
+  let needsDetach = false;
+  let unpacked = 0;
+
+  function sendProgress(name) {
+    chrome.tabs.sendMessage(senderTabId, { type: "unpack-progress", name }).catch(() => {});
+  }
+  function sendDone(count, error) {
+    chrome.tabs.sendMessage(senderTabId, { type: "unpack-done", count, error }).catch(() => {});
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      chrome.debugger.attach({ tabId }, "1.3", () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
+      });
+    });
+    needsDetach = true;
+
+    // Wait for debugger banner to settle
+    await new Promise(r => setTimeout(r, 500));
+
+    for (const folderName of folderNames) {
+      sendProgress(folderName);
+      console.log(`[Unpack] Unpacking folder: "${folderName}"`);
+
+      // Step 1: Find the folder element and get its bounding rect center
+      const folderPos = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-bar-tab-group');
+          for (const tab of tabs) {
+            const nameEl = tab.querySelector('.os-tab-name');
+            if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(folderName)}) {
+              const r = tab.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+          }
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+
+      const pos = folderPos.result?.value;
+      if (!pos) {
+        console.log(`[Unpack] Folder "${folderName}" not found in DOM, skipping`);
+        continue;
+      }
+
+      // Step 2: Right-click the folder to open context menu
+      await cdpRightClick(tabId, pos.x, pos.y);
+      await new Promise(r => setTimeout(r, 800));
+
+      // Step 3: Find "Unpack" menu item in the context menu
+      const unpackItem = await waitForElement(tabId, `(() => {
+        // Check multiple possible context menu selectors
+        const menuItems = document.querySelectorAll('[role="menuitem"], .os-context-menu-item, .dropdown-item, .context-menu-item, [class*="menu-item"]');
+        for (const item of menuItems) {
+          if (item.offsetHeight === 0) continue;
+          const text = item.textContent.trim().toLowerCase();
+          if (text === 'unpack' || text === 'ungroup' || text === 'unpack folder') {
+            const r = item.getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: item.textContent.trim() };
+          }
+        }
+        // Fallback: look at all visible menu-like items
+        const allVisible = document.querySelectorAll('[role="menu"] *, .dropdown-menu *, .os-context-menu *');
+        for (const item of allVisible) {
+          if (item.offsetHeight === 0 || item.children.length > 3) continue;
+          const text = item.textContent.trim().toLowerCase();
+          if (text === 'unpack' || text === 'ungroup') {
+            const r = item.getBoundingClientRect();
+            if (r.width > 20 && r.height > 10) {
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: item.textContent.trim() };
+            }
+          }
+        }
+        return null;
+      })()`, 3000);
+
+      if (!unpackItem) {
+        // Log all visible menu items for debugging
+        const menuDump = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const items = [];
+            const candidates = document.querySelectorAll('[role="menuitem"], .os-context-menu-item, .dropdown-item, [role="menu"] *');
+            for (const el of candidates) {
+              if (el.offsetHeight === 0) continue;
+              const text = el.textContent.trim();
+              if (text.length > 0 && text.length < 50) items.push(text);
+            }
+            return items.slice(0, 20);
+          })()`,
+          returnByValue: true,
+        });
+        console.log(`[Unpack] "Unpack" menu item not found for "${folderName}". Visible menu items:`, menuDump.result?.value);
+        // Dismiss the context menu
+        await cdpPressKey(tabId, "Escape", 27);
+        await new Promise(r => setTimeout(r, 300));
+        continue;
+      }
+
+      console.log(`[Unpack] Found "${unpackItem.text}" at (${unpackItem.x}, ${unpackItem.y})`);
+
+      // Step 4: Click the Unpack menu item
+      await cdpClick(tabId, unpackItem.x, unpackItem.y);
+      await new Promise(r => setTimeout(r, 500));
+
+      unpacked++;
+      console.log(`[Unpack] "${folderName}" unpacked successfully`);
+    }
+
+    console.log(`[Unpack] Done: ${unpacked}/${folderNames.length} folders unpacked`);
+    sendDone(unpacked, null);
+
+    // Detach debugger before chaining to sort
+    chrome.debugger.detach({ tabId }, () => {});
+    needsDetach = false;
+    hideCdpOverlay(senderTabId);
+
+    // Chain: sort stray tabs into correct folders after unpack
+    if (unpacked > 0) {
+      await new Promise(r => setTimeout(r, 500)); // Let DOM settle
+      sortStrayTabs(tabId, senderTabId);
+    }
+
+  } catch (e) {
+    console.error("[Unpack] Error:", e.message);
+    try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
+    sendDone(unpacked, e.message);
+  } finally {
+    _unpackInProgress = false;
+    if (needsDetach) {
+      hideCdpOverlay(senderTabId);
+      chrome.debugger.detach({ tabId }, () => {});
+    }
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Tab Sorter — persistent, moves stray root-level tabs into matching folders
 // Runs independently of folder creation: after every scan, or on demand.
 // ---------------------------------------------------------------------------
@@ -2652,6 +2809,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sortStrayTabs(tabId, tabId).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
     return true;
 
+  } else if (msg.type === "unpack-illegal-folders") {
+    const tabId = sender.tab?.id;
+    if (!tabId) { sendResponse({ error: "No tab" }); return; }
+    unpackIllegalFolders(tabId, tabId, msg.folders || []);
+    sendResponse({ ok: true });
+    return;
+
   } else if (msg.type === "check-interference") {
     // Interference detection via CDP — triggered from popup or content.js
     const { docId, wid } = msg;
@@ -3016,7 +3180,7 @@ const _loadedVersion = chrome.runtime.getManifest().version;
 console.log(`[AutoUpdate] Extension loaded, version: ${_loadedVersion}`);
 
 function isExtensionBusy() {
-  return _drawingInProgress || _sortingInProgress || _interferenceInProgress;
+  return _drawingInProgress || _sortingInProgress || _interferenceInProgress || _unpackInProgress;
 }
 
 let _updatePending = false; // true when update detected but waiting for busy ops to finish
