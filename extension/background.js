@@ -1864,27 +1864,16 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
       await new Promise(r => setTimeout(r, 800));
 
       // Step 3: Find "Unpack" menu item in the context menu
+      // DOM structure (from observer): ul.context-menu-list.context-menu-root
+      //   > li.context-menu-item > span.context-menu-item-span (text: "Unpack")
       const unpackItem = await waitForElement(tabId, `(() => {
-        // Check multiple possible context menu selectors
-        const menuItems = document.querySelectorAll('[role="menuitem"], .os-context-menu-item, .dropdown-item, .context-menu-item, [class*="menu-item"]');
+        const menuItems = document.querySelectorAll('ul.context-menu-root li.context-menu-item');
         for (const item of menuItems) {
           if (item.offsetHeight === 0) continue;
-          const text = item.textContent.trim().toLowerCase();
-          if (text === 'unpack' || text === 'ungroup' || text === 'unpack folder') {
+          const span = item.querySelector('span.context-menu-item-span');
+          if (span && span.textContent.trim() === 'Unpack') {
             const r = item.getBoundingClientRect();
-            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: item.textContent.trim() };
-          }
-        }
-        // Fallback: look at all visible menu-like items
-        const allVisible = document.querySelectorAll('[role="menu"] *, .dropdown-menu *, .os-context-menu *');
-        for (const item of allVisible) {
-          if (item.offsetHeight === 0 || item.children.length > 3) continue;
-          const text = item.textContent.trim().toLowerCase();
-          if (text === 'unpack' || text === 'ungroup') {
-            const r = item.getBoundingClientRect();
-            if (r.width > 20 && r.height > 10) {
-              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: item.textContent.trim() };
-            }
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: span.textContent.trim() };
           }
         }
         return null;
@@ -1895,13 +1884,12 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
         const menuDump = await cdpSend(tabId, "Runtime.evaluate", {
           expression: `(() => {
             const items = [];
-            const candidates = document.querySelectorAll('[role="menuitem"], .os-context-menu-item, .dropdown-item, [role="menu"] *');
+            const candidates = document.querySelectorAll('ul.context-menu-root li.context-menu-item span.context-menu-item-span');
             for (const el of candidates) {
               if (el.offsetHeight === 0) continue;
-              const text = el.textContent.trim();
-              if (text.length > 0 && text.length < 50) items.push(text);
+              items.push(el.textContent.trim());
             }
-            return items.slice(0, 20);
+            return items;
           })()`,
           returnByValue: true,
         });
