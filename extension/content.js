@@ -878,18 +878,19 @@
       return;
     }
 
-    // Check version count — only show for new docs (<=1 version)
-    const vcData = await chrome.storage.local.get("versionCounts");
-    const versionCount = (vcData.versionCounts || {})[docId];
-    if (versionCount !== undefined && versionCount > 1) {
-      console.log("[MergeOwner] Not a new doc, skipping");
+    // Check if user has skipped this doc
+    const skipData = await chrome.storage.local.get("mergeOwnerSkipped");
+    const skipped = skipData.mergeOwnerSkipped || [];
+    if (skipped.includes(docId)) {
+      console.log("[MergeOwner] Skipped by user for", docId);
       return;
     }
 
-    // Get current user and team members in parallel
-    const [userResp, teamResp] = await Promise.all([
+    // Get current user, team members, and doc creator in parallel
+    const [userResp, teamResp, creatorResp] = await Promise.all([
       new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
       new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
+      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, resolve)),
     ]);
 
     if (!userResp || userResp.error) {
@@ -903,11 +904,12 @@
       return;
     }
 
+    const creator = (creatorResp && !creatorResp.error) ? creatorResp : userResp;
     const docName = getDocName();
-    showMergeOwnerOverlay(docId, docName, userResp, members);
+    showMergeOwnerOverlay(docId, docName, userResp, members, creator);
   }
 
-  function showMergeOwnerOverlay(docId, docName, currentUser, members) {
+  function showMergeOwnerOverlay(docId, docName, currentUser, members, creator) {
     // Remove any existing overlay
     const existing = document.getElementById("oxt-merge-owner-overlay");
     if (existing) existing.remove();
@@ -948,13 +950,15 @@
     creatorCb.style.cssText = "width: 16px; height: 16px; accent-color: #95d5b2;";
     creatorRow.appendChild(creatorCb);
     const creatorLabel = document.createElement("span");
-    creatorLabel.textContent = `${currentUser.name} (you)`;
+    const isCreator = creator.id === currentUser.id;
+    creatorLabel.textContent = `${creator.name}${isCreator ? " (you)" : " (creator)"}`;
     creatorLabel.style.cssText = "font-size: 14px; color: #95d5b2;";
     creatorRow.appendChild(creatorLabel);
     card.appendChild(creatorRow);
 
     // Other team members (radio — exactly 1 must be selected)
-    const otherMembers = members.filter(m => m.email !== currentUser.email);
+    // Exclude the creator (who is the locked first owner)
+    const otherMembers = members.filter(m => m.id !== creator.id);
     const radios = [];
     for (const member of otherMembers) {
       const row = document.createElement("label");
@@ -1000,7 +1004,7 @@
         return;
       }
       const owners = [
-        { email: currentUser.email, name: currentUser.name, id: currentUser.id },
+        { email: creator.email, name: creator.name, id: creator.id },
         { email: selected.dataset.email, name: selected.dataset.name, id: selected.dataset.userId },
       ];
       chrome.runtime.sendMessage({
@@ -1015,6 +1019,24 @@
       });
     });
 
+    const skipBtn = document.createElement("button");
+    skipBtn.textContent = "Skip";
+    skipBtn.style.cssText = `
+      padding: 8px 18px; border: none; border-radius: 4px;
+      background: #333; color: #aaa; font-size: 14px; cursor: pointer;
+      font-weight: 500;
+    `;
+    skipBtn.addEventListener("click", async () => {
+      const data = await chrome.storage.local.get("mergeOwnerSkipped");
+      const skipped = data.mergeOwnerSkipped || [];
+      if (!skipped.includes(docId)) skipped.push(docId);
+      await chrome.storage.local.set({ mergeOwnerSkipped: skipped });
+      overlay.remove();
+      showProgressToast("Skipped");
+      setTimeout(removeProgressToast, 2000);
+    });
+
+    btnRow.appendChild(skipBtn);
     btnRow.appendChild(saveBtn);
     card.appendChild(btnRow);
     overlay.appendChild(card);

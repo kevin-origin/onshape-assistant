@@ -80,6 +80,53 @@ document.getElementById("btnRunInterference").addEventListener("click", () => {
   });
 });
 
+// Violations — scan button
+document.getElementById("btnScanViolations").addEventListener("click", () => {
+  const btn = document.getElementById("btnScanViolations");
+  btn.disabled = true;
+  btn.textContent = "Scanning...";
+
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) { btn.disabled = false; btn.textContent = "Scan"; return; }
+    const url = tabs[0].url || "";
+    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
+    const widMatch = url.match(/\/w\/([a-f0-9]+)/);
+    if (!docMatch) {
+      btn.disabled = false;
+      btn.textContent = "Scan";
+      return;
+    }
+    const docId = docMatch[1];
+    const wid = widMatch ? widMatch[1] : null;
+    const docName = (tabs[0].title || "").split(" | ")[0].trim() || docId;
+
+    chrome.runtime.sendMessage({
+      type: "check-versions",
+      docId,
+      docName,
+      wid,
+    });
+
+    // Listen for violations-updated broadcast from background.js
+    const listener = (msg) => {
+      if (msg.type === "violations-updated") {
+        chrome.runtime.onMessage.removeListener(listener);
+        btn.disabled = false;
+        btn.textContent = "Scan";
+        loadViolations();
+      }
+    };
+    chrome.runtime.onMessage.addListener(listener);
+
+    // Timeout fallback — re-enable button after 30s
+    setTimeout(() => {
+      chrome.runtime.onMessage.removeListener(listener);
+      btn.disabled = false;
+      btn.textContent = "Scan";
+    }, 30000);
+  });
+});
+
 function loadInterferenceResults() {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (tabs.length === 0) return;
@@ -182,11 +229,18 @@ function validateFolders(result) {
   }
 
   // Check assembly counts per folder (>1 not allowed)
+  let folderAssemblyFlagged = false;
   for (const [name, data] of Object.entries(folderData)) {
     const count = (typeof data === "object" && data.assemblies) || 0;
     if (count > 1) {
       details.push({ text: `${count} assemblies detected, please use only 1 assembly with multiple configurations instead.`, color: "#ff6b6b" });
+      folderAssemblyFlagged = true;
     }
+  }
+
+  // Fallback: check totalAssemblies (catches assemblies at root level or non-standard folders)
+  if (!folderAssemblyFlagged && result.totalAssemblies > 1) {
+    details.push({ text: `${result.totalAssemblies} assemblies detected (including root level), please use only 1 assembly with multiple configurations instead.`, color: "#ff6b6b" });
   }
 
   if (folders.length === 0) {

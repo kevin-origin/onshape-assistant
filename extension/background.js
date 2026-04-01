@@ -58,6 +58,7 @@ async function getSessionUser() {
 // ---------------------------------------------------------------------------
 
 let _teamMembers = null; // [{ email, name, id }]
+let _docCreatorCache = {}; // { docId: { id, name, email } }
 
 async function getTeamMembers() {
   if (_teamMembers) return _teamMembers;
@@ -510,6 +511,9 @@ async function storeDocScanResult(result) {
 
       // Store assembly element IDs for interference checker (0 extra API calls)
       result.assemblyElements = assemblies.map(a => ({ id: a.id, name: a.name }));
+
+      // Always store total assembly count at top level (catches root-level assemblies)
+      result.totalAssemblies = assemblies.length;
 
       if (result.folders && result.folders["Assemblies"]) {
         result.folders["Assemblies"].assemblies = assemblies.length;
@@ -2874,6 +2878,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const perms = stored.mergePermissions || {};
       const local = perms[msg.docId];
       sendResponse(local ? { exists: true, data: local } : { exists: false });
+    })();
+    return true;
+
+  } else if (msg.type === "get-doc-creator") {
+    (async () => {
+      const docId = msg.docId;
+      if (_docCreatorCache[docId]) {
+        sendResponse(_docCreatorCache[docId]);
+        return;
+      }
+      try {
+        const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
+        const owner = doc.owner || {};
+        const creator = { id: owner.id || "", name: owner.name || "Unknown", email: owner.email || "" };
+        // If email missing from owner, try to find in team members
+        if (!creator.email) {
+          const members = await getTeamMembers();
+          const match = members.find(m => m.id === creator.id);
+          if (match) creator.email = match.email;
+        }
+        _docCreatorCache[docId] = creator;
+        sendResponse(creator);
+      } catch (e) {
+        console.error("[DocCreator] Failed:", e.message);
+        sendResponse({ error: e.message });
+      }
     })();
     return true;
   }
