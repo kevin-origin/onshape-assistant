@@ -2779,10 +2779,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const issues = [];
         const data = await chrome.storage.local.get(["violations", "docScanResults"]);
 
-        // Check cached violations
+        // Check cached violations (stored as { items: [...], docName, timestamp })
         const docViolations = (data.violations || {})[docId];
-        if (Array.isArray(docViolations) && docViolations.length > 0) {
-          issues.push(...docViolations.map(v => `Violation: ${v}`));
+        if (docViolations && Array.isArray(docViolations.items) && docViolations.items.length > 0) {
+          issues.push(...docViolations.items.map(v => `Violation: ${v}`));
         }
 
         // Check folder structure from cached scan
@@ -2799,6 +2799,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           const illegalFolders = folders.filter(f => !["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"].includes(f));
           if (illegalFolders.length > 0) {
             issues.push(`Non-standard folder(s): ${illegalFolders.join(", ")}`);
+          }
+          // Check for multiple assemblies (totalAssemblies or folder count)
+          const asmCount = scan.totalAssemblies || (scan.folders?.["Assemblies"]?.assemblies ?? 0);
+          if (asmCount > 1) {
+            issues.push(`${asmCount} assemblies detected (limit: 1 per document)`);
           }
         }
 
