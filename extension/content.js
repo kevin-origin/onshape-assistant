@@ -176,6 +176,8 @@
       console.log("[Scanner] Folders detected, sorting tabs first");
       chrome.runtime.sendMessage({ type: "sort-tabs" });
       // The single scan happens in the "tab-sort-done" handler.
+      // Check merge owners independently (folder creation overlay won't trigger it)
+      maybeShowMergeOwnerPopup(docId);
     } else {
       // No folders — scan now, also check if we should offer folder creation
       const result = await scanTabFolders();
@@ -184,6 +186,8 @@
       // Store scan data for popup, but skip Chrome notification if overlay is showing
       // (the overlay IS the notification — user is already being prompted)
       sendScanResult(result, overlayShown);
+      // If folder overlay wasn't shown, check merge owners directly
+      if (!overlayShown) maybeShowMergeOwnerPopup(docId);
     }
 
   }
