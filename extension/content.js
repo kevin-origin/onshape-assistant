@@ -531,6 +531,7 @@
         setTimeout(removeProgressToast, 5000);
       } else {
         showProgressToast(`Unpacked ${msg.count} folder(s), sorting...`);
+        setTimeout(removeProgressToast, 3000);
         // sort-tabs + re-scan happen automatically from background.js
       }
 
