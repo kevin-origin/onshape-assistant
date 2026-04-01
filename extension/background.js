@@ -1920,15 +1920,10 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
     console.log(`[Unpack] Done: ${unpacked}/${folderNames.length} folders unpacked`);
     sendDone(unpacked, null);
 
-    // Detach debugger before chaining to sort
-    chrome.debugger.detach({ tabId }, () => {});
-    needsDetach = false;
-    hideCdpOverlay(senderTabId);
-
-    // Chain: sort stray tabs into correct folders after unpack
+    // Chain: sort stray tabs using the same CDP session (no extra attach/detach)
     if (unpacked > 0) {
       await new Promise(r => setTimeout(r, 500)); // Let DOM settle
-      sortStrayTabs(tabId, senderTabId);
+      await sortStrayTabs(tabId, senderTabId, true);
     }
 
   } catch (e) {
@@ -1960,7 +1955,7 @@ const TAB_ICON_FOLDER_MAP = {
 
 let _sortingInProgress = false;
 
-async function sortStrayTabs(tabId, senderTabId) {
+async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
   if (_sortingInProgress) {
     console.log("[TabSort] Already sorting, skipping");
     return { sorted: 0, skipped: 0, reason: "already-sorting" };
@@ -1974,7 +1969,7 @@ async function sortStrayTabs(tabId, senderTabId) {
     chrome.tabs.sendMessage(senderTabId, { type: "tab-sort-done", sorted, skipped }).catch(() => {});
   }
 
-  showCdpOverlay(senderTabId);
+  if (!alreadyAttached) showCdpOverlay(senderTabId);
   let needsDetach = false;
   let sorted = 0;
   let skipped = 0;
@@ -2031,13 +2026,18 @@ async function sortStrayTabs(tabId, senderTabId) {
     console.log(`[TabSort] ${movable.length} movable stray tab(s):`, movable.map(s => `${s.name} -> ${TAB_ICON_FOLDER_MAP[s.iconSrc]}`));
 
     // Attach debugger only when we actually have tabs to move
-    await new Promise((resolve, reject) => {
-      chrome.debugger.attach({ tabId }, "1.3", () => {
-        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-        else resolve();
+    if (alreadyAttached) {
+      // Caller already attached — don't attach or detach here
+      needsDetach = false;
+    } else {
+      await new Promise((resolve, reject) => {
+        chrome.debugger.attach({ tabId }, "1.3", () => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve();
+        });
       });
-    });
-    needsDetach = true;
+      needsDetach = true;
+    }
 
     for (const stray of movable) {
       const targetFolder = TAB_ICON_FOLDER_MAP[stray.iconSrc];
@@ -2202,7 +2202,7 @@ async function sortStrayTabs(tabId, senderTabId) {
     return { sorted, skipped, error: e.message };
   } finally {
     _sortingInProgress = false;
-    hideCdpOverlay(senderTabId);
+    if (!alreadyAttached) hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
   }
 }
