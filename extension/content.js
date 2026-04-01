@@ -489,6 +489,27 @@
         showProgressToast(`Creating folder ${msg.index}/${msg.total}: ${msg.name}...`);
       }
 
+    } else if (msg.type === "show-merge-owner-popup") {
+      const docId = getDocIdFromUrl();
+      if (docId) {
+        // Force-show: bypass skip/exists checks
+        (async () => {
+          const [userResp, teamResp, creatorResp] = await Promise.all([
+            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
+            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
+            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, resolve)),
+          ]);
+          if (!userResp || userResp.error) { sendResponse({ error: "No session user" }); return; }
+          const members = teamResp?.members || [];
+          if (members.length === 0) { sendResponse({ error: "No team members" }); return; }
+          const creator = (creatorResp && !creatorResp.error) ? creatorResp : userResp;
+          const docName = getDocName();
+          showMergeOwnerOverlay(docId, docName, userResp, members, creator);
+          sendResponse({ ok: true });
+        })();
+        return true;
+      }
+
     } else if (msg.type === "tab-sort-progress") {
       showProgressToast(`Sorting: moving "${msg.name}"...`);
 
@@ -871,12 +892,14 @@
   // ---------------------------------------------------------------------------
 
   async function maybeShowMergeOwnerPopup(docId) {
-    if (!docId) return;
+    if (!docId) { console.log("[MergeOwner] No docId"); return; }
+    console.log("[MergeOwner] Checking", docId);
 
     // Check if merge owners already set for this doc (via backend + local fallback)
     const permsResp = await new Promise(resolve =>
       chrome.runtime.sendMessage({ type: "get-merge-perms", docId }, resolve)
     );
+    console.log("[MergeOwner] permsResp:", JSON.stringify(permsResp));
     if (permsResp && permsResp.exists) {
       console.log("[MergeOwner] Already set for", docId);
       return;
@@ -890,6 +913,7 @@
       return;
     }
 
+    console.log("[MergeOwner] Fetching user, team, creator...");
     // Get current user, team members, and doc creator in parallel
     const [userResp, teamResp, creatorResp] = await Promise.all([
       new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
@@ -898,7 +922,7 @@
     ]);
 
     if (!userResp || userResp.error) {
-      console.log("[MergeOwner] Could not get session user");
+      console.log("[MergeOwner] Could not get session user:", JSON.stringify(userResp));
       return;
     }
 
@@ -909,6 +933,7 @@
     }
 
     const creator = (creatorResp && !creatorResp.error) ? creatorResp : userResp;
+    console.log("[MergeOwner] Showing overlay. Creator:", creator.name, "Members:", members.length);
     const docName = getDocName();
     showMergeOwnerOverlay(docId, docName, userResp, members, creator);
   }

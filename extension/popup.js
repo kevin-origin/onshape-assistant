@@ -32,6 +32,22 @@ document.getElementById("btnGoMergePerms").addEventListener("click", () => {
 });
 document.getElementById("btnBackFromMergePerms").addEventListener("click", () => showSection("sectionMenu"));
 
+// Set merge permissions for current doc — triggers overlay in content script
+document.getElementById("btnSetMergePerms").addEventListener("click", () => {
+  const btn = document.getElementById("btnSetMergePerms");
+  btn.disabled = true;
+  btn.textContent = "Opening...";
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) { btn.disabled = false; btn.textContent = "Set for This Doc"; return; }
+    chrome.tabs.sendMessage(tabs[0].id, { type: "show-merge-owner-popup" }, () => {
+      btn.disabled = false;
+      btn.textContent = "Set for This Doc";
+      // Close popup so user sees the overlay
+      window.close();
+    });
+  });
+});
+
 // Interference Check — run button
 document.getElementById("btnRunInterference").addEventListener("click", () => {
   const btn = document.getElementById("btnRunInterference");

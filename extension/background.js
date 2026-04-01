@@ -2864,7 +2864,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Centralized merge-perms reader: try backend first, fall back to local
     (async () => {
       const remote = await syncFetch(`/api/merge-permissions/${msg.docId}`);
-      if (remote && remote.owners) {
+      if (remote && Array.isArray(remote.owners) && remote.owners.length > 0) {
         // Cache locally
         const stored = await chrome.storage.local.get("mergePermissions");
         const perms = stored.mergePermissions || {};
@@ -2877,7 +2877,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const stored = await chrome.storage.local.get("mergePermissions");
       const perms = stored.mergePermissions || {};
       const local = perms[msg.docId];
-      sendResponse(local ? { exists: true, data: local } : { exists: false });
+      const hasOwners = local && Array.isArray(local.owners) && local.owners.length > 0;
+      sendResponse(hasOwners ? { exists: true, data: local } : { exists: false });
     })();
     return true;
 
