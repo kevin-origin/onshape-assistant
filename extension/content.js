@@ -176,8 +176,6 @@
       console.log("[Scanner] Folders detected, sorting tabs first");
       chrome.runtime.sendMessage({ type: "sort-tabs" });
       // The single scan happens in the "tab-sort-done" handler.
-      // Check merge owners independently (folder creation overlay won't trigger it)
-      maybeShowMergeOwnerPopup(docId);
     } else {
       // No folders — scan now, also check if we should offer folder creation
       const result = await scanTabFolders();
@@ -186,8 +184,6 @@
       // Store scan data for popup, but skip Chrome notification if overlay is showing
       // (the overlay IS the notification — user is already being prompted)
       sendScanResult(result, overlayShown);
-      // If folder overlay wasn't shown, check merge owners directly
-      if (!overlayShown) maybeShowMergeOwnerPopup(docId);
     }
 
   }
@@ -368,8 +364,6 @@
       if (!offered.includes(docId)) offered.push(docId);
       await chrome.storage.local.set({ folderCreationOffered: offered });
       overlay.remove();
-      // Show merge owner popup after folder setup is skipped
-      maybeShowMergeOwnerPopup(docId);
     });
 
     const createBtn = document.createElement("button");
@@ -558,8 +552,6 @@
             if (!offered.includes(docId)) offered.push(docId);
             chrome.storage.local.set({ folderCreationOffered: offered });
           });
-          // Show merge owner popup after folders created
-          setTimeout(() => maybeShowMergeOwnerPopup(docId), 3500);
         }
         setTimeout(removeProgressToast, 3000);
       } else {
@@ -888,55 +880,8 @@
   mergeObserver.observe(document.body, { childList: true, subtree: true });
 
   // ---------------------------------------------------------------------------
-  // Merge owner selection popup — shown on new document creation
+  // Merge owner selection overlay — triggered via popup "Set for This Doc" button
   // ---------------------------------------------------------------------------
-
-  async function maybeShowMergeOwnerPopup(docId) {
-    if (!docId) { console.log("[MergeOwner] No docId"); return; }
-    console.log("[MergeOwner] Checking", docId);
-
-    // Check if merge owners already set for this doc (via backend + local fallback)
-    const permsResp = await new Promise(resolve =>
-      chrome.runtime.sendMessage({ type: "get-merge-perms", docId }, resolve)
-    );
-    console.log("[MergeOwner] permsResp:", JSON.stringify(permsResp));
-    if (permsResp && permsResp.exists) {
-      console.log("[MergeOwner] Already set for", docId);
-      return;
-    }
-
-    // Check if user has skipped this doc
-    const skipData = await chrome.storage.local.get("mergeOwnerSkipped");
-    const skipped = skipData.mergeOwnerSkipped || [];
-    if (skipped.includes(docId)) {
-      console.log("[MergeOwner] Skipped by user for", docId);
-      return;
-    }
-
-    console.log("[MergeOwner] Fetching user, team, creator...");
-    // Get current user, team members, and doc creator in parallel
-    const [userResp, teamResp, creatorResp] = await Promise.all([
-      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
-      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
-      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, resolve)),
-    ]);
-
-    if (!userResp || userResp.error) {
-      console.log("[MergeOwner] Could not get session user:", JSON.stringify(userResp));
-      return;
-    }
-
-    const members = teamResp?.members || [];
-    if (members.length === 0) {
-      console.log("[MergeOwner] No team members found");
-      return;
-    }
-
-    const creator = (creatorResp && !creatorResp.error) ? creatorResp : userResp;
-    console.log("[MergeOwner] Showing overlay. Creator:", creator.name, "Members:", members.length);
-    const docName = getDocName();
-    showMergeOwnerOverlay(docId, docName, userResp, members, creator);
-  }
 
   function showMergeOwnerOverlay(docId, docName, currentUser, members, creator) {
     // Remove any existing overlay
@@ -1048,24 +993,16 @@
       });
     });
 
-    const skipBtn = document.createElement("button");
-    skipBtn.textContent = "Skip";
-    skipBtn.style.cssText = `
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.cssText = `
       padding: 8px 18px; border: none; border-radius: 4px;
       background: #333; color: #aaa; font-size: 14px; cursor: pointer;
       font-weight: 500;
     `;
-    skipBtn.addEventListener("click", async () => {
-      const data = await chrome.storage.local.get("mergeOwnerSkipped");
-      const skipped = data.mergeOwnerSkipped || [];
-      if (!skipped.includes(docId)) skipped.push(docId);
-      await chrome.storage.local.set({ mergeOwnerSkipped: skipped });
-      overlay.remove();
-      showProgressToast("Skipped");
-      setTimeout(removeProgressToast, 2000);
-    });
+    cancelBtn.addEventListener("click", () => overlay.remove());
 
-    btnRow.appendChild(skipBtn);
+    btnRow.appendChild(cancelBtn);
     btnRow.appendChild(saveBtn);
     card.appendChild(btnRow);
     overlay.appendChild(card);
