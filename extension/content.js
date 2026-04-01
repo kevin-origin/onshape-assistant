@@ -458,17 +458,9 @@
   // CDP automation overlay — shown while debugger is attached
   // ---------------------------------------------------------------------------
 
-  // Block ALL user input while CDP overlay is up — keyboard, scroll, wheel, mouse
-  const _cdpBlockedEvents = [
-    "keydown", "keyup", "keypress",
-    "wheel", "scroll",
-    "mousedown", "mouseup", "mousemove", "click", "dblclick", "contextmenu",
-    "touchstart", "touchmove", "touchend",
-    "pointerdown", "pointerup", "pointermove",
-  ];
-  function _cdpBlockHandler(e) { e.stopPropagation(); e.preventDefault(); }
-  let _cdpListenersAttached = false;
-
+  // Visual-only overlay — actual input blocking is done via CDP
+  // Input.setIgnoreInputEvents in background.js (browser-level block).
+  // Content script listeners can't block main-world events (isolated world).
   function showCdpOverlay() {
     if (document.getElementById("oxt-cdp-overlay")) return;
     const overlay = document.createElement("div");
@@ -492,24 +484,11 @@
     `;
     overlay.appendChild(card);
     document.body.appendChild(overlay);
-    // Capture-phase listeners block input before it reaches Onshape
-    if (!_cdpListenersAttached) {
-      _cdpBlockedEvents.forEach(evt =>
-        document.addEventListener(evt, _cdpBlockHandler, { capture: true, passive: false })
-      );
-      _cdpListenersAttached = true;
-    }
   }
 
   function removeCdpOverlay() {
     const overlay = document.getElementById("oxt-cdp-overlay");
     if (overlay) overlay.remove();
-    if (_cdpListenersAttached) {
-      _cdpBlockedEvents.forEach(evt =>
-        document.removeEventListener(evt, _cdpBlockHandler, { capture: true })
-      );
-      _cdpListenersAttached = false;
-    }
   }
 
   // ---------------------------------------------------------------------------
