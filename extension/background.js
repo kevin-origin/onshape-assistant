@@ -57,23 +57,23 @@ async function getSessionUser() {
 // Kill switch — deactivate extension for specific user accounts
 // ---------------------------------------------------------------------------
 
-const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+// const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
 let _extensionDisabled = false;
 
-async function checkKillSwitch() {
-  const user = await getSessionUser();
-  if (user && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
-    _extensionDisabled = true;
-    chrome.action.setPopup({ popup: "" });
-    chrome.action.disable();
-    chrome.action.setBadgeText({ text: "OFF" });
-    chrome.action.setBadgeBackgroundColor({ color: "#888" });
-    console.log(`[KillSwitch] Extension disabled for ${user.email}`);
-  }
-}
+// async function checkKillSwitch() {
+//   const user = await getSessionUser();
+//   if (user && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
+//     _extensionDisabled = true;
+//     chrome.action.setPopup({ popup: "" });
+//     chrome.action.disable();
+//     chrome.action.setBadgeText({ text: "OFF" });
+//     chrome.action.setBadgeBackgroundColor({ color: "#888" });
+//     console.log(`[KillSwitch] Extension disabled for ${user.email}`);
+//   }
+// }
 
 // Run kill switch check immediately on service worker startup
-checkKillSwitch();
+// checkKillSwitch();
 
 // ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
@@ -2496,7 +2496,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
-  if (_extensionDisabled) return; // kill switch active — ignore all messages
+  // if (_extensionDisabled) return; // kill switch active — ignore all messages
 
   if (msg.type === "fetch-parts") {
     // Fetch parts list and return to popup for selection
