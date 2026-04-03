@@ -54,6 +54,28 @@ async function getSessionUser() {
 }
 
 // ---------------------------------------------------------------------------
+// Kill switch — deactivate extension for specific user accounts
+// ---------------------------------------------------------------------------
+
+const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+let _extensionDisabled = false;
+
+async function checkKillSwitch() {
+  const user = await getSessionUser();
+  if (user && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
+    _extensionDisabled = true;
+    chrome.action.setPopup({ popup: "" });
+    chrome.action.disable();
+    chrome.action.setBadgeText({ text: "OFF" });
+    chrome.action.setBadgeBackgroundColor({ color: "#888" });
+    console.log(`[KillSwitch] Extension disabled for ${user.email}`);
+  }
+}
+
+// Run kill switch check immediately on service worker startup
+checkKillSwitch();
+
+// ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
 // ---------------------------------------------------------------------------
 
@@ -785,11 +807,49 @@ async function addSheetViaIframe(tabId) {
 // CDP helpers — chrome.debugger wrappers for trusted input events
 // ---------------------------------------------------------------------------
 
-function showCdpOverlay(tabId) {
+// Freeze screen: inject overlay into the PAGE's main world via Runtime.evaluate.
+// Content script listeners can't block main-world events (isolated world), but
+// Runtime.evaluate runs in the main world so capture-phase listeners here DO
+// block Onshape's handlers. CDP synthetic events (Input.dispatch*) bypass the
+// DOM entirely, so automation is unaffected.
+async function showCdpOverlay(tabId) {
+  // Visual overlay via content script (informational banner)
   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-show" }).catch(() => {});
+  // Main-world input blocker via CDP — this is what actually freezes the page
+  try {
+    await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        if (document.getElementById("oxt-cdp-input-blocker")) return;
+        const blocker = document.createElement("div");
+        blocker.id = "oxt-cdp-input-blocker";
+        blocker.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;background:transparent;";
+        const events = ["click","dblclick","mousedown","mouseup","mousemove",
+          "keydown","keyup","keypress","wheel","scroll","contextmenu",
+          "touchstart","touchend","touchmove","pointerdown","pointerup","pointermove"];
+        events.forEach(evt => {
+          blocker.addEventListener(evt, e => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+          }, { capture: true });
+        });
+        document.documentElement.appendChild(blocker);
+      })()`,
+    });
+  } catch (_) {}
 }
 
-function hideCdpOverlay(tabId) {
+async function hideCdpOverlay(tabId) {
+  // Remove main-world input blocker
+  try {
+    await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const b = document.getElementById("oxt-cdp-input-blocker");
+        if (b) b.remove();
+      })()`,
+    });
+  } catch (_) {}
+  // Remove visual overlay
   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
 }
 
@@ -2436,6 +2496,8 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (_extensionDisabled) return; // kill switch active — ignore all messages
+
   if (msg.type === "fetch-parts") {
     // Fetch parts list and return to popup for selection
     (async () => {
