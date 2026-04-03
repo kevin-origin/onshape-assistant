@@ -54,6 +54,28 @@ async function getSessionUser() {
 }
 
 // ---------------------------------------------------------------------------
+// Kill switch — deactivate extension for specific user accounts
+// ---------------------------------------------------------------------------
+
+const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+let _extensionDisabled = false;
+
+async function checkKillSwitch() {
+  const user = await getSessionUser();
+  if (user && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
+    _extensionDisabled = true;
+    chrome.action.setPopup({ popup: "" });
+    chrome.action.disable();
+    chrome.action.setBadgeText({ text: "OFF" });
+    chrome.action.setBadgeBackgroundColor({ color: "#888" });
+    console.log(`[KillSwitch] Extension disabled for ${user.email}`);
+  }
+}
+
+// Run kill switch check immediately on service worker startup
+checkKillSwitch();
+
+// ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
 // ---------------------------------------------------------------------------
 
@@ -64,12 +86,15 @@ async function getTeamMembers() {
   if (_teamMembers) return _teamMembers;
   try {
     const data = await onshapeFetch(`/api/v10/companies/${COMPANY_ID}/users?limit=50`);
-    _teamMembers = (data.items || []).map(item => ({
-      email: item.user.email,
-      name: `${item.user.firstName || ""} ${item.user.lastName || ""}`.trim() || item.user.name,
-      id: item.user.id,
-    }));
-    console.log(`[Team] ${_teamMembers.length} member(s) loaded`);
+    _teamMembers = (data.items || [])
+      .map(item => ({
+        email: item.user.email,
+        name: `${item.user.firstName || ""} ${item.user.lastName || ""}`.trim() || item.user.name,
+        id: item.user.id,
+      }))
+      // Filter out company account — not a real person, should never be a merge owner
+      .filter(m => m.id !== COMPANY_ID);
+    console.log(`[Team] ${_teamMembers.length} member(s) loaded (company account excluded)`);
     return _teamMembers;
   } catch (e) {
     console.error("[Team] Failed to fetch team members:", e.message);
@@ -80,6 +105,9 @@ async function getTeamMembers() {
 // ---------------------------------------------------------------------------
 // Onshape API via session cookies (no API keys, zero quota cost)
 // ---------------------------------------------------------------------------
+// GET requests use the user's browser session cookies (credentials: "include").
+// POST requests additionally need the XSRF-TOKEN cookie sent as a header.
+// This avoids consuming API key quota entirely — all calls are "free".
 
 async function onshapeFetch(path) {
   const resp = await fetch(`${ONSHAPE_BASE}${path}`, {
@@ -134,6 +162,10 @@ function parsePartStudioUrl(url) {
   return { docId: m[1], wid: m[2], eid: m[3] };
 }
 
+// Pick the largest standard drawing scale that fits the part's bounding box.
+// Onshape API returns bounding box in meters — multiply by 1000 to get mm.
+// AVAILABLE = max mm a view can occupy on an A3 sheet after title block.
+// Walk standard scales from largest (2:1) to smallest (1:50); first that fits wins.
 function computeScale(bb) {
   const dx = (bb.highX - bb.lowX) * 1000;
   const dy = (bb.highY - bb.lowY) * 1000;
@@ -152,6 +184,10 @@ function computeScale(bb) {
   return [1, 50];
 }
 
+// Poll Onshape drawing modify status until DONE/FAILED/timeout.
+// Quirk: Onshape sometimes deletes the status endpoint after completion,
+// returning 404. Three consecutive 404s = treat as success (modification finished
+// and status was garbage-collected before we could read "DONE").
 async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
   const url = `/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modificationstatus/${mid}`;
   const deadline = Date.now() + timeoutSec * 1000;
@@ -307,6 +343,11 @@ async function createDrawingsForUrl(url, selectedParts) {
       const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
       const viewList = viewsResp.items || [];
       if (viewList.length > 0) {
+        // Identify view orientation from the 4x4 viewMatrix (column-major).
+        // Isometric: has non-integer values (rotation angles).
+        // Front: m[0]=1 (X right), m[6]=1 (Z up).
+        // Top: m[0]=1 (X right), m[5]=1 (Y up, looking down Z).
+        // Left: m[1]=+-1 (Y maps to X axis = rotated 90 deg around Z).
         function identifyView(v) {
           const m = v.viewMatrix || [];
           if (m.some(val => val !== 0 && val !== 1 && val !== -1)) return "Isometric";
@@ -496,8 +537,8 @@ async function storeDocScanResult(result) {
   console.log("[Scanner] storeDocScanResult called, wid=" + (result.wid || "none") +
     ", folders=" + Object.keys(result.folders || {}).join(","));
 
-  // Enrich with assembly count from API
-  // Onshape API doesn't expose tab group membership, so we count total
+  // Enrich scan with assembly count from the elements API (1 call per doc).
+  // Onshape API doesn't expose tab group (folder) membership, so we count total
   // assemblies and attribute them to the "Assemblies" folder if it exists
   if (result.wid) {
     try {
@@ -540,10 +581,17 @@ async function storeDocScanResult(result) {
 const PARTS_LIMIT = 25;
 const FEATURES_LIMIT = 250;
 const TABS_LIMIT = 40;
+const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip violation checks
 
 async function checkDocViolations(docId, docName, wid, tabId) {
   const violations = [];
   console.log(`[Violations] Checking ${docName} (${docId}), wid=${wid || "null"}`);
+
+  // Skip excluded docs (shared libraries — no versions/parts/features checks needed)
+  if (EXCLUDED_DOC_NAMES.includes(docName)) {
+    console.log(`[Violations] Skipped: "${docName}" is in EXCLUDED_DOC_NAMES`);
+    return;
+  }
 
   try {
     // Parallel fetch: versions always, elements if wid available
@@ -602,9 +650,12 @@ async function checkDocViolations(docId, docName, wid, tabId) {
         } catch (_) { /* skip */ }
       }
 
-      // Auto-create "Initial" version when: 0 versions + >= 50 features
-      // Order: version -> workspace protection on Main -> THEN branch
-      // (branch creation switches Onshape to the new workspace, so protection must run first)
+      // Auto-create "Initial" version when: <=1 versions + >= 50 features.
+      // Uses <= 1 (not === 0) because Onshape may auto-create a first version.
+      // ORDERING IS CRITICAL: version → workspace protection → branch.
+      // Branch creation switches the Onshape UI to the new workspace, so
+      // protection must be enabled on Main BEFORE the branch is created,
+      // otherwise the CDP automation would be targeting the wrong workspace.
       const versionCount = Array.isArray(versions) ? versions.length : -1;
       const hasInitialVersion = Array.isArray(versions) && versions.some(v => v.name === "Initial");
       console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=50, hasInitial=${hasInitialVersion}`);
@@ -753,222 +804,52 @@ async function addSheetViaIframe(tabId) {
 }
 
 // ---------------------------------------------------------------------------
-// Test helpers — disabled, kept for future debugging
-// ---------------------------------------------------------------------------
-
-/*
-// Test helper — explore drawing editor DOM to find flat pattern insertion UI
-// Run with: exploreFlatPatternUI()
-// Must have a drawing open in the active tab
-async function exploreFlatPatternUI() {
-  const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
-  if (!tabs.length) return console.log("No Onshape tab found");
-
-  const tabId = tabs[0].id;
-  console.log("[FlatExplore] Using tab:", tabId, tabs[0].url.slice(0, 80));
-
-  // Find drawing iframe
-  let drawingFrame = null;
-  const frames = await chrome.webNavigation.getAllFrames({ tabId });
-  drawingFrame = frames.find(f =>
-    f.url.includes("onshape.com/editor") || f.url.includes("onshape.com/drawing")
-  );
-  if (!drawingFrame) return console.log("No drawing iframe. Frames:", frames.map(f => f.url.slice(0, 120)));
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId, frameIds: [drawingFrame.frameId] },
-    func: () => {
-      const found = {};
-
-      // 1. Look for toolbar/ribbon elements
-      const toolbarEls = document.querySelectorAll("[class*='toolbar' i], [class*='ribbon' i], [class*='menu' i]");
-      found.toolbars = Array.from(toolbarEls)
-        .filter(el => el.offsetHeight > 0)
-        .slice(0, 20)
-        .map(el => ({ cls: el.className.toString().slice(0, 120), tag: el.tagName, text: el.textContent.trim().slice(0, 60) }));
-
-      // 2. Look for anything with "flat", "pattern", "insert", "view" in class or text
-      const allEls = document.querySelectorAll("*");
-      found.flatRelated = [];
-      found.insertRelated = [];
-      for (const el of allEls) {
-        if (el.offsetHeight === 0) continue;
-        const cls = (el.className || "").toString().toLowerCase();
-        const txt = (el.textContent || "").trim().toLowerCase().slice(0, 80);
-        const title = (el.getAttribute("title") || "").toLowerCase();
-        const aria = (el.getAttribute("aria-label") || "").toLowerCase();
-
-        if (cls.includes("flat") || txt.includes("flat pattern") || title.includes("flat") || aria.includes("flat")) {
-          found.flatRelated.push({ cls: el.className.toString().slice(0, 120), tag: el.tagName, text: txt.slice(0, 60), title, aria });
-        }
-        if (cls.includes("insert") || title.includes("insert") || aria.includes("insert")) {
-          found.insertRelated.push({ cls: el.className.toString().slice(0, 120), tag: el.tagName, text: txt.slice(0, 60), title, aria });
-        }
-      }
-      found.flatRelated = found.flatRelated.slice(0, 20);
-      found.insertRelated = found.insertRelated.slice(0, 20);
-
-      // 3. Detailed toolbar button info (tooltips, data attrs, children)
-      const tbBtns = document.querySelectorAll(".toolbar-button, .toolbar-popup-button");
-      found.toolbarButtons = Array.from(tbBtns)
-        .filter(el => el.offsetHeight > 0)
-        .map(el => {
-          const tooltip = el.querySelector(".tooltip-text, .tooltip");
-          const svgUse = el.querySelector("svg use");
-          const img = el.querySelector("img");
-          const dataAttrs = {};
-          for (const attr of el.attributes) {
-            if (attr.name.startsWith("data-")) dataAttrs[attr.name] = attr.value;
-          }
-          return {
-            cls: el.className.toString().slice(0, 120),
-            title: el.getAttribute("title") || "",
-            aria: el.getAttribute("aria-label") || "",
-            tooltipText: tooltip?.textContent.trim().slice(0, 60) || "",
-            svgHref: svgUse?.getAttribute("href") || svgUse?.getAttribute("xlink:href") || "",
-            imgSrc: img?.getAttribute("src")?.slice(0, 80) || "",
-            dataAttrs,
-            disabled: el.classList.contains("disabled"),
-            childClasses: Array.from(el.children).map(c => c.className.toString().slice(0, 80)).slice(0, 5),
-          };
-        });
-
-      // 4. Active sheet info
-      found.activeSheet = document.querySelector(".active_sheet_label")?.textContent.trim() || "not found";
-
-      return found;
-    },
-  });
-
-  const data = results?.[0]?.result;
-  if (data) {
-    console.log("[FlatExplore] Active sheet:", data.activeSheet);
-    console.log("[FlatExplore] Flat-related elements:", JSON.stringify(data.flatRelated, null, 2));
-    console.log("[FlatExplore] Insert-related elements:", JSON.stringify(data.insertRelated, null, 2));
-    console.log("[FlatExplore] Toolbar buttons:", JSON.stringify(data.toolbarButtons, null, 2));
-    console.log("[FlatExplore] Toolbars:", JSON.stringify(data.toolbars, null, 2));
-  }
-  return data;
-}
-
-// Test helper — click "Insert view" button and explore the dialog that appears
-// Run with: exploreInsertViewDialog()
-async function exploreInsertViewDialog() {
-  const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
-  if (!tabs.length) return console.log("No Onshape tab found");
-
-  const tabId = tabs[0].id;
-  const frames = await chrome.webNavigation.getAllFrames({ tabId });
-  const drawingFrame = frames.find(f =>
-    f.url.includes("onshape.com/editor") || f.url.includes("onshape.com/drawing")
-  );
-  if (!drawingFrame) return console.log("No drawing iframe found");
-
-  const results = await chrome.scripting.executeScript({
-    target: { tabId, frameIds: [drawingFrame.frameId] },
-    func: async () => {
-      const sleep = ms => new Promise(r => setTimeout(r, ms));
-
-      // Click "Insert view" button
-      const insertBtn = document.querySelector('[data-object-name="button_ID_DRAWINGVIEW"]');
-      if (!insertBtn) return { error: "Insert view button not found" };
-
-      const rect = insertBtn.getBoundingClientRect();
-      const cx = rect.left + rect.width / 2;
-      const cy = rect.top + rect.height / 2;
-      const evtOpts = { bubbles: true, cancelable: true, clientX: cx, clientY: cy, button: 0 };
-      insertBtn.dispatchEvent(new MouseEvent("mousedown", evtOpts));
-      await sleep(50);
-      insertBtn.dispatchEvent(new MouseEvent("mouseup", evtOpts));
-      await sleep(50);
-      insertBtn.dispatchEvent(new MouseEvent("click", evtOpts));
-
-      // Wait for dialog/panel to appear
-      await sleep(3000);
-
-      // Explore what appeared — look for dialogs, panels, dropdowns, radio buttons, selectors
-      const found = {};
-
-      // 1. Any new dialog/panel/flyout elements
-      const dialogs = document.querySelectorAll("[class*='dialog' i], [class*='panel' i], [class*='flyout' i], [class*='popup' i], [class*='modal' i]");
-      found.dialogs = Array.from(dialogs)
-        .filter(el => el.offsetHeight > 0)
-        .slice(0, 15)
-        .map(el => ({
-          cls: el.className.toString().slice(0, 150),
-          text: el.textContent.trim().slice(0, 200),
-          childCount: el.children.length,
-        }));
-
-      // 2. Any elements with "view", "orientation", "flat", "front", "iso" text
-      const allVisible = document.querySelectorAll("*");
-      found.viewOptions = [];
-      for (const el of allVisible) {
-        if (el.offsetHeight === 0 || el.children.length > 3) continue;
-        const txt = (el.textContent || "").trim().toLowerCase();
-        if (txt.length > 2 && txt.length < 80 && (
-          txt.includes("flat") || txt.includes("front") || txt.includes("isometric") ||
-          txt.includes("orientation") || txt.includes("view type") || txt.includes("part studio") ||
-          txt.includes("scale") || txt.includes("sheet metal")
-        )) {
-          found.viewOptions.push({
-            cls: el.className.toString().slice(0, 100),
-            tag: el.tagName,
-            text: txt.slice(0, 80),
-          });
-        }
-      }
-      found.viewOptions = found.viewOptions.slice(0, 30);
-
-      // 3. Radio buttons, checkboxes, select elements, dropdowns
-      const inputs = document.querySelectorAll("input[type='radio'], input[type='checkbox'], select, [class*='dropdown' i], [class*='combo' i], [class*='select' i]");
-      found.inputs = Array.from(inputs)
-        .filter(el => el.offsetHeight > 0)
-        .slice(0, 20)
-        .map(el => ({
-          cls: el.className.toString().slice(0, 100),
-          tag: el.tagName,
-          type: el.type || "",
-          name: el.name || "",
-          value: el.value || "",
-          text: el.textContent.trim().slice(0, 60),
-        }));
-
-      // 4. Clickable items in any list/tree that appeared
-      const listItems = document.querySelectorAll("[class*='list-item' i], [class*='tree-item' i], [class*='option' i], [class*='row' i]");
-      found.listItems = Array.from(listItems)
-        .filter(el => el.offsetHeight > 0 && el.textContent.trim().length > 0 && el.textContent.trim().length < 100)
-        .slice(0, 20)
-        .map(el => ({
-          cls: el.className.toString().slice(0, 100),
-          tag: el.tagName,
-          text: el.textContent.trim().slice(0, 80),
-        }));
-
-      return found;
-    },
-  });
-
-  const data = results?.[0]?.result;
-  if (data) {
-    console.log("[InsertView] Dialogs/panels:", JSON.stringify(data.dialogs, null, 2));
-    console.log("[InsertView] View options:", JSON.stringify(data.viewOptions, null, 2));
-    console.log("[InsertView] Inputs:", JSON.stringify(data.inputs, null, 2));
-    console.log("[InsertView] List items:", JSON.stringify(data.listItems, null, 2));
-  }
-  return data;
-}
-*/
-
-// ---------------------------------------------------------------------------
 // CDP helpers — chrome.debugger wrappers for trusted input events
 // ---------------------------------------------------------------------------
 
-function showCdpOverlay(tabId) {
+// Freeze screen: inject overlay into the PAGE's main world via Runtime.evaluate.
+// Content script listeners can't block main-world events (isolated world), but
+// Runtime.evaluate runs in the main world so capture-phase listeners here DO
+// block Onshape's handlers. CDP synthetic events (Input.dispatch*) bypass the
+// DOM entirely, so automation is unaffected.
+async function showCdpOverlay(tabId) {
+  // Visual overlay via content script (informational banner)
   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-show" }).catch(() => {});
+  // Main-world input blocker via CDP — this is what actually freezes the page
+  try {
+    await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        if (document.getElementById("oxt-cdp-input-blocker")) return;
+        const blocker = document.createElement("div");
+        blocker.id = "oxt-cdp-input-blocker";
+        blocker.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;background:transparent;";
+        const events = ["click","dblclick","mousedown","mouseup","mousemove",
+          "keydown","keyup","keypress","wheel","scroll","contextmenu",
+          "touchstart","touchend","touchmove","pointerdown","pointerup","pointermove"];
+        events.forEach(evt => {
+          blocker.addEventListener(evt, e => {
+            e.preventDefault();
+            e.stopPropagation();
+            e.stopImmediatePropagation();
+          }, { capture: true });
+        });
+        document.documentElement.appendChild(blocker);
+      })()`,
+    });
+  } catch (_) {}
 }
 
-function hideCdpOverlay(tabId) {
+async function hideCdpOverlay(tabId) {
+  // Remove main-world input blocker
+  try {
+    await cdpSend(tabId, "Runtime.evaluate", {
+      expression: `(() => {
+        const b = document.getElementById("oxt-cdp-input-blocker");
+        if (b) b.remove();
+      })()`,
+    });
+  } catch (_) {}
+  // Remove visual overlay
   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
 }
 
@@ -1028,10 +909,14 @@ async function cdpPressKey(tabId, key, keyCode) {
   });
 }
 
+// CDP drag uses a three-phase path (down → across → up) instead of a straight line.
+// Straight-line drags between tabs cross intermediate folder drop zones, causing
+// Onshape to "catch" the dragged tab in the wrong folder mid-path.
+// Phase 1: drag down 120px below the tab bar (safe zone, no drop targets).
+// Phase 2: slide horizontally to the target X (still below tab bar).
+// Phase 3: drag up into the target folder's drop zone.
 async function cdpDrag(tabId, fromX, fromY, toX, toY) {
-  // Three-phase drag: DOWN (out of tab bar) → ACROSS → UP (into target folder)
-  // Straight-line drags cross intermediate folders and tabs get "caught" mid-path.
-  const dropY = fromY + 120; // drag below the tab bar to avoid crossing other folders
+  const dropY = fromY + 120;
 
   // Hover over source
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
@@ -1211,6 +1096,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
         else resolve();
       });
     });
+    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and page layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -1369,15 +1255,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     console.log("[CDP-Folders] All folders created successfully");
 
     // --- Move all stray root-level tabs into their matching folders ---
-    // Type-to-folder mapping (tab CSS classes → target folder name)
-    // data-icon-src → folder name mapping (from DOM observation)
-    const ICON_FOLDER_MAP = {
-      "partstudio": "Part Studios",
-      "assembly": "Assemblies",
-      "drawing": "Drawings",
-      "feature-studio-element": "Feature Studios",
-      "variable-studio-element": "Variable Studios",
-    };
+    // Reuses TAB_ICON_FOLDER_MAP defined at module level (line ~1948)
 
     // Gather all root-level non-folder tabs and their types via data-icon-src
     const strayTabs = await cdpSend(tabId, "Runtime.evaluate", {
@@ -1404,7 +1282,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     console.log(`[CDP-Folders] Found ${strays.length} stray root tab(s):`, strays.map(s => `${s.name} (${s.iconSrc})`));
 
     for (const stray of strays) {
-      const targetFolder = ICON_FOLDER_MAP[stray.iconSrc];
+      const targetFolder = TAB_ICON_FOLDER_MAP[stray.iconSrc];
       if (!targetFolder) {
         console.log(`[CDP-Folders] No folder mapping for "${stray.name}" (icon: ${stray.iconSrc}), skipping`);
         continue;
@@ -1500,6 +1378,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
     sendDone(false, e.message);
   } finally {
+    try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
     hideCdpOverlay(senderTabId);
     chrome.debugger.detach({ tabId }, () => {});
   }
@@ -1605,6 +1484,7 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
         else resolve();
       });
     });
+    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -1787,8 +1667,151 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
     }, 5000);
     return { error: e.message };
   } finally {
+    try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
     hideCdpOverlay(senderTabId);
     chrome.debugger.detach({ tabId }, () => {});
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Unpack Illegal Folders — CDP right-click > Unpack on non-standard folders
+// ---------------------------------------------------------------------------
+
+let _unpackInProgress = false;
+
+async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
+  if (_unpackInProgress) {
+    console.log("[Unpack] Already in progress, skipping");
+    return;
+  }
+  _unpackInProgress = true;
+
+  // Wait for sort to finish if in progress
+  for (let i = 0; i < 60 && _sortingInProgress; i++) {
+    await new Promise(r => setTimeout(r, 500));
+  }
+
+  showCdpOverlay(senderTabId);
+  let needsDetach = false;
+  let unpacked = 0;
+
+  function sendProgress(name) {
+    chrome.tabs.sendMessage(senderTabId, { type: "unpack-progress", name }).catch(() => {});
+  }
+  function sendDone(count, error) {
+    chrome.tabs.sendMessage(senderTabId, { type: "unpack-done", count, error }).catch(() => {});
+  }
+
+  try {
+    await new Promise((resolve, reject) => {
+      chrome.debugger.attach({ tabId }, "1.3", () => {
+        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+        else resolve();
+      });
+    });
+    needsDetach = true;
+    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+
+    // Wait for debugger banner to settle
+    await new Promise(r => setTimeout(r, 500));
+
+    for (const folderName of folderNames) {
+      sendProgress(folderName);
+      console.log(`[Unpack] Unpacking folder: "${folderName}"`);
+
+      // Step 1: Find the folder element and get its bounding rect center
+      const folderPos = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const tabs = document.querySelectorAll('.os-tab-bar-tab-group');
+          for (const tab of tabs) {
+            const nameEl = tab.querySelector('.os-tab-name');
+            if (nameEl && nameEl.textContent.trim() === ${JSON.stringify(folderName)}) {
+              const r = tab.getBoundingClientRect();
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+            }
+          }
+          return null;
+        })()`,
+        returnByValue: true,
+      });
+
+      const pos = folderPos.result?.value;
+      if (!pos) {
+        console.log(`[Unpack] Folder "${folderName}" not found in DOM, skipping`);
+        continue;
+      }
+
+      // Step 2: Right-click the folder to open context menu
+      await cdpRightClick(tabId, pos.x, pos.y);
+      await new Promise(r => setTimeout(r, 800));
+
+      // Step 3: Find "Unpack" menu item in the context menu
+      // DOM structure (from observer): ul.context-menu-list.context-menu-root
+      //   > li.context-menu-item > span.context-menu-item-span (text: "Unpack")
+      const unpackItem = await waitForElement(tabId, `(() => {
+        const menuItems = document.querySelectorAll('ul.context-menu-root li.context-menu-item');
+        for (const item of menuItems) {
+          if (item.offsetHeight === 0) continue;
+          const span = item.querySelector('span.context-menu-item-span');
+          if (span && span.textContent.trim() === 'Unpack') {
+            const r = item.getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: span.textContent.trim() };
+          }
+        }
+        return null;
+      })()`, 3000);
+
+      if (!unpackItem) {
+        // Log all visible menu items for debugging
+        const menuDump = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const items = [];
+            const candidates = document.querySelectorAll('ul.context-menu-root li.context-menu-item span.context-menu-item-span');
+            for (const el of candidates) {
+              if (el.offsetHeight === 0) continue;
+              items.push(el.textContent.trim());
+            }
+            return items;
+          })()`,
+          returnByValue: true,
+        });
+        console.log(`[Unpack] "Unpack" menu item not found for "${folderName}". Visible menu items:`, menuDump.result?.value);
+        // Dismiss the context menu
+        await cdpPressKey(tabId, "Escape", 27);
+        await new Promise(r => setTimeout(r, 300));
+        continue;
+      }
+
+      console.log(`[Unpack] Found "${unpackItem.text}" at (${unpackItem.x}, ${unpackItem.y})`);
+
+      // Step 4: Click the Unpack menu item
+      await cdpClick(tabId, unpackItem.x, unpackItem.y);
+      await new Promise(r => setTimeout(r, 500));
+
+      unpacked++;
+      console.log(`[Unpack] "${folderName}" unpacked successfully`);
+    }
+
+    console.log(`[Unpack] Done: ${unpacked}/${folderNames.length} folders unpacked`);
+    sendDone(unpacked, null);
+
+    // Chain: sort stray tabs using the same CDP session (no extra attach/detach)
+    if (unpacked > 0) {
+      await new Promise(r => setTimeout(r, 500)); // Let DOM settle
+      await sortStrayTabs(tabId, senderTabId, true);
+    }
+
+  } catch (e) {
+    console.error("[Unpack] Error:", e.message);
+    try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
+    sendDone(unpacked, e.message);
+  } finally {
+    _unpackInProgress = false;
+    if (needsDetach) {
+      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+      hideCdpOverlay(senderTabId);
+      chrome.debugger.detach({ tabId }, () => {});
+    }
   }
 }
 
@@ -1797,7 +1820,8 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
 // Runs independently of folder creation: after every scan, or on demand.
 // ---------------------------------------------------------------------------
 
-// data-icon-src → folder name (from DOM observation)
+// Maps Onshape tab data-icon-src attribute to folder name (from DOM observation).
+// Used by both createTabFolders() and sortStrayTabs().
 const TAB_ICON_FOLDER_MAP = {
   "partstudio": "Part Studios",
   "assembly": "Assemblies",
@@ -1808,7 +1832,7 @@ const TAB_ICON_FOLDER_MAP = {
 
 let _sortingInProgress = false;
 
-async function sortStrayTabs(tabId, senderTabId) {
+async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
   if (_sortingInProgress) {
     console.log("[TabSort] Already sorting, skipping");
     return { sorted: 0, skipped: 0, reason: "already-sorting" };
@@ -1822,7 +1846,7 @@ async function sortStrayTabs(tabId, senderTabId) {
     chrome.tabs.sendMessage(senderTabId, { type: "tab-sort-done", sorted, skipped }).catch(() => {});
   }
 
-  showCdpOverlay(senderTabId);
+  if (!alreadyAttached) showCdpOverlay(senderTabId);
   let needsDetach = false;
   let sorted = 0;
   let skipped = 0;
@@ -1879,13 +1903,19 @@ async function sortStrayTabs(tabId, senderTabId) {
     console.log(`[TabSort] ${movable.length} movable stray tab(s):`, movable.map(s => `${s.name} -> ${TAB_ICON_FOLDER_MAP[s.iconSrc]}`));
 
     // Attach debugger only when we actually have tabs to move
-    await new Promise((resolve, reject) => {
-      chrome.debugger.attach({ tabId }, "1.3", () => {
-        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-        else resolve();
+    if (alreadyAttached) {
+      // Caller already attached — don't attach or detach here
+      needsDetach = false;
+    } else {
+      await new Promise((resolve, reject) => {
+        chrome.debugger.attach({ tabId }, "1.3", () => {
+          if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
+          else resolve();
+        });
       });
-    });
-    needsDetach = true;
+      needsDetach = true;
+      await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    }
 
     for (const stray of movable) {
       const targetFolder = TAB_ICON_FOLDER_MAP[stray.iconSrc];
@@ -2050,7 +2080,10 @@ async function sortStrayTabs(tabId, senderTabId) {
     return { sorted, skipped, error: e.message };
   } finally {
     _sortingInProgress = false;
-    hideCdpOverlay(senderTabId);
+    if (needsDetach) {
+      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+    }
+    if (!alreadyAttached) hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
   }
 }
@@ -2106,6 +2139,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
       });
     });
     needsDetach = true;
+    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and page layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -2449,120 +2483,12 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
     sendDone({ totalInterferences: 0, assemblies: {}, error: e.message });
   } finally {
     _interferenceInProgress = false;
+    if (needsDetach) {
+      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+    }
     hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
   }
-}
-
-// ---------------------------------------------------------------------------
-// Interference Observer — call directly from service worker console
-// ---------------------------------------------------------------------------
-// Step 1: Open assembly, open interference dialog manually
-// Step 2: observeInterference()   — starts recording DOM mutations
-// Step 3: Select instances manually in the dialog
-// Step 4: readInterferenceObserver()  — dumps mutations + dialog snapshot
-
-async function observeInterference() {
-  const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
-  if (tabs.length === 0) return console.log("[IntObs] No Onshape tab found");
-  await chrome.scripting.executeScript({
-    target: { tabId: tabs[0].id },
-    func: () => {
-      const dialog = document.querySelector('#interference-detection-dialog');
-      if (!dialog) return console.log("[IntObs] No interference dialog found -- open it first");
-      window.__intObsChanges = [];
-      window.__intObserver = new MutationObserver((mutations) => {
-        for (const m of mutations) {
-          if (m.type === 'attributes') {
-            const el = m.target;
-            const r = el.getBoundingClientRect();
-            window.__intObsChanges.push({
-              action: 'attr-changed', attr: m.attributeName,
-              newVal: (el.getAttribute(m.attributeName) || '').slice(0, 200),
-              tag: el.tagName, cls: (el.className || '').toString().slice(0, 150),
-              text: el.textContent.trim().slice(0, 80),
-              x: Math.round(r.left), y: Math.round(r.top),
-              w: Math.round(r.width), h: Math.round(r.height),
-            });
-          }
-          for (const node of m.addedNodes) {
-            if (node.nodeType !== 1) continue;
-            const r = node.getBoundingClientRect();
-            window.__intObsChanges.push({
-              action: 'added', tag: node.tagName,
-              cls: (node.className || '').toString().slice(0, 150),
-              text: node.textContent.trim().slice(0, 120),
-              x: Math.round(r.left), y: Math.round(r.top),
-              w: Math.round(r.width), h: Math.round(r.height),
-              html: node.outerHTML.slice(0, 400),
-            });
-          }
-          for (const node of m.removedNodes) {
-            if (node.nodeType !== 1) continue;
-            window.__intObsChanges.push({
-              action: 'removed', tag: node.tagName,
-              cls: (node.className || '').toString().slice(0, 150),
-              text: node.textContent.trim().slice(0, 80),
-            });
-          }
-        }
-      });
-      window.__intObserver.observe(document.body, {
-        childList: true, subtree: true, attributes: true,
-        attributeFilter: ['class', 'title', 'aria-selected', 'data-selected', 'style'],
-      });
-      console.log("[IntObs] Recording. Select instances, then call readInterferenceObserver() in SW console.");
-    },
-  });
-  console.log("[IntObs] Observer injected. Select instances in the dialog, then call readInterferenceObserver()");
-}
-
-async function readInterferenceObserver() {
-  const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
-  if (tabs.length === 0) return console.log("[IntObs] No Onshape tab found");
-  const results = await chrome.scripting.executeScript({
-    target: { tabId: tabs[0].id },
-    func: () => {
-      if (window.__intObserver) { window.__intObserver.disconnect(); window.__intObserver = null; }
-      const changes = window.__intObsChanges || [];
-      window.__intObsChanges = [];
-      const dialog = document.querySelector('#interference-detection-dialog');
-      let snapshot = null;
-      if (dialog) {
-        const items = dialog.querySelectorAll('.os-selection-item-line, [class*="selection-item"], [class*="query-list-item"]');
-        snapshot = {
-          itemCount: items.length,
-          items: Array.from(items).slice(0, 20).map(el => ({
-            cls: (el.className || '').toString().slice(0, 100),
-            text: el.textContent.trim().slice(0, 80),
-          })),
-          bodyText: dialog.textContent.trim().slice(0, 500),
-        };
-      }
-      return { changes, snapshot };
-    },
-  });
-  const data = results?.[0]?.result || {};
-  const changes = data.changes || [];
-  const interesting = changes.filter(c =>
-    c.action === 'added' ? (c.w > 5 && c.h > 5 && c.text.length > 0) :
-    c.action === 'attr-changed' ? true : true
-  );
-  console.log(`[IntObs] ${changes.length} total mutations, ${interesting.length} interesting:`);
-  for (const c of interesting.slice(0, 50)) {
-    if (c.action === 'added') {
-      console.log(`  + [${c.tag}] cls="${c.cls}" text="${c.text}" (${c.w}x${c.h})`);
-      if (c.html) console.log(`    html: ${c.html}`);
-    } else if (c.action === 'attr-changed') {
-      console.log(`  ~ [${c.tag}] ${c.attr}="${c.newVal}" cls="${c.cls}" text="${c.text}"`);
-    } else if (c.action === 'removed') {
-      console.log(`  - [${c.tag}] cls="${c.cls}" text="${c.text}"`);
-    }
-  }
-  if (data.snapshot) {
-    console.log("[IntObs] Dialog snapshot:", JSON.stringify(data.snapshot, null, 2));
-  }
-  return data;
 }
 
 // ---------------------------------------------------------------------------
@@ -2570,6 +2496,8 @@ async function readInterferenceObserver() {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  if (_extensionDisabled) return; // kill switch active — ignore all messages
+
   if (msg.type === "fetch-parts") {
     // Fetch parts list and return to popup for selection
     (async () => {
@@ -2619,6 +2547,50 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
 
+  } else if (msg.type === "check-export-allowed") {
+    // Check cached violations and folder structure — zero API calls
+    (async () => {
+      try {
+        const docId = msg.docId;
+        const issues = [];
+        const data = await chrome.storage.local.get(["violations", "docScanResults"]);
+
+        // Check cached violations (stored as { items: [...], docName, timestamp })
+        const docViolations = (data.violations || {})[docId];
+        if (docViolations && Array.isArray(docViolations.items) && docViolations.items.length > 0) {
+          issues.push(...docViolations.items.map(v => `Violation: ${v}`));
+        }
+
+        // Check folder structure from cached scan
+        const scan = (data.docScanResults || {})[docId];
+        if (scan) {
+          const folders = Object.keys(scan.folders || {});
+          const rootTabs = scan.root_tabs || [];
+          if (folders.length === 0) {
+            issues.push("No folder structure — tabs are not organized");
+          }
+          if (rootTabs.length > 0) {
+            issues.push(`${rootTabs.length} tab(s) outside folders`);
+          }
+          const illegalFolders = folders.filter(f => !["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"].includes(f));
+          if (illegalFolders.length > 0) {
+            issues.push(`Non-standard folder(s): ${illegalFolders.join(", ")}`);
+          }
+          // Check for multiple assemblies (totalAssemblies or folder count)
+          const asmCount = scan.totalAssemblies || (scan.folders?.["Assemblies"]?.assemblies ?? 0);
+          if (asmCount > 1) {
+            issues.push(`${asmCount} assemblies detected (limit: 1 per document)`);
+          }
+        }
+
+        sendResponse({ blocked: issues.length > 0, issues });
+      } catch (e) {
+        console.log(`[ExportCheck] Error: ${e.message}`);
+        sendResponse({ blocked: false, issues: [], error: e.message });
+      }
+    })();
+    return true;
+
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -2651,6 +2623,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (!tabId) { sendResponse({ error: "No tab" }); return; }
     sortStrayTabs(tabId, tabId).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
     return true;
+
+  } else if (msg.type === "unpack-illegal-folders") {
+    const tabId = sender.tab?.id;
+    if (!tabId) { sendResponse({ error: "No tab" }); return; }
+    unpackIllegalFolders(tabId, tabId, msg.folders || []);
+    sendResponse({ ok: true });
+    return;
 
   } else if (msg.type === "check-interference") {
     // Interference detection via CDP — triggered from popup or content.js
@@ -2843,14 +2822,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const stored = await chrome.storage.local.get("mergePermissions");
       const perms = stored.mergePermissions || {};
+      // Safety: never persist the company account as a merge owner
+      const filteredOwners = (msg.owners || []).filter(o => o.id !== COMPANY_ID);
       const entry = {
         docName: msg.docName,
-        owners: msg.owners,
+        owners: filteredOwners,
         updatedAt: new Date().toLocaleString("en-IN", { timeZone: "Asia/Kolkata" }),
       };
       perms[msg.docId] = entry;
       await chrome.storage.local.set({ mergePermissions: perms });
-      console.log(`[MergePerms] Saved ${msg.owners.length} owner(s) for ${msg.docName}`);
+      console.log(`[MergePerms] Saved ${filteredOwners.length} owner(s) for ${msg.docName}`);
       sendResponse({ ok: true });
       // Fire-and-forget sync to backend
       syncFetch(`/api/merge-permissions/${msg.docId}`, {
@@ -2864,7 +2845,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Centralized merge-perms reader: try backend first, fall back to local
     (async () => {
       const remote = await syncFetch(`/api/merge-permissions/${msg.docId}`);
-      if (remote && remote.owners) {
+      if (remote && Array.isArray(remote.owners) && remote.owners.length > 0) {
         // Cache locally
         const stored = await chrome.storage.local.get("mergePermissions");
         const perms = stored.mergePermissions || {};
@@ -2877,7 +2858,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const stored = await chrome.storage.local.get("mergePermissions");
       const perms = stored.mergePermissions || {};
       const local = perms[msg.docId];
-      sendResponse(local ? { exists: true, data: local } : { exists: false });
+      const hasOwners = local && Array.isArray(local.owners) && local.owners.length > 0;
+      sendResponse(hasOwners ? { exists: true, data: local } : { exists: false });
     })();
     return true;
 
@@ -2891,9 +2873,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
         const owner = doc.owner || {};
-        const creator = { id: owner.id || "", name: owner.name || "Unknown", email: owner.email || "" };
-        // If email missing from owner, try to find in team members
-        if (!creator.email) {
+        // Company account owns the doc — not a real person
+        const isCompany = owner.id === COMPANY_ID;
+        const creator = {
+          id: owner.id || "", name: owner.name || "Unknown",
+          email: owner.email || "", isCompany,
+        };
+        if (!creator.email && !isCompany) {
           const members = await getTeamMembers();
           const match = members.find(m => m.id === creator.id);
           if (match) creator.email = match.email;
@@ -2999,23 +2985,24 @@ async function cleanupDeletedDocs() {
   }
 }
 
-// Run cleanup once on service worker startup, then every 6 hours
+// Prune chrome.storage.local entries for docs that were deleted or lost access.
+// Uses one GET /documents/{id} per cached doc — runs at startup then every 6h.
 cleanupDeletedDocs();
 setInterval(cleanupDeletedDocs, 6 * 60 * 60 * 1000);
 
 // ---------------------------------------------------------------------------
 // Auto-reload: detect when git pull has updated the local extension files
 // ---------------------------------------------------------------------------
-// For unpacked extensions, chrome.runtime.getURL serves files directly from
-// disk. We compare the on-disk manifest version to the in-memory version
-// (cached at service worker startup). If they differ, git pull has landed
-// new code and we reload the extension automatically.
+// For unpacked (developer-mode) extensions, chrome.runtime.getURL reads files
+// from disk. We fetch manifest.json with cache:no-store every 5 min and compare
+// the on-disk version to the in-memory version. If they differ, git-pull landed
+// new code and we chrome.runtime.reload(). Deferred while CDP/drawing ops run.
 
 const _loadedVersion = chrome.runtime.getManifest().version;
 console.log(`[AutoUpdate] Extension loaded, version: ${_loadedVersion}`);
 
 function isExtensionBusy() {
-  return _drawingInProgress || _sortingInProgress || _interferenceInProgress;
+  return _drawingInProgress || _sortingInProgress || _interferenceInProgress || _unpackInProgress;
 }
 
 let _updatePending = false; // true when update detected but waiting for busy ops to finish

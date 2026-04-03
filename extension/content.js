@@ -7,8 +7,11 @@
 
   const CLICK_DELAY = 500;   // ms after clicking a folder before reading children
   const ROOT_DELAY  = 500;   // ms after clicking "All tabs" breadcrumb
+  const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
+  const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip all scanning/sorting/violations
   let _scanning = false;     // lock to prevent concurrent scans
   let _folderCreationInProgress = false; // suppress scans during folder creation
+  let _unpackInProgress = false; // suppress scans during folder unpacking
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -125,7 +128,7 @@
 
       // Debug: log detected root items
       console.log("[Scanner] Root items:", rootItems.map(r => ({
-        text: r.text, isFolder: r.isFolder, tabType: r.tabType, classes: r.classes,
+        text: r.text, isFolder: r.isFolder, tabType: r.tabType, iconSrc: r.iconSrc,
       })));
 
       const depthBefore = getBreadcrumbDepth();
@@ -158,8 +161,20 @@
       console.log("[Scanner] autoScan skipped: folder creation in progress");
       return;
     }
+    if (_unpackInProgress) {
+      console.log("[Scanner] autoScan skipped: folder unpack in progress");
+      return;
+    }
     const docId = getDocIdFromUrl();
     if (!docId) { console.log("[Scanner] autoScan: no docId"); return; }
+
+    // Skip excluded docs (shared libraries that shouldn't be scanned/sorted)
+    const docName = getDocName();
+    if (EXCLUDED_DOC_NAMES.includes(docName)) {
+      console.log(`[Scanner] autoScan skipped: "${docName}" is in EXCLUDED_DOC_NAMES`);
+      return;
+    }
+
     console.log("[Scanner] autoScan starting for", docId);
 
     // Wait for tab bar to be ready
@@ -189,13 +204,14 @@
   }
 
   let _notifyTimer = null;
-  let _notifiedDocIds = new Set(); // track docs that already got a Chrome notification
+  // Tracks which docs already triggered a Chrome notification this session.
+  // Prevents spamming the same notification every poll cycle (10 min).
+  // Cleared on SPA navigation (new doc = fresh tracking).
+  let _notifiedDocIds = new Set();
 
   function sendScanResult(result, skipNotification) {
-    // Always store scan data for popup display
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
 
-    // Cancel any pending notification from a previous scan
     if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = null; }
 
     // Skip Chrome notification if folder overlay is showing (user is already prompted)
@@ -204,12 +220,22 @@
       return;
     }
 
-    const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
     const folderData = result.folders || {};
     const folders = Object.keys(folderData);
     const rootTabs = result.root_tabs || [];
+
+    // Auto-unpack illegal folders (names not in ALLOWED_FOLDERS)
+    const illegalFolders = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
+    if (illegalFolders.length > 0 && !_unpackInProgress) {
+      console.log("[Unpack] Found illegal folders:", illegalFolders);
+      _unpackInProgress = true;
+      showProgressToast("Unpacking illegal folders...");
+      chrome.runtime.sendMessage({ type: "unpack-illegal-folders", folders: illegalFolders });
+      return; // sort + re-scan will happen after unpack completes
+    }
+
     const illegal = [
-      ...folders.filter(f => !ALLOWED_FOLDERS.includes(f)),
+      ...illegalFolders,
       ...rootTabs,
     ];
     const multiAssembly = Object.entries(folderData).some(
@@ -262,6 +288,12 @@
 
   const FOLDER_NAMES = ["Part Studios", "Assemblies", "Drawings", "Feature Studios", "Variable Studios"];
 
+  // Show folder creation overlay only on new/empty documents.
+  // Guard conditions: must have 0 folders, <5 root tabs (not a mature doc),
+  // not already offered, and <=1 version (new docs have 0 or 1 auto-version).
+  // Version count is read from chrome.storage (cached by checkDocViolations) —
+  // zero extra API calls. If not yet cached (race with violations check),
+  // waits 3s and retries; if still undefined, assumes brand-new doc.
   async function maybeOfferFolderCreation(scanResult) {
     const docId = scanResult.doc_id;
     if (!docId) { console.log("[FolderSetup] No docId"); return false; }
@@ -270,20 +302,17 @@
     const rootTabs = scanResult.root_tabs || [];
     console.log(`[FolderSetup] docId=${docId}, folders=${folders.length}, rootTabs=${rootTabs.length}`);
 
-    // Only offer if: no folders, few root tabs, not already offered
     if (folders.length > 0) { console.log("[FolderSetup] Skipped: has folders"); return false; }
     if (rootTabs.length >= 5) { console.log("[FolderSetup] Skipped: too many root tabs"); return false; }
 
-    // Check if already offered for this doc
     const stored = await chrome.storage.local.get("folderCreationOffered");
     const offered = stored.folderCreationOffered || [];
     if (offered.includes(docId)) { console.log("[FolderSetup] Skipped: already offered"); return false; }
 
-    // Check version count (stored by checkDocViolations, zero extra API calls)
+    // Version count cached by checkDocViolations (zero extra API calls)
     const vcData = await chrome.storage.local.get("versionCounts");
     const versionCount = (vcData.versionCounts || {})[docId];
     console.log(`[FolderSetup] versionCount=${versionCount}`);
-    // If version count not yet available, wait a bit and retry once
     if (versionCount === undefined) {
       console.log("[FolderSetup] Version count not yet available, waiting 3s...");
       await sleep(3000);
@@ -364,8 +393,6 @@
       if (!offered.includes(docId)) offered.push(docId);
       await chrome.storage.local.set({ folderCreationOffered: offered });
       overlay.remove();
-      // Show merge owner popup after folder setup is skipped
-      maybeShowMergeOwnerPopup(docId);
     });
 
     const createBtn = document.createElement("button");
@@ -431,6 +458,9 @@
   // CDP automation overlay — shown while debugger is attached
   // ---------------------------------------------------------------------------
 
+  // Visual-only overlay — actual input blocking is done via CDP
+  // Input.setIgnoreInputEvents in background.js (browser-level block).
+  // Content script listeners can't block main-world events (isolated world).
   function showCdpOverlay() {
     if (document.getElementById("oxt-cdp-overlay")) return;
     const overlay = document.createElement("div");
@@ -439,7 +469,7 @@
       position: fixed; top: 0; left: 0; right: 0; bottom: 0;
       background: rgba(0,0,0,0.35); z-index: 999998;
       display: flex; align-items: center; justify-content: center;
-      pointer-events: none;
+      pointer-events: auto;
     `;
     const card = document.createElement("div");
     card.style.cssText = `
@@ -483,6 +513,80 @@
         showProgressToast(`Moving "${msg.name}" to folder...`);
       } else {
         showProgressToast(`Creating folder ${msg.index}/${msg.total}: ${msg.name}...`);
+      }
+
+    } else if (msg.type === "show-merge-owner-popup") {
+      const docId = getDocIdFromUrl();
+      if (docId) {
+        (async () => {
+          const [userResp, teamResp, permsData, creatorResp] = await Promise.all([
+            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
+            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
+            chrome.storage.local.get("mergePermissions"),
+            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, resolve)),
+          ]);
+          if (!userResp || userResp.error) { sendResponse({ error: "No session user" }); return; }
+          const members = teamResp?.members || [];
+          if (members.length === 0) { sendResponse({ error: "No team members" }); return; }
+
+          // If owners already set for this doc, only existing owners can edit
+          const perms = (permsData.mergePermissions || {})[docId];
+          if (perms && Array.isArray(perms.owners) && perms.owners.length > 0) {
+            const isOwner = perms.owners.some(o => o.id === userResp.id || o.email === userResp.email);
+            if (!isOwner) {
+              showProgressToast("Only current merge owners can change permissions");
+              setTimeout(removeProgressToast, 3000);
+              sendResponse({ error: "Not a merge owner" });
+              return;
+            }
+          }
+
+          const docName = getDocName();
+          let currentOwners = (perms && Array.isArray(perms.owners)) ? perms.owners : [];
+
+          // Auto-suggest 2 owners when none are set:
+          // If doc creator is a real person (not company), pre-select creator + session user.
+          // If doc creator is the company account, pre-select session user + first other member.
+          if (currentOwners.length === 0 && members.length >= 2) {
+            const creator = creatorResp && !creatorResp.error && !creatorResp.isCompany ? creatorResp : null;
+            const suggestions = [];
+            // Add doc creator if they're a real team member
+            if (creator) {
+              const creatorMember = members.find(m => m.id === creator.id || m.email === creator.email);
+              if (creatorMember) suggestions.push(creatorMember);
+            }
+            // Add session user if not already added
+            if (suggestions.length < 2) {
+              const self = members.find(m => m.id === userResp.id || m.email === userResp.email);
+              if (self && !suggestions.some(s => s.id === self.id)) suggestions.push(self);
+            }
+            // Fill remaining slot with the first other member
+            if (suggestions.length < 2) {
+              const other = members.find(m => !suggestions.some(s => s.id === m.id));
+              if (other) suggestions.push(other);
+            }
+            currentOwners = suggestions;
+          }
+
+          showMergeOwnerOverlay(docId, docName, userResp, members, currentOwners);
+          sendResponse({ ok: true });
+        })();
+        return true;
+      }
+
+    } else if (msg.type === "unpack-progress") {
+      showProgressToast(`Unpacking folder: "${msg.name}"...`);
+
+    } else if (msg.type === "unpack-done") {
+      _unpackInProgress = false;
+      if (msg.error) {
+        const toast = showProgressToast(`Unpack error: ${msg.error}`);
+        toast.style.background = "#dc2626";
+        setTimeout(removeProgressToast, 5000);
+      } else {
+        showProgressToast(`Unpacked ${msg.count} folder(s), sorting...`);
+        setTimeout(removeProgressToast, 3000);
+        // sort-tabs + re-scan happen automatically from background.js
       }
 
     } else if (msg.type === "tab-sort-progress") {
@@ -533,8 +637,6 @@
             if (!offered.includes(docId)) offered.push(docId);
             chrome.storage.local.set({ folderCreationOffered: offered });
           });
-          // Show merge owner popup after folders created
-          setTimeout(() => maybeShowMergeOwnerPopup(docId), 3500);
         }
         setTimeout(removeProgressToast, 3000);
       } else {
@@ -576,11 +678,16 @@
   // ---------------------------------------------------------------------------
 
   // Small delay to let Onshape fully initialize
+  // Scan lifecycle: on each new doc, wait 8s (let Onshape SPA init), then:
+  //   1. autoScan() — reads tab bar DOM, triggers sort if folders exist
+  //   2. checkDocViolations — versions/parts/features/tabs limits (via background.js)
+  //   3. Poll both every 10 min to catch changes made during the session.
+  // Timers are cleared and re-created on SPA navigation (doc switch).
   let _lastDocId = null;
   let _scanTimer = null;
   let _violationsTimer = null;
   let _pollInterval = null;
-  const POLL_INTERVAL_MS = 300000; // 5 min continuous polling
+  const POLL_INTERVAL_MS = 600000; // 10 min
 
   function runOnDocLoad() {
     const docId = getDocIdFromUrl();
@@ -607,6 +714,10 @@
       }
       const wid = getWidFromUrl();
       const docName = getDocName();
+      if (EXCLUDED_DOC_NAMES.includes(docName)) {
+        console.log(`[Scanner] Violations skipped: "${docName}" is in EXCLUDED_DOC_NAMES`);
+        return;
+      }
       if (docId) {
         chrome.runtime.sendMessage({ type: "check-versions", docId, docName, wid });
       }
@@ -623,10 +734,12 @@
       // Re-run tab scanner
       autoScan();
 
-      // Re-run violations check
+      // Re-run violations check (skip excluded docs)
       const wid = getWidFromUrl();
       const docName = getDocName();
-      chrome.runtime.sendMessage({ type: "check-versions", docId: currentDocId, docName, wid });
+      if (!EXCLUDED_DOC_NAMES.includes(docName)) {
+        chrome.runtime.sendMessage({ type: "check-versions", docId: currentDocId, docName, wid });
+      }
     }, POLL_INTERVAL_MS);
   }
 
@@ -654,16 +767,14 @@
   }, 2000);
 
   // ---------------------------------------------------------------------------
-  // Export Drawing detection
+  // Export Drawing detection — blocks export when violations/no releases exist
   // ---------------------------------------------------------------------------
-  // Watches for the "Export Drawing" modal dialog to appear.
-  // Fires when the user right-clicks a drawing tab and clicks "Export...".
-  // Selectors from observer data:
-  //   Modal:  div.modal.fade.show
+  // MutationObserver watches for Onshape's export modal (added dynamically).
+  // Selectors discovered via observe-dom-changes + manual right-click → Export:
   //   Form:   form.export-dxf-or-dwg-dialog
-  //   Title:  span.title-description  (text: "Export Drawing")
-  //   Format: select inside form (options: PDF, DWG, DXF, etc.)
   //   Filename: #drawing-export-filename-input
+  // On detection: checks releases (API) + cached violations (zero API calls).
+  // If blocked: disables submit button + intercepts form submit event.
 
   let _exportDetected = false;
 
@@ -690,19 +801,31 @@
 
         const docId = getDocIdFromUrl();
 
-        // Ask background.js to check releases, then show banner if none
-        chrome.runtime.sendMessage({
-          type: "check-releases",
-          docId: docId,
-        }, (response) => {
-          if (response && response.hasReleases) {
-            console.log(`[ExportDetect] Doc has ${response.count} release(s), no banner needed`);
+        // Check releases AND violations/folder structure in parallel (zero extra API calls for violations)
+        const releaseCheck = new Promise(resolve =>
+          chrome.runtime.sendMessage({ type: "check-releases", docId }, resolve)
+        );
+        const exportCheck = new Promise(resolve =>
+          chrome.runtime.sendMessage({ type: "check-export-allowed", docId }, resolve)
+        );
+
+        Promise.all([releaseCheck, exportCheck]).then(([releaseResp, exportResp]) => {
+          const noReleases = !releaseResp || !releaseResp.hasReleases;
+          const hasIssues = exportResp && exportResp.blocked;
+          const shouldBlock = noReleases || hasIssues;
+
+          if (!shouldBlock) {
+            console.log(`[ExportDetect] Doc has ${releaseResp?.count || 0} release(s), no issues — export allowed`);
             return;
           }
-          console.log("[ExportDetect] No releases found, blocking export");
+
           const modalContent = form.closest(".modal-content");
-          if (modalContent) {
-            // Show warning banner
+          if (!modalContent) return;
+          const modalBody = modalContent.querySelector(".modal-body, .me-4");
+
+          // Banner 1: No releases
+          if (noReleases) {
+            console.log("[ExportDetect] No releases found, showing release banner");
             const banner = document.createElement("div");
             banner.id = "oxt-release-reminder";
             banner.style.cssText = `
@@ -712,32 +835,54 @@
               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             `;
             banner.textContent = "Please create a release before sending for manufacturing.";
-            const modalBody = modalContent.querySelector(".modal-body, .me-4");
             if (modalBody) {
               modalBody.parentNode.insertBefore(banner, modalBody);
             } else {
               modalContent.insertBefore(banner, modalContent.children[1] || null);
             }
-
-            // Disable the Export/OK submit button
-            const buttons = form.querySelectorAll("button");
-            for (const btn of buttons) {
-              const text = btn.textContent.trim().toLowerCase();
-              if (text === "export" || text === "ok" || btn.type === "submit") {
-                btn.disabled = true;
-                btn.title = "Release required before export";
-                btn.style.opacity = "0.4";
-                btn.style.cursor = "not-allowed";
-                console.log(`[ExportDetect] Disabled button: "${btn.textContent.trim()}"`);
-              }
-            }
-            // Also block form submission directly
-            form.addEventListener("submit", function blockSubmit(e) {
-              e.preventDefault();
-              e.stopImmediatePropagation();
-              console.log("[ExportDetect] Form submit blocked");
-            }, true);
           }
+
+          // Banner 2: Violations or folder structure issues
+          if (hasIssues) {
+            console.log("[ExportDetect] Violations/folder issues detected:", exportResp.issues);
+            const banner2 = document.createElement("div");
+            banner2.id = "oxt-export-issues";
+            banner2.style.cssText = `
+              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+              padding: 10px 14px; margin: 0 16px 12px 16px; font-size: 13px;
+              color: #92400e; font-weight: 500;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            `;
+            banner2.textContent = "Violations or incorrect folder structure detected. Please resolve before exporting.";
+            // Insert after the first banner (or before modal body if no release banner)
+            const existingBanner = modalContent.querySelector("#oxt-release-reminder");
+            if (existingBanner && existingBanner.nextSibling) {
+              existingBanner.parentNode.insertBefore(banner2, existingBanner.nextSibling);
+            } else if (modalBody) {
+              modalBody.parentNode.insertBefore(banner2, modalBody);
+            } else {
+              modalContent.insertBefore(banner2, modalContent.children[1] || null);
+            }
+          }
+
+          // Disable the Export/OK submit button
+          const buttons = form.querySelectorAll("button");
+          for (const btn of buttons) {
+            const text = btn.textContent.trim().toLowerCase();
+            if (text === "export" || text === "ok" || btn.type === "submit") {
+              btn.disabled = true;
+              btn.title = noReleases ? "Release required before export" : "Resolve violations before export";
+              btn.style.opacity = "0.4";
+              btn.style.cursor = "not-allowed";
+              console.log(`[ExportDetect] Disabled button: "${btn.textContent.trim()}"`);
+            }
+          }
+          // Block form submission directly
+          form.addEventListener("submit", function blockSubmit(e) {
+            e.preventDefault();
+            e.stopImmediatePropagation();
+            console.log("[ExportDetect] Form submit blocked");
+          }, true);
         });
 
         // Reset flag when modal is removed
@@ -760,9 +905,11 @@
   // ---------------------------------------------------------------------------
   // Merge dialog blocker — blocks non-owners from merging branches
   // ---------------------------------------------------------------------------
-  // Onshape's merge dialog appears when right-clicking a branch in the Versions
-  // panel and selecting "Merge...". We watch for any modal containing "Merge"
-  // in its title/header and block the confirm button for non-owners.
+  // MutationObserver watches for any modal with "merge" in title/text.
+  // On detection: asks background.js if session user is in the doc's merge
+  // owners list (backend → local fallback, zero extra API calls).
+  // If not allowed: inserts warning banner, disables submit button,
+  // intercepts form submit. Resets when modal is removed from DOM.
 
   let _mergeDetected = false;
 
@@ -863,53 +1010,10 @@
   mergeObserver.observe(document.body, { childList: true, subtree: true });
 
   // ---------------------------------------------------------------------------
-  // Merge owner selection popup — shown on new document creation
+  // Merge owner selection overlay — triggered via popup "Set for This Doc" button
   // ---------------------------------------------------------------------------
 
-  async function maybeShowMergeOwnerPopup(docId) {
-    if (!docId) return;
-
-    // Check if merge owners already set for this doc (via backend + local fallback)
-    const permsResp = await new Promise(resolve =>
-      chrome.runtime.sendMessage({ type: "get-merge-perms", docId }, resolve)
-    );
-    if (permsResp && permsResp.exists) {
-      console.log("[MergeOwner] Already set for", docId);
-      return;
-    }
-
-    // Check if user has skipped this doc
-    const skipData = await chrome.storage.local.get("mergeOwnerSkipped");
-    const skipped = skipData.mergeOwnerSkipped || [];
-    if (skipped.includes(docId)) {
-      console.log("[MergeOwner] Skipped by user for", docId);
-      return;
-    }
-
-    // Get current user, team members, and doc creator in parallel
-    const [userResp, teamResp, creatorResp] = await Promise.all([
-      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
-      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
-      new Promise(resolve => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, resolve)),
-    ]);
-
-    if (!userResp || userResp.error) {
-      console.log("[MergeOwner] Could not get session user");
-      return;
-    }
-
-    const members = teamResp?.members || [];
-    if (members.length === 0) {
-      console.log("[MergeOwner] No team members found");
-      return;
-    }
-
-    const creator = (creatorResp && !creatorResp.error) ? creatorResp : userResp;
-    const docName = getDocName();
-    showMergeOwnerOverlay(docId, docName, userResp, members, creator);
-  }
-
-  function showMergeOwnerOverlay(docId, docName, currentUser, members, creator) {
+  function showMergeOwnerOverlay(docId, docName, currentUser, members, currentOwners) {
     // Remove any existing overlay
     const existing = document.getElementById("oxt-merge-owner-overlay");
     if (existing) existing.remove();
@@ -936,53 +1040,43 @@
     card.appendChild(title);
 
     const subtitle = document.createElement("div");
-    subtitle.textContent = `Select a 2nd merge owner for "${docName}"`;
+    subtitle.textContent = `Select exactly 2 merge owners for "${docName}"`;
     subtitle.style.cssText = "font-size: 12px; color: #888; margin-bottom: 16px;";
     card.appendChild(subtitle);
 
-    // Creator row (locked)
-    const creatorRow = document.createElement("div");
-    creatorRow.style.cssText = "display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 6px 8px; background: #1b4332; border-radius: 4px;";
-    const creatorCb = document.createElement("input");
-    creatorCb.type = "checkbox";
-    creatorCb.checked = true;
-    creatorCb.disabled = true;
-    creatorCb.style.cssText = "width: 16px; height: 16px; accent-color: #95d5b2;";
-    creatorRow.appendChild(creatorCb);
-    const creatorLabel = document.createElement("span");
-    const isCreator = creator.id === currentUser.id;
-    creatorLabel.textContent = `${creator.name}${isCreator ? " (you)" : " (creator)"}`;
-    creatorLabel.style.cssText = "font-size: 14px; color: #95d5b2;";
-    creatorRow.appendChild(creatorLabel);
-    card.appendChild(creatorRow);
-
-    // Other team members (radio — exactly 1 must be selected)
-    // Exclude the creator (who is the locked first owner)
-    const otherMembers = members.filter(m => m.id !== creator.id);
-    const radios = [];
-    for (const member of otherMembers) {
+    // All team members as checkboxes — pre-check current owners
+    const ownerIds = currentOwners.map(o => o.id || o.email);
+    const checkboxes = [];
+    for (const member of members) {
+      const isChecked = ownerIds.includes(member.id) || ownerIds.includes(member.email);
       const row = document.createElement("label");
       row.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 4px 0; padding: 6px 8px; cursor: pointer; border-radius: 4px;";
       row.addEventListener("mouseenter", () => row.style.background = "#16213e");
       row.addEventListener("mouseleave", () => row.style.background = "transparent");
-      const rb = document.createElement("input");
-      rb.type = "radio";
-      rb.name = "merge-owner-select";
-      rb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
-      rb.dataset.email = member.email;
-      rb.dataset.name = member.name;
-      rb.dataset.userId = member.id;
-      row.appendChild(rb);
-      const label = document.createElement("span");
-      label.textContent = member.name;
-      label.style.cssText = "font-size: 14px; color: #e0e0e0;";
-      row.appendChild(label);
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = isChecked;
+      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
+      cb.dataset.email = member.email;
+      cb.dataset.name = member.name;
+      cb.dataset.userId = member.id;
+      // Enforce max 2 selected
+      cb.addEventListener("change", () => {
+        const checkedCount = checkboxes.filter(c => c.checked).length;
+        if (checkedCount > 2) { cb.checked = false; }
+        subtitle.style.color = checkedCount === 2 ? "#95d5b2" : "#888";
+      });
+      row.appendChild(cb);
+      const nameSpan = document.createElement("span");
+      nameSpan.textContent = member.name + (member.id === currentUser.id ? " (you)" : "");
+      nameSpan.style.cssText = "font-size: 14px; color: #e0e0e0;";
+      row.appendChild(nameSpan);
       const emailSpan = document.createElement("span");
       emailSpan.textContent = member.email;
       emailSpan.style.cssText = "font-size: 11px; color: #666; margin-left: auto;";
       row.appendChild(emailSpan);
       card.appendChild(row);
-      radios.push(rb);
+      checkboxes.push(cb);
     }
 
     // Buttons
@@ -997,16 +1091,15 @@
       font-weight: 500;
     `;
     saveBtn.addEventListener("click", () => {
-      const selected = radios.find(rb => rb.checked);
-      if (!selected) {
-        subtitle.textContent = "Please select a 2nd owner.";
+      const selected = checkboxes.filter(cb => cb.checked);
+      if (selected.length !== 2) {
+        subtitle.textContent = "Please select exactly 2 owners.";
         subtitle.style.color = "#ff6b6b";
         return;
       }
-      const owners = [
-        { email: creator.email, name: creator.name, id: creator.id },
-        { email: selected.dataset.email, name: selected.dataset.name, id: selected.dataset.userId },
-      ];
+      const owners = selected.map(cb => ({
+        email: cb.dataset.email, name: cb.dataset.name, id: cb.dataset.userId,
+      }));
       chrome.runtime.sendMessage({
         type: "save-merge-owners",
         docId: docId,
@@ -1019,24 +1112,16 @@
       });
     });
 
-    const skipBtn = document.createElement("button");
-    skipBtn.textContent = "Skip";
-    skipBtn.style.cssText = `
+    const cancelBtn = document.createElement("button");
+    cancelBtn.textContent = "Cancel";
+    cancelBtn.style.cssText = `
       padding: 8px 18px; border: none; border-radius: 4px;
       background: #333; color: #aaa; font-size: 14px; cursor: pointer;
       font-weight: 500;
     `;
-    skipBtn.addEventListener("click", async () => {
-      const data = await chrome.storage.local.get("mergeOwnerSkipped");
-      const skipped = data.mergeOwnerSkipped || [];
-      if (!skipped.includes(docId)) skipped.push(docId);
-      await chrome.storage.local.set({ mergeOwnerSkipped: skipped });
-      overlay.remove();
-      showProgressToast("Skipped");
-      setTimeout(removeProgressToast, 2000);
-    });
+    cancelBtn.addEventListener("click", () => overlay.remove());
 
-    btnRow.appendChild(skipBtn);
+    btnRow.appendChild(cancelBtn);
     btnRow.appendChild(saveBtn);
     card.appendChild(btnRow);
     overlay.appendChild(card);
