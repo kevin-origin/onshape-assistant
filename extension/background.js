@@ -812,46 +812,46 @@ async function addSheetViaIframe(tabId) {
 // Runtime.evaluate runs in the main world so capture-phase listeners here DO
 // block Onshape's handlers. CDP synthetic events (Input.dispatch*) bypass the
 // DOM entirely, so automation is unaffected.
-async function showCdpOverlay(tabId) {
-  // Visual overlay via content script (informational banner)
-  chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-show" }).catch(() => {});
-  // Main-world input blocker via CDP — this is what actually freezes the page
-  try {
-    await cdpSend(tabId, "Runtime.evaluate", {
-      expression: `(() => {
-        if (document.getElementById("oxt-cdp-input-blocker")) return;
-        const blocker = document.createElement("div");
-        blocker.id = "oxt-cdp-input-blocker";
-        blocker.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;background:transparent;";
-        const events = ["click","dblclick","mousedown","mouseup","mousemove",
-          "keydown","keyup","keypress","wheel","scroll","contextmenu",
-          "touchstart","touchend","touchmove","pointerdown","pointerup","pointermove"];
-        events.forEach(evt => {
-          blocker.addEventListener(evt, e => {
-            e.preventDefault();
-            e.stopPropagation();
-            e.stopImmediatePropagation();
-          }, { capture: true });
-        });
-        document.documentElement.appendChild(blocker);
-      })()`,
-    });
-  } catch (_) {}
-}
+// async function showCdpOverlay(tabId) {
+//   // Visual overlay via content script (informational banner)
+//   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-show" }).catch(() => {});
+//   // Main-world input blocker via CDP — this is what actually freezes the page
+//   try {
+//     await cdpSend(tabId, "Runtime.evaluate", {
+//       expression: `(() => {
+//         if (document.getElementById("oxt-cdp-input-blocker")) return;
+//         const blocker = document.createElement("div");
+//         blocker.id = "oxt-cdp-input-blocker";
+//         blocker.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;background:transparent;";
+//         const events = ["click","dblclick","mousedown","mouseup","mousemove",
+//           "keydown","keyup","keypress","wheel","scroll","contextmenu",
+//           "touchstart","touchend","touchmove","pointerdown","pointerup","pointermove"];
+//         events.forEach(evt => {
+//           blocker.addEventListener(evt, e => {
+//             e.preventDefault();
+//             e.stopPropagation();
+//             e.stopImmediatePropagation();
+//           }, { capture: true });
+//         });
+//         document.documentElement.appendChild(blocker);
+//       })()`,
+//     });
+//   } catch (_) {}
+// }
 
-async function hideCdpOverlay(tabId) {
-  // Remove main-world input blocker
-  try {
-    await cdpSend(tabId, "Runtime.evaluate", {
-      expression: `(() => {
-        const b = document.getElementById("oxt-cdp-input-blocker");
-        if (b) b.remove();
-      })()`,
-    });
-  } catch (_) {}
-  // Remove visual overlay
-  chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
-}
+// async function hideCdpOverlay(tabId) {
+//   // Remove main-world input blocker
+//   try {
+//     await cdpSend(tabId, "Runtime.evaluate", {
+//       expression: `(() => {
+//         const b = document.getElementById("oxt-cdp-input-blocker");
+//         if (b) b.remove();
+//       })()`,
+//     });
+//   } catch (_) {}
+//   // Remove visual overlay
+//   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
+// }
 
 function cdpSend(tabId, method, params = {}) {
   return new Promise((resolve, reject) => {
@@ -1073,7 +1073,7 @@ async function discoverContextMenu(tabId) {
 
 async function createTabFolders(tabId, senderTabId, folderNames) {
   console.log("[CDP-Folders] Starting folder creation:", folderNames);
-  showCdpOverlay(senderTabId);
+  // showCdpOverlay(senderTabId);
 
   function sendProgress(index, total, name, status) {
     chrome.tabs.sendMessage(senderTabId, {
@@ -1096,7 +1096,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
         else resolve();
       });
     });
-    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and page layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -1378,8 +1378,8 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
     sendDone(false, e.message);
   } finally {
-    try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
-    hideCdpOverlay(senderTabId);
+    // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+    // hideCdpOverlay(senderTabId);
     chrome.debugger.detach({ tabId }, () => {});
   }
 }
@@ -1468,7 +1468,7 @@ async function createDevelopmentBranch(docId, versionId) {
 
 async function enableWorkspaceProtection(tabId, senderTabId) {
   console.log("[NewDocSetup] Enabling workspace protection via CDP");
-  showCdpOverlay(senderTabId);
+  // showCdpOverlay(senderTabId);
 
   function sendSetupProgress(message) {
     chrome.tabs.sendMessage(senderTabId, {
@@ -1484,7 +1484,7 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
         else resolve();
       });
     });
-    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -1667,8 +1667,8 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
     }, 5000);
     return { error: e.message };
   } finally {
-    try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
-    hideCdpOverlay(senderTabId);
+    // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+    // hideCdpOverlay(senderTabId);
     chrome.debugger.detach({ tabId }, () => {});
   }
 }
@@ -1691,7 +1691,7 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
     await new Promise(r => setTimeout(r, 500));
   }
 
-  showCdpOverlay(senderTabId);
+  // showCdpOverlay(senderTabId);
   let needsDetach = false;
   let unpacked = 0;
 
@@ -1710,7 +1710,7 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
       });
     });
     needsDetach = true;
-    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to settle
     await new Promise(r => setTimeout(r, 500));
@@ -1808,8 +1808,8 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
   } finally {
     _unpackInProgress = false;
     if (needsDetach) {
-      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
-      hideCdpOverlay(senderTabId);
+      // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+      // hideCdpOverlay(senderTabId);
       chrome.debugger.detach({ tabId }, () => {});
     }
   }
@@ -1846,7 +1846,7 @@ async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
     chrome.tabs.sendMessage(senderTabId, { type: "tab-sort-done", sorted, skipped }).catch(() => {});
   }
 
-  if (!alreadyAttached) showCdpOverlay(senderTabId);
+  // if (!alreadyAttached) showCdpOverlay(senderTabId);
   let needsDetach = false;
   let sorted = 0;
   let skipped = 0;
@@ -1914,7 +1914,7 @@ async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
         });
       });
       needsDetach = true;
-      await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+      // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
     }
 
     for (const stray of movable) {
@@ -2081,9 +2081,9 @@ async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
   } finally {
     _sortingInProgress = false;
     if (needsDetach) {
-      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+      // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
     }
-    if (!alreadyAttached) hideCdpOverlay(senderTabId);
+    // if (!alreadyAttached) hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
   }
 }
@@ -2104,7 +2104,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
     await new Promise(r => setTimeout(r, 500));
   }
   _interferenceInProgress = true;
-  showCdpOverlay(senderTabId);
+  // showCdpOverlay(senderTabId);
 
   function sendProgress(message) {
     chrome.tabs.sendMessage(senderTabId, { type: "interference-progress", message }).catch(() => {});
@@ -2139,7 +2139,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
       });
     });
     needsDetach = true;
-    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and page layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -2484,9 +2484,9 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
   } finally {
     _interferenceInProgress = false;
     if (needsDetach) {
-      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+      // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
     }
-    hideCdpOverlay(senderTabId);
+    // hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
   }
 }
@@ -2547,49 +2547,49 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
 
-  } else if (msg.type === "check-export-allowed") {
-    // Check cached violations and folder structure — zero API calls
-    (async () => {
-      try {
-        const docId = msg.docId;
-        const issues = [];
-        const data = await chrome.storage.local.get(["violations", "docScanResults"]);
-
-        // Check cached violations (stored as { items: [...], docName, timestamp })
-        const docViolations = (data.violations || {})[docId];
-        if (docViolations && Array.isArray(docViolations.items) && docViolations.items.length > 0) {
-          issues.push(...docViolations.items.map(v => `Violation: ${v}`));
-        }
-
-        // Check folder structure from cached scan
-        const scan = (data.docScanResults || {})[docId];
-        if (scan) {
-          const folders = Object.keys(scan.folders || {});
-          const rootTabs = scan.root_tabs || [];
-          if (folders.length === 0) {
-            issues.push("No folder structure — tabs are not organized");
-          }
-          if (rootTabs.length > 0) {
-            issues.push(`${rootTabs.length} tab(s) outside folders`);
-          }
-          const illegalFolders = folders.filter(f => !["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"].includes(f));
-          if (illegalFolders.length > 0) {
-            issues.push(`Non-standard folder(s): ${illegalFolders.join(", ")}`);
-          }
-          // Check for multiple assemblies (totalAssemblies or folder count)
-          const asmCount = scan.totalAssemblies || (scan.folders?.["Assemblies"]?.assemblies ?? 0);
-          if (asmCount > 1) {
-            issues.push(`${asmCount} assemblies detected (limit: 1 per document)`);
-          }
-        }
-
-        sendResponse({ blocked: issues.length > 0, issues });
-      } catch (e) {
-        console.log(`[ExportCheck] Error: ${e.message}`);
-        sendResponse({ blocked: false, issues: [], error: e.message });
-      }
-    })();
-    return true;
+  // } else if (msg.type === "check-export-allowed") {
+  //   // Check cached violations and folder structure — zero API calls
+  //   (async () => {
+  //     try {
+  //       const docId = msg.docId;
+  //       const issues = [];
+  //       const data = await chrome.storage.local.get(["violations", "docScanResults"]);
+  //
+  //       // Check cached violations (stored as { items: [...], docName, timestamp })
+  //       const docViolations = (data.violations || {})[docId];
+  //       if (docViolations && Array.isArray(docViolations.items) && docViolations.items.length > 0) {
+  //         issues.push(...docViolations.items.map(v => `Violation: ${v}`));
+  //       }
+  //
+  //       // Check folder structure from cached scan
+  //       const scan = (data.docScanResults || {})[docId];
+  //       if (scan) {
+  //         const folders = Object.keys(scan.folders || {});
+  //         const rootTabs = scan.root_tabs || [];
+  //         if (folders.length === 0) {
+  //           issues.push("No folder structure — tabs are not organized");
+  //         }
+  //         if (rootTabs.length > 0) {
+  //           issues.push(`${rootTabs.length} tab(s) outside folders`);
+  //         }
+  //         const illegalFolders = folders.filter(f => !["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"].includes(f));
+  //         if (illegalFolders.length > 0) {
+  //           issues.push(`Non-standard folder(s): ${illegalFolders.join(", ")}`);
+  //         }
+  //         // Check for multiple assemblies (totalAssemblies or folder count)
+  //         const asmCount = scan.totalAssemblies || (scan.folders?.["Assemblies"]?.assemblies ?? 0);
+  //         if (asmCount > 1) {
+  //           issues.push(`${asmCount} assemblies detected (limit: 1 per document)`);
+  //         }
+  //       }
+  //
+  //       sendResponse({ blocked: issues.length > 0, issues });
+  //     } catch (e) {
+  //       console.log(`[ExportCheck] Error: ${e.message}`);
+  //       sendResponse({ blocked: false, issues: [], error: e.message });
+  //     }
+  //   })();
+  //   return true;
 
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
