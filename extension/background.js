@@ -692,8 +692,8 @@ async function checkDocViolations(docId, docName, wid, tabId) {
       // otherwise the CDP automation would be targeting the wrong workspace.
       const versionCount = Array.isArray(versions) ? versions.length : -1;
       const hasInitialVersion = Array.isArray(versions) && versions.some(v => v.name === "Initial");
-      console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=50, hasInitial=${hasInitialVersion}`);
-      if (versionCount <= 1 && totalFeatures >= 50 && !hasInitialVersion) {
+      console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=25, hasInitial=${hasInitialVersion}`);
+      if (versionCount <= 1 && totalFeatures >= 25 && !hasInitialVersion) {
         console.log(`[NewDocSetup] ${versionCount} versions + ${totalFeatures} features — creating initial version`);
         const vResult = await createInitialVersion(docId, wid);
         if (!vResult.error) {
@@ -2531,8 +2531,21 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   // check-kill-switch must respond even when disabled, so content.js knows to stop
+  // Also check storage cache in case the async startup read hasn't finished yet
   if (msg.type === "check-kill-switch") {
-    sendResponse({ disabled: _extensionDisabled });
+    if (_extensionDisabled) {
+      sendResponse({ disabled: true });
+    } else {
+      chrome.storage.local.get("killSwitchUntil").then(({ killSwitchUntil }) => {
+        if (killSwitchUntil && Date.now() < killSwitchUntil) {
+          applyKillSwitch("cached (from msg handler)");
+          sendResponse({ disabled: true });
+        } else {
+          sendResponse({ disabled: false });
+        }
+      }).catch(() => sendResponse({ disabled: false }));
+      return true; // keep message channel open for async response
+    }
     return;
   }
 

@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <gupdate xmlns="http://www.google.com/update2/response" protocol="2.0">
   <app appid="feihkbfmkphhihnblcjkblekfihpjbld">
-    <updatecheck codebase="https://github.com/kevin-origin/onshape-assistant/releases/download/v1.7/onshape-assistant.crx" version="1.7" />
+    <updatecheck codebase="https://github.com/kevin-origin/onshape-assistant/releases/download/v1.8/onshape-assistant.crx" version="1.8" />
   </app>
 </gupdate>

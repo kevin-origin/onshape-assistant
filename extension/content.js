@@ -791,7 +791,7 @@
   let _exportDetected = false;
 
   const exportObserver = new MutationObserver((mutations) => {
-    if (_exportDetected) return;
+    if (_exportDetected || _killSwitchActive) return;
     for (const m of mutations) {
       for (const node of m.addedNodes) {
         if (node.nodeType !== 1) continue;
@@ -926,7 +926,7 @@
   let _mergeDetected = false;
 
   const mergeObserver = new MutationObserver((mutations) => {
-    if (_mergeDetected) return;
+    if (_mergeDetected || _killSwitchActive) return;
     for (const m of mutations) {
       for (const node of m.addedNodes) {
         if (node.nodeType !== 1) continue;
