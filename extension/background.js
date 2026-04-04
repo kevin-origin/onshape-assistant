@@ -61,14 +61,18 @@ const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
 let _extensionDisabled = false;
 
 async function checkKillSwitch() {
-  const user = await getSessionUser();
-  if (user && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
-    _extensionDisabled = true;
-    chrome.action.setPopup({ popup: "" });
-    chrome.action.disable();
-    chrome.action.setBadgeText({ text: "OFF" });
-    chrome.action.setBadgeBackgroundColor({ color: "#888" });
-    console.log(`[KillSwitch] Extension disabled for ${user.email}`);
+  try {
+    const info = await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" });
+    if (info?.email && BLOCKED_EMAILS.includes(info.email.toLowerCase())) {
+      _extensionDisabled = true;
+      chrome.action.setPopup({ popup: "" });
+      chrome.action.disable();
+      chrome.action.setBadgeText({ text: "OFF" });
+      chrome.action.setBadgeBackgroundColor({ color: "#888" });
+      console.log(`[KillSwitch] Extension disabled for ${info.email}`);
+    }
+  } catch (e) {
+    console.error("[KillSwitch] Failed to check Chrome profile:", e.message);
   }
 }
 
@@ -867,25 +871,25 @@ function cdpSend(tabId, method, params = {}) {
 
 async function cdpClick(tabId, x, y) {
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseMoved", x, y, buttons: 0, pointerType: "mouse",
+    type: "mouseMoved", x, y, buttons: 0,
   });
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1, pointerType: "mouse",
+    type: "mousePressed", x, y, button: "left", buttons: 1, clickCount: 1,
   });
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1, pointerType: "mouse",
+    type: "mouseReleased", x, y, button: "left", buttons: 0, clickCount: 1,
   });
 }
 
 async function cdpRightClick(tabId, x, y) {
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseMoved", x, y, buttons: 0, pointerType: "mouse",
+    type: "mouseMoved", x, y, buttons: 0,
   });
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mousePressed", x, y, button: "right", buttons: 2, clickCount: 1, pointerType: "mouse",
+    type: "mousePressed", x, y, button: "right", buttons: 2, clickCount: 1,
   });
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
-    type: "mouseReleased", x, y, button: "right", buttons: 0, clickCount: 1, pointerType: "mouse",
+    type: "mouseReleased", x, y, button: "right", buttons: 0, clickCount: 1,
   });
 }
 
@@ -1106,72 +1110,107 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       sendProgress(i + 1, folderNames.length, name, "creating");
       console.log(`[CDP-Folders] Creating folder ${i + 1}/${folderNames.length}: ${name}`);
 
-      // Step a: Find #add-element-button and check what's at its coordinates
+      // Step a: Find the "Insert new tab" button (+ icon near tab bar)
       const insertBtn = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
-          const btn = document.querySelector('#add-element-button');
-          if (!btn || btn.offsetHeight === 0) return null;
-          const r = btn.getBoundingClientRect();
-          const cx = Math.round(r.left + r.width / 2);
-          const cy = Math.round(r.top + r.height / 2);
-          const hitEl = document.elementFromPoint(cx, cy);
-          return {
-            x: cx, y: cy,
-            hitTag: hitEl?.tagName, hitId: hitEl?.id,
-            hitCls: (hitEl?.className||'').toString().slice(0,150),
-          };
+          // Search by Bootstrap tooltip attribute (confirmed from DOM observation)
+          const byTooltip = document.querySelector('[data-bs-original-title="Insert new tab"], [title="Insert new tab"]');
+          if (byTooltip && byTooltip.offsetHeight > 0) {
+            const r = byTooltip.getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), method: "tooltip" };
+          }
+          // Fallback: find "+" button or insert icon near the tab bar
+          const tabBar = document.querySelector('.os-tab-bar-tab');
+          if (!tabBar) return null;
+          const tabR = tabBar.getBoundingClientRect();
+          // Look for small buttons/icons near the tab bar
+          const candidates = document.querySelectorAll('button, [role="button"], .os-icon, [class*="insert"], [class*="add"]');
+          for (const el of candidates) {
+            if (el.offsetHeight === 0) continue;
+            const r = el.getBoundingClientRect();
+            const title = el.getAttribute('data-bs-original-title') || el.getAttribute('title') || '';
+            const aria = el.getAttribute('aria-label') || '';
+            const text = el.textContent.trim();
+            // Must be near the tab bar vertically, and look like an add/insert button
+            if (Math.abs(r.top - tabR.top) < 30 && r.width < 50 && r.height < 50) {
+              if (text === '+' || title.toLowerCase().includes('insert') || title.toLowerCase().includes('new tab') || aria.toLowerCase().includes('insert')) {
+                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), method: "scan", title, text: text.slice(0, 20) };
+              }
+            }
+          }
+          // Last resort: dump nearby small buttons for diagnostic
+          const nearby = [];
+          for (const el of candidates) {
+            if (el.offsetHeight === 0) continue;
+            const r = el.getBoundingClientRect();
+            if (Math.abs(r.top - tabR.top) < 50 && r.width < 60) {
+              nearby.push({ cls: (el.className||'').toString().slice(0, 100), title: el.getAttribute('data-bs-original-title') || el.getAttribute('title') || '', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+            }
+          }
+          return { error: "not-found", nearby: nearby.slice(0, 10) };
         })()`,
         returnByValue: true,
       });
 
-      if (!insertBtn.result?.value) {
-        throw new Error("'Insert new tab' button (#add-element-button) not found.");
+      const btnInfo = insertBtn.result?.value;
+      if (!btnInfo || btnInfo.error) {
+        console.log("[CDP-Folders] Insert button search:", JSON.stringify(btnInfo));
+        throw new Error("'Insert new tab' button not found. See console for nearby elements.");
       }
 
-      const btnInfo = insertBtn.result.value;
-      console.log(`[CDP-Folders] Button at (${btnInfo.x}, ${btnInfo.y}), elementFromPoint: ${btnInfo.hitTag}#${btnInfo.hitId} .${btnInfo.hitCls}`);
+      console.log(`[CDP-Folders] Found insert button via ${btnInfo.method} at (${btnInfo.x}, ${btnInfo.y})`);
 
-      // Step b: Full cdpClick (mouseMoved + mousePressed + mouseReleased)
+      // Step b: Click the "Insert new tab" button to open dropdown
       await cdpClick(tabId, btnInfo.x, btnInfo.y);
-      await new Promise(r => setTimeout(r, 1500));
+      await new Promise(r => setTimeout(r, 1000));
 
-      // Step b2: Check if dropdown opened
-      const dropState = await cdpSend(tabId, "Runtime.evaluate", {
-        expression: `(() => {
-          const controls = document.querySelector('.os-tab-bar-controls');
-          const menu = document.querySelector('ul.dropdown-menu.bottom-up');
-          const createBtn = document.querySelector('#create-group-button');
-          return {
-            hasOpen: controls?.classList?.contains('open'),
-            menuDisplay: menu?.style?.display,
-            menuComputed: menu ? getComputedStyle(menu).display : null,
-            createBtnHeight: createBtn?.offsetHeight,
-            hitAtBtn: (() => {
-              const el = document.elementFromPoint(${btnInfo.x}, ${btnInfo.y});
-              return { tag: el?.tagName, id: el?.id, cls: (el?.className||'').toString().slice(0,100) };
-            })(),
-          };
-        })()`,
-        returnByValue: true,
-      });
-      console.log("[CDP-Folders] Dropdown state after click:", JSON.stringify(dropState.result?.value));
-
-      // Step c: Find "Create folder" option
+      // Step c: Find "Folder" option in the dropdown menu
       const folderOption = await waitForElement(tabId, `(() => {
-        const btn = document.querySelector('#create-group-button');
-        if (!btn || btn.offsetHeight === 0) return null;
-        const r = btn.getBoundingClientRect();
-        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+        const all = document.querySelectorAll('*');
+        for (const el of all) {
+          if (el.offsetHeight === 0 || el.children.length > 3) continue;
+          const text = el.textContent.trim().toLowerCase();
+          if (text === 'folder' || text === 'tab group' || text === 'create folder' || text === 'new folder') {
+            const r = el.getBoundingClientRect();
+            if (r.width > 30 && r.height > 10) {
+              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: el.textContent.trim() };
+            }
+          }
+        }
+        return null;
       })()`, 3000);
 
       if (!folderOption) {
+        // Dump what appeared in the dropdown for diagnostic
+        const dropDiag = await cdpSend(tabId, "Runtime.evaluate", {
+          expression: `(() => {
+            const items = [];
+            const all = document.querySelectorAll('*');
+            for (const el of all) {
+              if (el.offsetHeight === 0 || el.children.length > 3) continue;
+              const text = el.textContent.trim();
+              if (!text || text.length > 60 || text.length < 2) continue;
+              const style = getComputedStyle(el);
+              const pos = style.position;
+              const z = parseInt(style.zIndex) || 0;
+              const r = el.getBoundingClientRect();
+              // Look for menu-like items (positioned, or in a dropdown area)
+              if ((pos === 'absolute' || pos === 'fixed') && z > 0 && r.width > 50 && r.height < 400) {
+                items.push({ tag: el.tagName, cls: (el.className||'').toString().slice(0, 100), text: text.slice(0, 60), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
+              }
+            }
+            return items.slice(0, 20);
+          })()`,
+          returnByValue: true,
+        });
+        console.log("[CDP-Folders] Dropdown items:", JSON.stringify(dropDiag.result?.value, null, 2));
         await cdpPressKey(tabId, "Escape", 27);
-        throw new Error("'Create folder' (#create-group-button) not visible in dropdown.");
+        throw new Error("'Folder' option not found in dropdown. See console.");
       }
 
-      console.log(`[CDP-Folders] Found #create-group-button at (${folderOption.x}, ${folderOption.y})`);
+      console.log(`[CDP-Folders] Found folder option: "${folderOption.text}" at (${folderOption.x}, ${folderOption.y})`);
 
-      // Step d: Click "Create folder"
+      // Step d: Click "Folder" option
       await cdpClick(tabId, folderOption.x, folderOption.y);
 
       // Step e: Wait for rename input to appear
