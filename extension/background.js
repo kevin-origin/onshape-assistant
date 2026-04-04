@@ -2461,6 +2461,12 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // check-kill-switch must respond even when disabled, so content.js knows to stop
+  if (msg.type === "check-kill-switch") {
+    sendResponse({ disabled: _extensionDisabled });
+    return;
+  }
+
   // if (_extensionDisabled) return; // kill switch active — ignore all messages
 
   if (msg.type === "fetch-parts") {

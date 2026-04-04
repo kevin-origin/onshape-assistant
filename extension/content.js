@@ -688,8 +688,10 @@
   let _violationsTimer = null;
   let _pollInterval = null;
   const POLL_INTERVAL_MS = 600000; // 10 min
+  let _killSwitchActive = false; // set true if background says extension is disabled
 
   function runOnDocLoad() {
+    if (_killSwitchActive) return;
     const docId = getDocIdFromUrl();
     if (!docId || docId === _lastDocId) return;
     _lastDocId = docId;
@@ -743,11 +745,20 @@
     }, POLL_INTERVAL_MS);
   }
 
-  // Initial page load
-  runOnDocLoad();
+  // Check kill switch before doing anything — if background says disabled, bail out entirely
+  chrome.runtime.sendMessage({ type: "check-kill-switch" }, (resp) => {
+    if (resp?.disabled) {
+      _killSwitchActive = true;
+      console.log("[Scanner] Kill switch active — content script disabled");
+      return;
+    }
+    // Initial page load (only if not killed)
+    runOnDocLoad();
+  });
 
   // SPA navigation: background.js sends "spa-navigated" when URL changes
   chrome.runtime.onMessage.addListener((msg) => {
+    if (_killSwitchActive) return;
     if (msg.type === "spa-navigated") {
       console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
       _notifiedDocIds.clear(); // reset notification tracking for new doc
@@ -758,6 +769,7 @@
 
   // Fallback: poll URL every 2s in case tabs.onUpdated doesn't fire
   setInterval(() => {
+    if (_killSwitchActive) return;
     const docId = getDocIdFromUrl();
     if (docId && docId !== _lastDocId) {
       console.log("[Scanner] URL poll detected new doc:", docId);
