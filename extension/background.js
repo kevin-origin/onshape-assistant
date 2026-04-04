@@ -1106,108 +1106,25 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       sendProgress(i + 1, folderNames.length, name, "creating");
       console.log(`[CDP-Folders] Creating folder ${i + 1}/${folderNames.length}: ${name}`);
 
-      // Step a: Find the "Insert new tab" button (+ icon near tab bar)
-      const insertBtn = await cdpSend(tabId, "Runtime.evaluate", {
+      // Step a: Click #create-group-button directly via JS (bypasses dropdown/tooltip issues)
+      // Discovered via DOM observer: the "Create folder" option is <a id="create-group-button">
+      // inside ul.dropdown-menu.bottom-up. Clicking it directly works without opening the dropdown.
+      const createResult = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
-          // Search by Bootstrap tooltip attribute (confirmed from DOM observation)
-          const byTooltip = document.querySelector('[data-bs-original-title="Insert new tab"], [title="Insert new tab"]');
-          if (byTooltip && byTooltip.offsetHeight > 0) {
-            const r = byTooltip.getBoundingClientRect();
-            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), method: "tooltip" };
-          }
-          // Fallback: find "+" button or insert icon near the tab bar
-          const tabBar = document.querySelector('.os-tab-bar-tab');
-          if (!tabBar) return null;
-          const tabR = tabBar.getBoundingClientRect();
-          // Look for small buttons/icons near the tab bar
-          const candidates = document.querySelectorAll('button, [role="button"], .os-icon, [class*="insert"], [class*="add"]');
-          for (const el of candidates) {
-            if (el.offsetHeight === 0) continue;
-            const r = el.getBoundingClientRect();
-            const title = el.getAttribute('data-bs-original-title') || el.getAttribute('title') || '';
-            const aria = el.getAttribute('aria-label') || '';
-            const text = el.textContent.trim();
-            // Must be near the tab bar vertically, and look like an add/insert button
-            if (Math.abs(r.top - tabR.top) < 30 && r.width < 50 && r.height < 50) {
-              if (text === '+' || title.toLowerCase().includes('insert') || title.toLowerCase().includes('new tab') || aria.toLowerCase().includes('insert')) {
-                return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), method: "scan", title, text: text.slice(0, 20) };
-              }
-            }
-          }
-          // Last resort: dump nearby small buttons for diagnostic
-          const nearby = [];
-          for (const el of candidates) {
-            if (el.offsetHeight === 0) continue;
-            const r = el.getBoundingClientRect();
-            if (Math.abs(r.top - tabR.top) < 50 && r.width < 60) {
-              nearby.push({ cls: (el.className||'').toString().slice(0, 100), title: el.getAttribute('data-bs-original-title') || el.getAttribute('title') || '', x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
-            }
-          }
-          return { error: "not-found", nearby: nearby.slice(0, 10) };
+          const btn = document.querySelector('#create-group-button');
+          if (!btn) return { error: "create-group-button not found" };
+          btn.click();
+          return { ok: true };
         })()`,
         returnByValue: true,
       });
 
-      const btnInfo = insertBtn.result?.value;
-      if (!btnInfo || btnInfo.error) {
-        console.log("[CDP-Folders] Insert button search:", JSON.stringify(btnInfo));
-        throw new Error("'Insert new tab' button not found. See console for nearby elements.");
+      if (!createResult.result?.value?.ok) {
+        console.log("[CDP-Folders] Create folder button:", JSON.stringify(createResult.result?.value));
+        throw new Error("'Create folder' button (#create-group-button) not found in DOM.");
       }
 
-      console.log(`[CDP-Folders] Found insert button via ${btnInfo.method} at (${btnInfo.x}, ${btnInfo.y})`);
-
-      // Step b: Click the "Insert new tab" button to open dropdown
-      await cdpClick(tabId, btnInfo.x, btnInfo.y);
-      await new Promise(r => setTimeout(r, 1000));
-
-      // Step c: Find "Folder" option in the dropdown menu
-      const folderOption = await waitForElement(tabId, `(() => {
-        const all = document.querySelectorAll('*');
-        for (const el of all) {
-          if (el.offsetHeight === 0 || el.children.length > 3) continue;
-          const text = el.textContent.trim().toLowerCase();
-          if (text === 'folder' || text === 'tab group' || text === 'create folder' || text === 'new folder') {
-            const r = el.getBoundingClientRect();
-            if (r.width > 30 && r.height > 10) {
-              return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: el.textContent.trim() };
-            }
-          }
-        }
-        return null;
-      })()`, 3000);
-
-      if (!folderOption) {
-        // Dump what appeared in the dropdown for diagnostic
-        const dropDiag = await cdpSend(tabId, "Runtime.evaluate", {
-          expression: `(() => {
-            const items = [];
-            const all = document.querySelectorAll('*');
-            for (const el of all) {
-              if (el.offsetHeight === 0 || el.children.length > 3) continue;
-              const text = el.textContent.trim();
-              if (!text || text.length > 60 || text.length < 2) continue;
-              const style = getComputedStyle(el);
-              const pos = style.position;
-              const z = parseInt(style.zIndex) || 0;
-              const r = el.getBoundingClientRect();
-              // Look for menu-like items (positioned, or in a dropdown area)
-              if ((pos === 'absolute' || pos === 'fixed') && z > 0 && r.width > 50 && r.height < 400) {
-                items.push({ tag: el.tagName, cls: (el.className||'').toString().slice(0, 100), text: text.slice(0, 60), x: Math.round(r.left), y: Math.round(r.top), w: Math.round(r.width), h: Math.round(r.height) });
-              }
-            }
-            return items.slice(0, 20);
-          })()`,
-          returnByValue: true,
-        });
-        console.log("[CDP-Folders] Dropdown items:", JSON.stringify(dropDiag.result?.value, null, 2));
-        await cdpPressKey(tabId, "Escape", 27);
-        throw new Error("'Folder' option not found in dropdown. See console.");
-      }
-
-      console.log(`[CDP-Folders] Found folder option: "${folderOption.text}" at (${folderOption.x}, ${folderOption.y})`);
-
-      // Step d: Click "Folder" option
-      await cdpClick(tabId, folderOption.x, folderOption.y);
+      console.log("[CDP-Folders] Clicked #create-group-button");
 
       // Step e: Wait for rename input to appear
       const renameInput = await waitForElement(tabId, `(() => {
