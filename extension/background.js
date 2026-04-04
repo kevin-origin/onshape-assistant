@@ -1106,25 +1106,55 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       sendProgress(i + 1, folderNames.length, name, "creating");
       console.log(`[CDP-Folders] Creating folder ${i + 1}/${folderNames.length}: ${name}`);
 
-      // Step a: Click #create-group-button directly via JS (bypasses dropdown/tooltip issues)
-      // Discovered via DOM observer: the "Create folder" option is <a id="create-group-button">
-      // inside ul.dropdown-menu.bottom-up. Clicking it directly works without opening the dropdown.
-      const createResult = await cdpSend(tabId, "Runtime.evaluate", {
+      // Step a: Find the "Insert new tab" button (#add-element-button)
+      const insertBtn = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
-          const btn = document.querySelector('#create-group-button');
-          if (!btn) return { error: "create-group-button not found" };
-          btn.click();
-          return { ok: true };
+          const btn = document.querySelector('#add-element-button');
+          if (btn && btn.offsetHeight > 0) {
+            const r = btn.getBoundingClientRect();
+            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+          }
+          return null;
         })()`,
         returnByValue: true,
       });
 
-      if (!createResult.result?.value?.ok) {
-        console.log("[CDP-Folders] Create folder button:", JSON.stringify(createResult.result?.value));
-        throw new Error("'Create folder' button (#create-group-button) not found in DOM.");
+      if (!insertBtn.result?.value) {
+        throw new Error("'Insert new tab' button (#add-element-button) not found.");
       }
 
-      console.log("[CDP-Folders] Clicked #create-group-button");
+      const { x: btnX, y: btnY } = insertBtn.result.value;
+      console.log(`[CDP-Folders] Found #add-element-button at (${btnX}, ${btnY})`);
+
+      // Step b: Click the button — skip mouseMoved to avoid triggering the tooltip
+      // which covers the button and intercepts mousePressed
+      await cdpSend(tabId, "Input.dispatchMouseEvent", {
+        type: "mousePressed", x: btnX, y: btnY,
+        button: "left", buttons: 1, clickCount: 1,
+      });
+      await cdpSend(tabId, "Input.dispatchMouseEvent", {
+        type: "mouseReleased", x: btnX, y: btnY,
+        button: "left", buttons: 0, clickCount: 1,
+      });
+      await new Promise(r => setTimeout(r, 1000));
+
+      // Step c: Find "Create folder" option (#create-group-button) in the dropdown
+      const folderOption = await waitForElement(tabId, `(() => {
+        const btn = document.querySelector('#create-group-button');
+        if (!btn || btn.offsetHeight === 0) return null;
+        const r = btn.getBoundingClientRect();
+        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
+      })()`, 3000);
+
+      if (!folderOption) {
+        await cdpPressKey(tabId, "Escape", 27);
+        throw new Error("'Create folder' (#create-group-button) not visible in dropdown.");
+      }
+
+      console.log(`[CDP-Folders] Found #create-group-button at (${folderOption.x}, ${folderOption.y})`);
+
+      // Step d: Click "Create folder" option
+      await cdpClick(tabId, folderOption.x, folderOption.y);
 
       // Step e: Wait for rename input to appear
       const renameInput = await waitForElement(tabId, `(() => {
