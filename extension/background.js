@@ -1106,15 +1106,20 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
       sendProgress(i + 1, folderNames.length, name, "creating");
       console.log(`[CDP-Folders] Creating folder ${i + 1}/${folderNames.length}: ${name}`);
 
-      // Step a: Find the "Insert new tab" button (#add-element-button)
+      // Step a: Find #add-element-button and check what's at its coordinates
       const insertBtn = await cdpSend(tabId, "Runtime.evaluate", {
         expression: `(() => {
           const btn = document.querySelector('#add-element-button');
-          if (btn && btn.offsetHeight > 0) {
-            const r = btn.getBoundingClientRect();
-            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-          }
-          return null;
+          if (!btn || btn.offsetHeight === 0) return null;
+          const r = btn.getBoundingClientRect();
+          const cx = Math.round(r.left + r.width / 2);
+          const cy = Math.round(r.top + r.height / 2);
+          const hitEl = document.elementFromPoint(cx, cy);
+          return {
+            x: cx, y: cy,
+            hitTag: hitEl?.tagName, hitId: hitEl?.id,
+            hitCls: (hitEl?.className||'').toString().slice(0,150),
+          };
         })()`,
         returnByValue: true,
       });
@@ -1123,22 +1128,35 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
         throw new Error("'Insert new tab' button (#add-element-button) not found.");
       }
 
-      const { x: btnX, y: btnY } = insertBtn.result.value;
-      console.log(`[CDP-Folders] Found #add-element-button at (${btnX}, ${btnY})`);
+      const btnInfo = insertBtn.result.value;
+      console.log(`[CDP-Folders] Button at (${btnInfo.x}, ${btnInfo.y}), elementFromPoint: ${btnInfo.hitTag}#${btnInfo.hitId} .${btnInfo.hitCls}`);
 
-      // Step b: Click the button — skip mouseMoved to avoid triggering the tooltip
-      // which covers the button and intercepts mousePressed
-      await cdpSend(tabId, "Input.dispatchMouseEvent", {
-        type: "mousePressed", x: btnX, y: btnY,
-        button: "left", buttons: 1, clickCount: 1,
-      });
-      await cdpSend(tabId, "Input.dispatchMouseEvent", {
-        type: "mouseReleased", x: btnX, y: btnY,
-        button: "left", buttons: 0, clickCount: 1,
-      });
-      await new Promise(r => setTimeout(r, 1000));
+      // Step b: Full cdpClick (mouseMoved + mousePressed + mouseReleased)
+      await cdpClick(tabId, btnInfo.x, btnInfo.y);
+      await new Promise(r => setTimeout(r, 1500));
 
-      // Step c: Find "Create folder" option (#create-group-button) in the dropdown
+      // Step b2: Check if dropdown opened
+      const dropState = await cdpSend(tabId, "Runtime.evaluate", {
+        expression: `(() => {
+          const controls = document.querySelector('.os-tab-bar-controls');
+          const menu = document.querySelector('ul.dropdown-menu.bottom-up');
+          const createBtn = document.querySelector('#create-group-button');
+          return {
+            hasOpen: controls?.classList?.contains('open'),
+            menuDisplay: menu?.style?.display,
+            menuComputed: menu ? getComputedStyle(menu).display : null,
+            createBtnHeight: createBtn?.offsetHeight,
+            hitAtBtn: (() => {
+              const el = document.elementFromPoint(${btnInfo.x}, ${btnInfo.y});
+              return { tag: el?.tagName, id: el?.id, cls: (el?.className||'').toString().slice(0,100) };
+            })(),
+          };
+        })()`,
+        returnByValue: true,
+      });
+      console.log("[CDP-Folders] Dropdown state after click:", JSON.stringify(dropState.result?.value));
+
+      // Step c: Find "Create folder" option
       const folderOption = await waitForElement(tabId, `(() => {
         const btn = document.querySelector('#create-group-button');
         if (!btn || btn.offsetHeight === 0) return null;
@@ -1153,7 +1171,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
 
       console.log(`[CDP-Folders] Found #create-group-button at (${folderOption.x}, ${folderOption.y})`);
 
-      // Step d: Click "Create folder" option
+      // Step d: Click "Create folder"
       await cdpClick(tabId, folderOption.x, folderOption.y);
 
       // Step e: Wait for rename input to appear
