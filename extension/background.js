@@ -1096,7 +1096,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
         else resolve();
       });
     });
-    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and page layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -1378,7 +1378,7 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
     try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
     sendDone(false, e.message);
   } finally {
-    // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+    try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
     // hideCdpOverlay(senderTabId);
     chrome.debugger.detach({ tabId }, () => {});
   }
@@ -1484,7 +1484,7 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
         else resolve();
       });
     });
-    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -1667,7 +1667,7 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
     }, 5000);
     return { error: e.message };
   } finally {
-    // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+    try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
     // hideCdpOverlay(senderTabId);
     chrome.debugger.detach({ tabId }, () => {});
   }
@@ -1710,7 +1710,7 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
       });
     });
     needsDetach = true;
-    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to settle
     await new Promise(r => setTimeout(r, 500));
@@ -1808,7 +1808,7 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
   } finally {
     _unpackInProgress = false;
     if (needsDetach) {
-      // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
       // hideCdpOverlay(senderTabId);
       chrome.debugger.detach({ tabId }, () => {});
     }
@@ -1914,7 +1914,7 @@ async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
         });
       });
       needsDetach = true;
-      // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+      await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
     }
 
     for (const stray of movable) {
@@ -2081,7 +2081,7 @@ async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
   } finally {
     _sortingInProgress = false;
     if (needsDetach) {
-      // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
     }
     // if (!alreadyAttached) hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
@@ -2139,7 +2139,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
       });
     });
     needsDetach = true;
-    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
+    await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
 
     // Wait for debugger banner to appear and page layout to stabilize
     await new Promise(r => setTimeout(r, 500));
@@ -2484,7 +2484,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
   } finally {
     _interferenceInProgress = false;
     if (needsDetach) {
-      // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
+      try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
     }
     // hideCdpOverlay(senderTabId);
     if (needsDetach) chrome.debugger.detach({ tabId }, () => {});
