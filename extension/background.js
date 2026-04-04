@@ -57,27 +57,27 @@ async function getSessionUser() {
 // Kill switch — deactivate extension for specific user accounts
 // ---------------------------------------------------------------------------
 
-const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+// const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
 let _extensionDisabled = false;
 
-async function checkKillSwitch() {
-  try {
-    const info = await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" });
-    if (info?.email && BLOCKED_EMAILS.includes(info.email.toLowerCase())) {
-      _extensionDisabled = true;
-      chrome.action.setPopup({ popup: "" });
-      chrome.action.disable();
-      chrome.action.setBadgeText({ text: "OFF" });
-      chrome.action.setBadgeBackgroundColor({ color: "#888" });
-      console.log(`[KillSwitch] Extension disabled for ${info.email}`);
-    }
-  } catch (e) {
-    console.error("[KillSwitch] Failed to check Chrome profile:", e.message);
-  }
-}
+// async function checkKillSwitch() {
+//   try {
+//     const info = await chrome.identity.getProfileUserInfo({ accountStatus: "ANY" });
+//     if (info?.email && BLOCKED_EMAILS.includes(info.email.toLowerCase())) {
+//       _extensionDisabled = true;
+//       chrome.action.setPopup({ popup: "" });
+//       chrome.action.disable();
+//       chrome.action.setBadgeText({ text: "OFF" });
+//       chrome.action.setBadgeBackgroundColor({ color: "#888" });
+//       console.log(`[KillSwitch] Extension disabled for ${info.email}`);
+//     }
+//   } catch (e) {
+//     console.error("[KillSwitch] Failed to check Chrome profile:", e.message);
+//   }
+// }
 
 // Run kill switch check immediately on service worker startup
-checkKillSwitch();
+// checkKillSwitch();
 
 // ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
@@ -2506,7 +2506,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
 
-  if (_extensionDisabled) return; // kill switch active — ignore all messages
+  // if (_extensionDisabled) return; // kill switch active — ignore all messages
 
   if (msg.type === "fetch-parts") {
     // Fetch parts list and return to popup for selection
