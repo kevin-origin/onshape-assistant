@@ -1175,4 +1175,406 @@
     overlay.appendChild(card);
     document.body.appendChild(overlay);
   }
+
+  // ---------------------------------------------------------------------------
+  // Create Document Interceptor — force folder selection for new documents
+  // ---------------------------------------------------------------------------
+
+  const ROBOTS_FOLDER_ID = "371921fef1883886aa1b6818";
+
+  function initCreateDocInterceptor() {
+    const observer = new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType !== 1) continue;
+          // Check if this is the Create dropdown menu
+          const dropdown = node.matches?.("div.dropdown-menu.os-create-menu.create-new-type-menu.show")
+            ? node
+            : node.querySelector?.("div.dropdown-menu.os-create-menu.create-new-type-menu.show");
+          if (dropdown) attachDocumentIntercept(dropdown);
+        }
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[CreateDoc] Interceptor observer started");
+  }
+
+  function attachDocumentIntercept(dropdown) {
+    const buttons = dropdown.querySelectorAll("button.dropdown-item");
+    let docBtn = null;
+    for (const btn of buttons) {
+      if (btn.textContent.trim().startsWith("Document")) {
+        docBtn = btn;
+        break;
+      }
+    }
+    if (!docBtn) return;
+
+    // Use capturing listener to beat Onshape's handler
+    docBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      e.stopImmediatePropagation();
+      // Close the dropdown
+      dropdown.classList.remove("show");
+      dropdown.style.display = "none";
+      // Show our overlay
+      showCreateDocOverlay();
+    }, true);
+    console.log("[CreateDoc] Intercepted 'Document...' button");
+  }
+
+  // ---- Overlay UI ----
+
+  function showCreateDocOverlay() {
+    // Remove any existing overlay
+    const existing = document.getElementById("oxt-create-doc-overlay");
+    if (existing) existing.remove();
+
+    const overlay = document.createElement("div");
+    overlay.id = "oxt-create-doc-overlay";
+    overlay.style.cssText = `
+      position: fixed; inset: 0; z-index: 999999;
+      background: rgba(0,0,0,0.6); display: flex;
+      align-items: center; justify-content: center;
+      font-family: system-ui, -apple-system, sans-serif;
+    `;
+
+    const card = document.createElement("div");
+    card.style.cssText = `
+      background: #1a1a2e; border-radius: 12px; padding: 28px 32px;
+      min-width: 420px; max-width: 520px; color: #e0e0e0;
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+    `;
+
+    // Close on backdrop click
+    overlay.addEventListener("click", (e) => {
+      if (e.target === overlay) overlay.remove();
+    });
+
+    // --- Step 1: Robot-related question ---
+    showRobotQuestion(card, overlay);
+
+    overlay.appendChild(card);
+    document.body.appendChild(overlay);
+  }
+
+  function showRobotQuestion(card, overlay) {
+    card.innerHTML = "";
+
+    const title = document.createElement("h2");
+    title.textContent = "Create New Document";
+    title.style.cssText = "margin: 0 0 6px; font-size: 20px; color: #fff;";
+    card.appendChild(title);
+
+    const subtitle = document.createElement("p");
+    subtitle.textContent = "Is this document robot-related?";
+    subtitle.style.cssText = "margin: 0 0 4px; font-size: 15px; color: #ccc;";
+    card.appendChild(subtitle);
+
+    const hint = document.createElement("p");
+    hint.textContent = "Includes POCs, experiments, and anything robot-adjacent.";
+    hint.style.cssText = "margin: 0 0 20px; font-size: 12px; color: #888;";
+    card.appendChild(hint);
+
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display: flex; gap: 12px; justify-content: center;";
+
+    const yesBtn = makeButton("Yes", "#4a6cf7");
+    const noBtn = makeButton("No", "#555");
+    const cancelBtn = makeButton("Cancel", "#333", "#aaa");
+
+    yesBtn.addEventListener("click", () => {
+      showFolderPicker(card, overlay, true);
+    });
+    noBtn.addEventListener("click", () => {
+      showFolderPicker(card, overlay, false);
+    });
+    cancelBtn.addEventListener("click", () => overlay.remove());
+
+    btnRow.appendChild(yesBtn);
+    btnRow.appendChild(noBtn);
+    btnRow.appendChild(cancelBtn);
+    card.appendChild(btnRow);
+  }
+
+  function showFolderPicker(card, overlay, isRobot) {
+    card.innerHTML = "";
+
+    const title = document.createElement("h2");
+    title.textContent = "Create New Document";
+    title.style.cssText = "margin: 0 0 16px; font-size: 20px; color: #fff;";
+    card.appendChild(title);
+
+    // Document name input
+    const nameLabel = document.createElement("label");
+    nameLabel.textContent = "Document name";
+    nameLabel.style.cssText = "font-size: 13px; color: #aaa; display: block; margin-bottom: 4px;";
+    card.appendChild(nameLabel);
+
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.placeholder = "Enter document name...";
+    nameInput.style.cssText = `
+      width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #444;
+      background: #111; color: #fff; font-size: 14px; margin-bottom: 14px;
+      box-sizing: border-box; outline: none;
+    `;
+    nameInput.addEventListener("focus", () => { nameInput.style.borderColor = "#4a6cf7"; });
+    nameInput.addEventListener("blur", () => { nameInput.style.borderColor = "#444"; });
+    card.appendChild(nameInput);
+
+    // Breadcrumb
+    const breadcrumb = document.createElement("div");
+    breadcrumb.style.cssText = `
+      font-size: 12px; color: #888; margin-bottom: 8px;
+      display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+    `;
+    card.appendChild(breadcrumb);
+
+    // Folder list container
+    const listContainer = document.createElement("div");
+    listContainer.style.cssText = `
+      max-height: 260px; overflow-y: auto; border: 1px solid #333;
+      border-radius: 6px; background: #111; margin-bottom: 14px;
+    `;
+    card.appendChild(listContainer);
+
+    // Status
+    const status = document.createElement("div");
+    status.style.cssText = "font-size: 12px; color: #888; margin-bottom: 14px; min-height: 16px;";
+    card.appendChild(status);
+
+    // Buttons
+    const btnRow = document.createElement("div");
+    btnRow.style.cssText = "display: flex; gap: 10px; justify-content: flex-end;";
+
+    const cancelBtn = makeButton("Cancel", "#333", "#aaa");
+    cancelBtn.addEventListener("click", () => overlay.remove());
+
+    const backBtn = makeButton("Back", "#333", "#aaa");
+    backBtn.addEventListener("click", () => showRobotQuestion(card, overlay));
+
+    const createBtn = makeButton("Create here", "#4a6cf7");
+    createBtn.style.display = "none"; // hidden until folder selected
+
+    btnRow.appendChild(backBtn);
+    btnRow.appendChild(cancelBtn);
+    btnRow.appendChild(createBtn);
+    card.appendChild(btnRow);
+
+    // Navigation state
+    const pathStack = []; // [{ name, id }]
+    let currentFolderId = null;
+
+    function updateBreadcrumb() {
+      breadcrumb.innerHTML = "";
+      const root = document.createElement("span");
+      root.textContent = isRobot ? "Robots" : "Company";
+      root.style.cssText = "cursor: pointer; color: #4a6cf7; text-decoration: underline;";
+      root.addEventListener("click", () => {
+        pathStack.length = 0;
+        currentFolderId = null;
+        loadFolders();
+      });
+      breadcrumb.appendChild(root);
+
+      for (let i = 0; i < pathStack.length; i++) {
+        const sep = document.createElement("span");
+        sep.textContent = " > ";
+        sep.style.color = "#555";
+        breadcrumb.appendChild(sep);
+
+        const crumb = document.createElement("span");
+        crumb.textContent = pathStack[i].name;
+        if (i < pathStack.length - 1) {
+          crumb.style.cssText = "cursor: pointer; color: #4a6cf7; text-decoration: underline;";
+          const idx = i;
+          crumb.addEventListener("click", () => {
+            currentFolderId = pathStack[idx].id;
+            pathStack.length = idx + 1;
+            loadFolders();
+          });
+        } else {
+          crumb.style.color = "#ccc";
+        }
+        breadcrumb.appendChild(crumb);
+      }
+    }
+
+    function loadFolders() {
+      listContainer.innerHTML = "";
+      status.textContent = "Loading folders...";
+      createBtn.style.display = "inline-block"; // show "Create here" since they can create in current folder
+
+      updateBreadcrumb();
+
+      const msgType = currentFolderId ? "list-subfolders" : (isRobot ? "list-subfolders" : "list-company-folders");
+      const msgPayload = currentFolderId
+        ? { type: "list-subfolders", folderId: currentFolderId }
+        : (isRobot
+          ? { type: "list-subfolders", folderId: ROBOTS_FOLDER_ID }
+          : { type: "list-company-folders" });
+
+      chrome.runtime.sendMessage(msgPayload, (resp) => {
+        if (chrome.runtime.lastError) {
+          status.textContent = "Error: " + chrome.runtime.lastError.message;
+          return;
+        }
+        if (resp.error) {
+          status.textContent = "Error: " + resp.error;
+          return;
+        }
+
+        let folders = resp.folders || [];
+        // If top-level non-robot, exclude the Robots folder
+        if (!isRobot && !currentFolderId) {
+          folders = folders.filter(f => f.id !== ROBOTS_FOLDER_ID);
+        }
+
+        status.textContent = folders.length === 0
+          ? "No subfolders. Click 'Create here' to place the document in the current folder."
+          : folders.length + " folder(s)";
+
+        if (folders.length === 0) {
+          const empty = document.createElement("div");
+          empty.textContent = "No subfolders found";
+          empty.style.cssText = "padding: 20px; text-align: center; color: #666;";
+          listContainer.appendChild(empty);
+          return;
+        }
+
+        for (const folder of folders) {
+          const row = document.createElement("div");
+          row.style.cssText = `
+            display: flex; align-items: center; padding: 8px 12px;
+            cursor: pointer; border-bottom: 1px solid #222;
+            transition: background 0.15s;
+          `;
+          row.addEventListener("mouseenter", () => { row.style.background = "#222"; });
+          row.addEventListener("mouseleave", () => { row.style.background = "transparent"; });
+
+          const icon = document.createElement("span");
+          icon.textContent = "\uD83D\uDCC1";
+          icon.style.cssText = "margin-right: 10px; font-size: 16px;";
+
+          const name = document.createElement("span");
+          name.textContent = folder.name;
+          name.style.cssText = "flex: 1; font-size: 14px; color: #ddd;";
+
+          const arrow = document.createElement("span");
+          arrow.textContent = "\u25B6";
+          arrow.style.cssText = "color: #666; font-size: 10px; margin-left: 8px;";
+
+          row.appendChild(icon);
+          row.appendChild(name);
+          row.appendChild(arrow);
+
+          // Double-click or arrow click to navigate into
+          row.addEventListener("dblclick", () => navigateInto(folder));
+          arrow.addEventListener("click", (e) => {
+            e.stopPropagation();
+            navigateInto(folder);
+          });
+
+          listContainer.appendChild(row);
+        }
+      });
+    }
+
+    function navigateInto(folder) {
+      pathStack.push({ name: folder.name, id: folder.id });
+      currentFolderId = folder.id;
+      loadFolders();
+    }
+
+    function getTargetFolderId() {
+      if (currentFolderId) return currentFolderId;
+      return isRobot ? ROBOTS_FOLDER_ID : null;
+    }
+
+    createBtn.addEventListener("click", () => {
+      const docName = nameInput.value.trim();
+      if (!docName) {
+        status.textContent = "Please enter a document name.";
+        status.style.color = "#ff6b6b";
+        nameInput.focus();
+        return;
+      }
+      const targetFolder = getTargetFolderId();
+      if (!targetFolder) {
+        status.textContent = "Please select a folder first.";
+        status.style.color = "#ff6b6b";
+        return;
+      }
+
+      // Disable buttons, show spinner
+      createBtn.disabled = true;
+      createBtn.textContent = "Creating...";
+      createBtn.style.opacity = "0.6";
+      cancelBtn.disabled = true;
+      backBtn.disabled = true;
+      status.textContent = "Creating document...";
+      status.style.color = "#888";
+
+      chrome.runtime.sendMessage({
+        type: "create-doc-in-folder",
+        name: docName,
+        folderId: targetFolder,
+      }, (resp) => {
+        if (chrome.runtime.lastError) {
+          status.textContent = "Error: " + chrome.runtime.lastError.message;
+          status.style.color = "#ff6b6b";
+          resetCreateBtn();
+          return;
+        }
+        if (resp.error) {
+          status.textContent = "Error: " + resp.error;
+          status.style.color = "#ff6b6b";
+          resetCreateBtn();
+          return;
+        }
+
+        status.textContent = "Document created! Redirecting...";
+        status.style.color = "#4ade80";
+        if (resp.url) {
+          setTimeout(() => {
+            overlay.remove();
+            window.location.href = resp.url;
+          }, 600);
+        } else {
+          setTimeout(() => overlay.remove(), 1500);
+        }
+      });
+
+      function resetCreateBtn() {
+        createBtn.disabled = false;
+        createBtn.textContent = "Create here";
+        createBtn.style.opacity = "1";
+        cancelBtn.disabled = false;
+        backBtn.disabled = false;
+      }
+    });
+
+    // Initial load
+    loadFolders();
+    // Focus the name input
+    setTimeout(() => nameInput.focus(), 100);
+  }
+
+  function makeButton(text, bg, color) {
+    const btn = document.createElement("button");
+    btn.textContent = text;
+    btn.style.cssText = `
+      padding: 8px 20px; border: none; border-radius: 6px;
+      background: ${bg}; color: ${color || "#fff"}; font-size: 14px;
+      cursor: pointer; font-weight: 500; transition: opacity 0.15s;
+    `;
+    btn.addEventListener("mouseenter", () => { btn.style.opacity = "0.85"; });
+    btn.addEventListener("mouseleave", () => { btn.style.opacity = "1"; });
+    return btn;
+  }
+
+  // Start the interceptor
+  initCreateDocInterceptor();
+
 })();

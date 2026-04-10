@@ -2916,6 +2916,86 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
 
+  } else if (msg.type === "list-company-folders") {
+    // Fetch top-level company folders from global tree nodes
+    (async () => {
+      try {
+        const folders = [];
+        let offset = 0;
+        const limit = 50;
+        while (true) {
+          const data = await onshapeFetch(`/api/globaltreenodes/magic/1?offset=${offset}&limit=${limit}`);
+          const items = data.items || [];
+          for (const item of items) {
+            if (item.resourceType === "folder") {
+              folders.push({ name: item.name, id: item.id });
+            }
+          }
+          if (items.length < limit || (data.next === undefined && items.length === 0)) break;
+          offset += limit;
+        }
+        sendResponse({ folders });
+      } catch (e) {
+        console.error("[ListFolders] Top-level error:", e.message);
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "list-subfolders") {
+    // Fetch subfolders inside a given folder
+    (async () => {
+      try {
+        const folderId = msg.folderId;
+        if (!folderId) { sendResponse({ error: "Missing folderId" }); return; }
+        const folders = [];
+        let offset = 0;
+        const limit = 50;
+        while (true) {
+          const data = await onshapeFetch(`/api/globaltreenodes/folder/${folderId}?offset=${offset}&limit=${limit}`);
+          const items = data.items || [];
+          for (const item of items) {
+            if (item.resourceType === "folder") {
+              folders.push({ name: item.name, id: item.id });
+            }
+          }
+          if (items.length < limit || (data.next === undefined && items.length === 0)) break;
+          offset += limit;
+        }
+        sendResponse({ folders });
+      } catch (e) {
+        console.error("[ListFolders] Subfolder error:", e.message);
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "create-doc-in-folder") {
+    // Create a new document in a specific folder
+    (async () => {
+      try {
+        const name = msg.name || "Untitled";
+        const folderId = msg.folderId;
+        if (!folderId) { sendResponse({ error: "Missing folderId" }); return; }
+        const body = {
+          name: name,
+          parentId: folderId,
+          ownerType: 1,
+          ownerId: COMPANY_ID,
+        };
+        const doc = await onshapePost("/api/v10/documents", body);
+        const docId = doc.id;
+        const defaultWid = doc.defaultWorkspace?.id || "";
+        const url = `${ONSHAPE_BASE}/documents/${docId}/w/${defaultWid}`;
+        console.log(`[CreateDoc] Created "${name}" in folder ${folderId} -> ${docId}`);
+        sendResponse({ docId, url });
+      } catch (e) {
+        console.error("[CreateDoc] Failed:", e.message);
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
   } else if (msg.type === "get-doc-creator") {
     (async () => {
       const docId = msg.docId;
