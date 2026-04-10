@@ -1644,6 +1644,15 @@
   function attachVersionDescriptionGuard(modal, descField, submitBtn) {
     let warningEl = null;
 
+    // Dim the button initially since description starts empty
+    function updateButtonState() {
+      const hasDesc = !!descField.value.trim();
+      submitBtn.style.opacity = hasDesc ? "" : "0.4";
+      submitBtn.style.pointerEvents = hasDesc ? "" : "";
+      // Keep pointer events so clicking still shows the warning
+    }
+    updateButtonState();
+
     function showWarning() {
       if (warningEl) return;
       warningEl = document.createElement("div");
@@ -1684,8 +1693,9 @@
       }, true);
     }
 
-    // Hide warning as soon as user types something
+    // Update button appearance and hide warning as user types
     descField.addEventListener("input", () => {
+      updateButtonState();
       if (descField.value.trim()) {
         hideWarning();
       }
