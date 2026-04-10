@@ -1593,7 +1593,109 @@
     return btn;
   }
 
-  // Start the interceptor
+  // ---------------------------------------------------------------------------
+  // Version Description Enforcer — require description before creating version
+  // ---------------------------------------------------------------------------
+
+  function initVersionDescriptionEnforcer() {
+    let _lastModal = null;
+
+    const observer = new MutationObserver(() => {
+      const modal = document.querySelector(
+        "div.modal.version-or-workspace-dialog.show"
+      );
+      if (modal && modal !== _lastModal) {
+        _lastModal = modal;
+        delete modal.dataset.oxtVersionEnforced;
+        waitForVersionForm(modal);
+      } else if (!modal && _lastModal) {
+        delete _lastModal.dataset.oxtVersionEnforced;
+        _lastModal = null;
+      }
+    });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
+    console.log("[VersionDesc] Enforcer observer started");
+  }
+
+  function waitForVersionForm(modal, attempts) {
+    attempts = attempts || 0;
+
+    // Only target "Create version" dialogs, not workspace/edit dialogs
+    const titleEl = modal.querySelector(".modal-title");
+    if (!titleEl || !titleEl.textContent.includes("Create version")) {
+      return; // not a Create Version dialog — ignore
+    }
+
+    const descField = modal.querySelector(".modal-body textarea");
+    const submitBtn = modal.querySelector(".modal-footer button[type='submit']");
+
+    if (!descField || !submitBtn) {
+      if (attempts < 20) {
+        setTimeout(() => waitForVersionForm(modal, attempts + 1), 50);
+      }
+      return;
+    }
+
+    if (modal.dataset.oxtVersionEnforced) return;
+    modal.dataset.oxtVersionEnforced = "1";
+    attachVersionDescriptionGuard(modal, descField, submitBtn);
+  }
+
+  function attachVersionDescriptionGuard(modal, descField, submitBtn) {
+    let warningEl = null;
+
+    function showWarning() {
+      if (warningEl) return;
+      warningEl = document.createElement("div");
+      warningEl.textContent =
+        "Please fill in the description with all changes made since the previous version.";
+      warningEl.style.cssText =
+        "color: #e74c3c; font-size: 13px; margin-top: 6px; font-weight: 500;";
+      descField.parentElement.appendChild(warningEl);
+    }
+
+    function hideWarning() {
+      if (warningEl) {
+        warningEl.remove();
+        warningEl = null;
+      }
+    }
+
+    // Block submit if description is empty (capture phase fires before Onshape)
+    submitBtn.addEventListener("click", (e) => {
+      if (!descField.value.trim()) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        showWarning();
+        descField.focus();
+      }
+    }, true);
+
+    // Also block form-level submit (Enter key, etc.)
+    const form = modal.querySelector("form");
+    if (form) {
+      form.addEventListener("submit", (e) => {
+        if (!descField.value.trim()) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          showWarning();
+          descField.focus();
+        }
+      }, true);
+    }
+
+    // Hide warning as soon as user types something
+    descField.addEventListener("input", () => {
+      if (descField.value.trim()) {
+        hideWarning();
+      }
+    });
+
+    console.log("[VersionDesc] Guard attached to Create Version dialog");
+  }
+
+  // Start interceptors
   initCreateDocInterceptor();
+  initVersionDescriptionEnforcer();
 
 })();
