@@ -324,50 +324,25 @@
 
   const FOLDER_NAMES = ["Part Studios", "Assemblies", "Drawings", "Feature Studios", "Variable Studios"];
 
-  // Show folder creation overlay only on new/empty documents.
-  // Guard conditions: must have 0 folders, <5 root tabs (not a mature doc),
-  // not already offered, and <=1 version (new docs have 0 or 1 auto-version).
-  // Version count is read from chrome.storage (cached by checkDocViolations) —
-  // zero extra API calls. If not yet cached (race with violations check),
-  // waits 3s and retries; if still undefined, assumes brand-new doc.
+  // Show folder creation overlay on any document without folders.
+  // Only guard: doc must have 0 folders. Auto-triggers every visit
+  // until folders are created (no persistent "already offered" tracking).
   async function maybeOfferFolderCreation(scanResult) {
     const docId = scanResult.doc_id;
     if (!docId) { console.log("[FolderSetup] No docId"); return false; }
 
     const folders = Object.keys(scanResult.folders || {});
-    const rootTabs = scanResult.root_tabs || [];
-    console.log(`[FolderSetup] docId=${docId}, folders=${folders.length}, rootTabs=${rootTabs.length}`);
+    console.log(`[FolderSetup] docId=${docId}, folders=${folders.length}`);
 
     if (folders.length > 0) { console.log("[FolderSetup] Skipped: has folders"); return false; }
-    if (rootTabs.length >= 5) { console.log("[FolderSetup] Skipped: too many root tabs"); return false; }
-
-    const stored = await chrome.storage.local.get("folderCreationOffered");
-    const offered = stored.folderCreationOffered || [];
-    if (offered.includes(docId)) { console.log("[FolderSetup] Skipped: already offered"); return false; }
-
-    // Version count cached by checkDocViolations (zero extra API calls)
-    const vcData = await chrome.storage.local.get("versionCounts");
-    const versionCount = (vcData.versionCounts || {})[docId];
-    console.log(`[FolderSetup] versionCount=${versionCount}`);
-    if (versionCount === undefined) {
-      console.log("[FolderSetup] Version count not yet available, waiting 3s...");
-      await sleep(3000);
-      const vcRetry = await chrome.storage.local.get("versionCounts");
-      const retryCount = (vcRetry.versionCounts || {})[docId];
-      console.log(`[FolderSetup] Retry versionCount=${retryCount}`);
-      if (retryCount !== undefined && retryCount > 1) { console.log("[FolderSetup] Skipped: too many versions after retry"); return false; }
-      // If still undefined, this is likely a brand-new doc — proceed
-    } else if (versionCount > 1) {
-      console.log("[FolderSetup] Skipped: too many versions");
-      return false; // Not a new doc
-    }
 
     console.log("[FolderSetup] Showing overlay!");
     showFolderOverlay(docId);
     return true;
   }
 
-  function showFolderOverlay(docId) {
+  function showFolderOverlay(docId, existingFolders) {
+    existingFolders = existingFolders || [];
     // Remove any existing overlay
     const existing = document.getElementById("oxt-folder-overlay");
     if (existing) existing.remove();
@@ -393,17 +368,44 @@
     title.style.cssText = "margin: 0 0 16px 0; font-size: 16px; color: #e0e0e0;";
     card.appendChild(title);
 
+    // If all folders already exist, show a message and Close button only
+    const allExist = FOLDER_NAMES.every(n => existingFolders.includes(n));
+    if (allExist) {
+      const msg = document.createElement("div");
+      msg.textContent = "All folders already exist.";
+      msg.style.cssText = "font-size: 14px; color: #95d5b2; margin: 16px 0;";
+      card.appendChild(msg);
+
+      const closeBtn = document.createElement("button");
+      closeBtn.textContent = "Close";
+      closeBtn.style.cssText = `
+        padding: 8px 18px; border: 1px solid #444; border-radius: 4px;
+        background: #16213e; color: #aaa; font-size: 14px; cursor: pointer;
+        margin-top: 8px;
+      `;
+      closeBtn.addEventListener("click", () => overlay.remove());
+      card.appendChild(closeBtn);
+      overlay.appendChild(card);
+      document.body.appendChild(overlay);
+      return;
+    }
+
     const checkboxes = [];
     for (const name of FOLDER_NAMES) {
+      const alreadyExists = existingFolders.includes(name);
       const label = document.createElement("label");
-      label.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; color: #e0e0e0; cursor: pointer;";
+      label.style.cssText = `display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; color: ${alreadyExists ? "#666" : "#e0e0e0"}; cursor: ${alreadyExists ? "default" : "pointer"};`;
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = true;
       cb.value = name;
       cb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
+      if (alreadyExists) {
+        cb.disabled = true;
+        cb.style.cursor = "default";
+      }
       label.appendChild(cb);
-      label.appendChild(document.createTextNode(name));
+      label.appendChild(document.createTextNode(name + (alreadyExists ? " (already exists)" : "")));
       card.appendChild(label);
       checkboxes.push(cb);
     }
@@ -422,12 +424,7 @@
       padding: 8px 18px; border: 1px solid #444; border-radius: 4px;
       background: #16213e; color: #aaa; font-size: 14px; cursor: pointer;
     `;
-    skipBtn.addEventListener("click", async () => {
-      // Save docId to offered list
-      const stored = await chrome.storage.local.get("folderCreationOffered");
-      const offered = stored.folderCreationOffered || [];
-      if (!offered.includes(docId)) offered.push(docId);
-      await chrome.storage.local.set({ folderCreationOffered: offered });
+    skipBtn.addEventListener("click", () => {
       overlay.remove();
     });
 
@@ -439,7 +436,8 @@
       font-weight: 500;
     `;
     createBtn.addEventListener("click", () => {
-      const selected = checkboxes.filter(cb => cb.checked).map(cb => cb.value);
+      // Only include enabled (non-existing) checked folders
+      const selected = checkboxes.filter(cb => cb.checked && !cb.disabled).map(cb => cb.value);
       if (selected.length === 0) {
         progressText.textContent = "Select at least one folder.";
         progressText.style.color = "#dc2626";
@@ -665,15 +663,6 @@
       _folderCreationInProgress = false;
       if (msg.success) {
         showProgressToast("All folders created!");
-        // Save docId to offered list so overlay doesn't reappear
-        const docId = getDocIdFromUrl();
-        if (docId) {
-          chrome.storage.local.get("folderCreationOffered", (stored) => {
-            const offered = stored.folderCreationOffered || [];
-            if (!offered.includes(docId)) offered.push(docId);
-            chrome.storage.local.set({ folderCreationOffered: offered });
-          });
-        }
         setTimeout(removeProgressToast, 3000);
       } else {
         const toast = showProgressToast(`Error: ${msg.error || "Unknown error"}`);
@@ -700,6 +689,19 @@
 
     } else if (msg.type === "remove-progress-toast") {
       removeProgressToast();
+
+    } else if (msg.type === "generate-folders") {
+      // Triggered from popup "Generate Folders" button
+      (async () => {
+        await waitForTabBar();
+        const result = await scanTabFolders();
+        const docId = getDocIdFromUrl();
+        if (!docId) { sendResponse({ error: "Not an Onshape document" }); return; }
+        const existingFolders = result ? Object.keys(result.folders || {}).filter(f => FOLDER_NAMES.includes(f)) : [];
+        showFolderOverlay(docId, existingFolders);
+        sendResponse({ ok: true });
+      })();
+      return true;
 
     } else if (msg.type === "cdp-overlay-show") {
       showCdpOverlay();

@@ -48,6 +48,21 @@ document.getElementById("btnSetMergePerms").addEventListener("click", () => {
   });
 });
 
+// Generate Folders — opens folder creation overlay in content script
+document.getElementById("btnGenerateFolders").addEventListener("click", () => {
+  const btn = document.getElementById("btnGenerateFolders");
+  btn.disabled = true;
+  btn.textContent = "Opening...";
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) { btn.disabled = false; btn.textContent = "Generate Folders"; return; }
+    chrome.tabs.sendMessage(tabs[0].id, { type: "generate-folders" }, () => {
+      btn.disabled = false;
+      btn.textContent = "Generate Folders";
+      window.close();
+    });
+  });
+});
+
 // Interference Check — run button
 document.getElementById("btnRunInterference").addEventListener("click", () => {
   const btn = document.getElementById("btnRunInterference");
