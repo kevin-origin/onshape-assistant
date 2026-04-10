@@ -57,57 +57,57 @@ async function getSessionUser() {
 // Kill switch — deactivate extension for specific user accounts
 // ---------------------------------------------------------------------------
 
-const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
-const KILL_SWITCH_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+// const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+// const KILL_SWITCH_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 let _extensionDisabled = false;
 
-function applyKillSwitch(reason) {
-  _extensionDisabled = true;
-  chrome.action.setPopup({ popup: "" });
-  chrome.action.disable();
-  chrome.action.setBadgeText({ text: "OFF" });
-  chrome.action.setBadgeBackgroundColor({ color: "#888" });
-  console.log(`[KillSwitch] Extension disabled (${reason})`);
-}
+// function applyKillSwitch(reason) {
+//   _extensionDisabled = true;
+//   chrome.action.setPopup({ popup: "" });
+//   chrome.action.disable();
+//   chrome.action.setBadgeText({ text: "OFF" });
+//   chrome.action.setBadgeBackgroundColor({ color: "#888" });
+//   console.log(`[KillSwitch] Extension disabled (${reason})`);
+// }
 
-async function checkKillSwitchCache() {
-  try {
-    const { killSwitchUntil } = await chrome.storage.local.get("killSwitchUntil");
-    if (killSwitchUntil && Date.now() < killSwitchUntil) {
-      applyKillSwitch("cached — expires " + new Date(killSwitchUntil).toLocaleString());
-      return true;
-    }
-  } catch (e) {
-    console.error("[KillSwitch] storage check failed:", e.message);
-  }
-  return false;
-}
+// async function checkKillSwitchCache() {
+//   try {
+//     const { killSwitchUntil } = await chrome.storage.local.get("killSwitchUntil");
+//     if (killSwitchUntil && Date.now() < killSwitchUntil) {
+//       applyKillSwitch("cached — expires " + new Date(killSwitchUntil).toLocaleString());
+//       return true;
+//     }
+//   } catch (e) {
+//     console.error("[KillSwitch] storage check failed:", e.message);
+//   }
+//   return false;
+// }
 
-async function checkKillSwitchSession() {
-  try {
-    const user = await getSessionUser();
-    if (user?.email && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
-      const until = Date.now() + KILL_SWITCH_DURATION;
-      await chrome.storage.local.set({ killSwitchUntil: until });
-      applyKillSwitch(`${user.email} — cached for 24h`);
-    } else {
-      console.log("[KillSwitch] Not blocked — email:", user?.email || "(unavailable)");
-    }
-  } catch (e) {
-    console.error("[KillSwitch] session check failed:", e.message);
-  }
-}
+// async function checkKillSwitchSession() {
+//   try {
+//     const user = await getSessionUser();
+//     if (user?.email && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
+//       const until = Date.now() + KILL_SWITCH_DURATION;
+//       await chrome.storage.local.set({ killSwitchUntil: until });
+//       applyKillSwitch(`${user.email} — cached for 24h`);
+//     } else {
+//       console.log("[KillSwitch] Not blocked — email:", user?.email || "(unavailable)");
+//     }
+//   } catch (e) {
+//     console.error("[KillSwitch] session check failed:", e.message);
+//   }
+// }
 
 // 1) Instant check from cache on startup (no network needed)
-checkKillSwitchCache().then(cached => {
-  if (cached) return;
-  // 2) If no cache hit, wait for first Onshape tab to load, then check session
-  chrome.webNavigation.onCompleted.addListener(function onOnshapeLoad(details) {
-    if (details.frameId !== 0) return; // main frame only
-    chrome.webNavigation.onCompleted.removeListener(onOnshapeLoad);
-    checkKillSwitchSession();
-  }, { url: [{ hostSuffix: ".onshape.com" }] });
-});
+// checkKillSwitchCache().then(cached => {
+//   if (cached) return;
+//   // 2) If no cache hit, wait for first Onshape tab to load, then check session
+//   chrome.webNavigation.onCompleted.addListener(function onOnshapeLoad(details) {
+//     if (details.frameId !== 0) return; // main frame only
+//     chrome.webNavigation.onCompleted.removeListener(onOnshapeLoad);
+//     checkKillSwitchSession();
+//   }, { url: [{ hostSuffix: ".onshape.com" }] });
+// });
 
 // ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
@@ -2913,6 +2913,86 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const local = perms[msg.docId];
       const hasOwners = local && Array.isArray(local.owners) && local.owners.length > 0;
       sendResponse(hasOwners ? { exists: true, data: local } : { exists: false });
+    })();
+    return true;
+
+  } else if (msg.type === "list-company-folders") {
+    // Fetch top-level company folders from global tree nodes
+    (async () => {
+      try {
+        const folders = [];
+        let offset = 0;
+        const limit = 50;
+        while (true) {
+          const data = await onshapeFetch(`/api/globaltreenodes/magic/1?offset=${offset}&limit=${limit}`);
+          const items = data.items || [];
+          for (const item of items) {
+            if (item.resourceType === "folder") {
+              folders.push({ name: item.name, id: item.id });
+            }
+          }
+          if (items.length < limit || (data.next === undefined && items.length === 0)) break;
+          offset += limit;
+        }
+        sendResponse({ folders });
+      } catch (e) {
+        console.error("[ListFolders] Top-level error:", e.message);
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "list-subfolders") {
+    // Fetch subfolders inside a given folder
+    (async () => {
+      try {
+        const folderId = msg.folderId;
+        if (!folderId) { sendResponse({ error: "Missing folderId" }); return; }
+        const folders = [];
+        let offset = 0;
+        const limit = 50;
+        while (true) {
+          const data = await onshapeFetch(`/api/globaltreenodes/folder/${folderId}?offset=${offset}&limit=${limit}`);
+          const items = data.items || [];
+          for (const item of items) {
+            if (item.resourceType === "folder") {
+              folders.push({ name: item.name, id: item.id });
+            }
+          }
+          if (items.length < limit || (data.next === undefined && items.length === 0)) break;
+          offset += limit;
+        }
+        sendResponse({ folders });
+      } catch (e) {
+        console.error("[ListFolders] Subfolder error:", e.message);
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "create-doc-in-folder") {
+    // Create a new document in a specific folder
+    (async () => {
+      try {
+        const name = msg.name || "Untitled";
+        const folderId = msg.folderId;
+        if (!folderId) { sendResponse({ error: "Missing folderId" }); return; }
+        const body = {
+          name: name,
+          parentId: folderId,
+          ownerType: 1,
+          ownerId: COMPANY_ID,
+        };
+        const doc = await onshapePost("/api/v10/documents", body);
+        const docId = doc.id;
+        const defaultWid = doc.defaultWorkspace?.id || "";
+        const url = `${ONSHAPE_BASE}/documents/${docId}/w/${defaultWid}`;
+        console.log(`[CreateDoc] Created "${name}" in folder ${folderId} -> ${docId}`);
+        sendResponse({ docId, url });
+      } catch (e) {
+        console.error("[CreateDoc] Failed:", e.message);
+        sendResponse({ error: e.message });
+      }
     })();
     return true;
 
