@@ -1183,23 +1183,31 @@
   const ROBOTS_FOLDER_ID = "371921fef1883886aa1b6818";
 
   function initCreateDocInterceptor() {
-    const observer = new MutationObserver((mutations) => {
-      for (const m of mutations) {
-        for (const node of m.addedNodes) {
-          if (node.nodeType !== 1) continue;
-          // Check if this is the Create dropdown menu
-          const dropdown = node.matches?.("div.dropdown-menu.os-create-menu.create-new-type-menu.show")
-            ? node
-            : node.querySelector?.("div.dropdown-menu.os-create-menu.create-new-type-menu.show");
-          if (dropdown) attachDocumentIntercept(dropdown);
-        }
+    // Watch for the Create dropdown appearing anywhere in the DOM.
+    // Use childList + subtree + attributes so we catch both fresh nodes
+    // and the .show class being toggled on an existing dropdown.
+    let _lastDropdown = null;
+    const observer = new MutationObserver(() => {
+      const dropdown = document.querySelector(
+        "div.dropdown-menu.os-create-menu.create-new-type-menu.show"
+      );
+      if (dropdown && dropdown !== _lastDropdown) {
+        // New dropdown appeared (or reappeared) — intercept it
+        _lastDropdown = dropdown;
+        delete dropdown.dataset.oxtIntercepted;
+        waitForDocButton(dropdown);
+      } else if (!dropdown && _lastDropdown) {
+        // Dropdown closed — reset so next open is intercepted
+        delete _lastDropdown.dataset.oxtIntercepted;
+        _lastDropdown = null;
       }
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true });
     console.log("[CreateDoc] Interceptor observer started");
   }
 
-  function attachDocumentIntercept(dropdown) {
+  function waitForDocButton(dropdown, attempts) {
+    attempts = attempts || 0;
     const buttons = dropdown.querySelectorAll("button.dropdown-item");
     let docBtn = null;
     for (const btn of buttons) {
@@ -1208,16 +1216,27 @@
         break;
       }
     }
-    if (!docBtn) return;
+    if (!docBtn) {
+      // Retry up to 500ms (10 attempts x 50ms) for Angular to populate buttons
+      if (attempts < 10) {
+        setTimeout(() => waitForDocButton(dropdown, attempts + 1), 50);
+      }
+      return;
+    }
+    // Mark so we don't re-intercept the same dropdown instance
+    dropdown.dataset.oxtIntercepted = "1";
+    attachDocumentIntercept(dropdown, docBtn);
+  }
 
-    // Use capturing listener to beat Onshape's handler
+  function attachDocumentIntercept(dropdown, docBtn) {
+    // Capture-phase listener on the button — fires before Onshape's handlers
     docBtn.addEventListener("click", (e) => {
       e.preventDefault();
       e.stopImmediatePropagation();
-      // Close the dropdown
-      dropdown.classList.remove("show");
-      dropdown.style.display = "none";
-      // Show our overlay
+      // Let Onshape close the dropdown naturally by simulating Escape
+      dropdown.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Escape", code: "Escape", keyCode: 27, bubbles: true,
+      }));
       showCreateDocOverlay();
     }, true);
     console.log("[CreateDoc] Intercepted 'Document...' button");
