@@ -57,57 +57,57 @@ async function getSessionUser() {
 // Kill switch — deactivate extension for specific user accounts
 // ---------------------------------------------------------------------------
 
-// const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
-// const KILL_SWITCH_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+const KILL_SWITCH_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 let _extensionDisabled = false;
 
-// function applyKillSwitch(reason) {
-//   _extensionDisabled = true;
-//   chrome.action.setPopup({ popup: "" });
-//   chrome.action.disable();
-//   chrome.action.setBadgeText({ text: "OFF" });
-//   chrome.action.setBadgeBackgroundColor({ color: "#888" });
-//   console.log(`[KillSwitch] Extension disabled (${reason})`);
-// }
+function applyKillSwitch(reason) {
+  _extensionDisabled = true;
+  chrome.action.setPopup({ popup: "" });
+  chrome.action.disable();
+  chrome.action.setBadgeText({ text: "OFF" });
+  chrome.action.setBadgeBackgroundColor({ color: "#888" });
+  console.log(`[KillSwitch] Extension disabled (${reason})`);
+}
 
-// async function checkKillSwitchCache() {
-//   try {
-//     const { killSwitchUntil } = await chrome.storage.local.get("killSwitchUntil");
-//     if (killSwitchUntil && Date.now() < killSwitchUntil) {
-//       applyKillSwitch("cached — expires " + new Date(killSwitchUntil).toLocaleString());
-//       return true;
-//     }
-//   } catch (e) {
-//     console.error("[KillSwitch] storage check failed:", e.message);
-//   }
-//   return false;
-// }
+async function checkKillSwitchCache() {
+  try {
+    const { killSwitchUntil } = await chrome.storage.local.get("killSwitchUntil");
+    if (killSwitchUntil && Date.now() < killSwitchUntil) {
+      applyKillSwitch("cached — expires " + new Date(killSwitchUntil).toLocaleString());
+      return true;
+    }
+  } catch (e) {
+    console.error("[KillSwitch] storage check failed:", e.message);
+  }
+  return false;
+}
 
-// async function checkKillSwitchSession() {
-//   try {
-//     const user = await getSessionUser();
-//     if (user?.email && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
-//       const until = Date.now() + KILL_SWITCH_DURATION;
-//       await chrome.storage.local.set({ killSwitchUntil: until });
-//       applyKillSwitch(`${user.email} — cached for 24h`);
-//     } else {
-//       console.log("[KillSwitch] Not blocked — email:", user?.email || "(unavailable)");
-//     }
-//   } catch (e) {
-//     console.error("[KillSwitch] session check failed:", e.message);
-//   }
-// }
+async function checkKillSwitchSession() {
+  try {
+    const user = await getSessionUser();
+    if (user?.email && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
+      const until = Date.now() + KILL_SWITCH_DURATION;
+      await chrome.storage.local.set({ killSwitchUntil: until });
+      applyKillSwitch(`${user.email} — cached for 24h`);
+    } else {
+      console.log("[KillSwitch] Not blocked — email:", user?.email || "(unavailable)");
+    }
+  } catch (e) {
+    console.error("[KillSwitch] session check failed:", e.message);
+  }
+}
 
 // 1) Instant check from cache on startup (no network needed)
-// checkKillSwitchCache().then(cached => {
-//   if (cached) return;
-//   // 2) If no cache hit, wait for first Onshape tab to load, then check session
-//   chrome.webNavigation.onCompleted.addListener(function onOnshapeLoad(details) {
-//     if (details.frameId !== 0) return; // main frame only
-//     chrome.webNavigation.onCompleted.removeListener(onOnshapeLoad);
-//     checkKillSwitchSession();
-//   }, { url: [{ hostSuffix: ".onshape.com" }] });
-// });
+checkKillSwitchCache().then(cached => {
+  if (cached) return;
+  // 2) If no cache hit, wait for first Onshape tab to load, then check session
+  chrome.webNavigation.onCompleted.addListener(function onOnshapeLoad(details) {
+    if (details.frameId !== 0) return; // main frame only
+    chrome.webNavigation.onCompleted.removeListener(onOnshapeLoad);
+    checkKillSwitchSession();
+  }, { url: [{ hostSuffix: ".onshape.com" }] });
+});
 
 // ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
@@ -2549,7 +2549,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
   }
 
-  // if (_extensionDisabled) return; // kill switch active — ignore all messages
+  if (_extensionDisabled) return; // kill switch active — ignore all messages
 
   if (msg.type === "fetch-parts") {
     // Fetch parts list and return to popup for selection
