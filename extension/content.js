@@ -1199,6 +1199,10 @@
     console.log("[CreateDoc] Interceptor observer started");
   }
 
+  // Global capture-phase listener — intercepts clicks on the Document button
+  // before Onshape's Angular handlers can process them
+  let _docInterceptReady = false;
+
   function attachDocumentIntercept(dropdown) {
     const buttons = dropdown.querySelectorAll("button.dropdown-item");
     let docBtn = null;
@@ -1210,17 +1214,32 @@
     }
     if (!docBtn) return;
 
-    // Use capturing listener to beat Onshape's handler
-    docBtn.addEventListener("click", (e) => {
-      e.preventDefault();
-      e.stopImmediatePropagation();
-      // Close the dropdown
-      dropdown.classList.remove("show");
-      dropdown.style.display = "none";
-      // Show our overlay
-      showCreateDocOverlay();
-    }, true);
-    console.log("[CreateDoc] Intercepted 'Document...' button");
+    // Mark the button so our global capture listener can identify it
+    docBtn.setAttribute("data-oxt-doc-intercept", "1");
+    console.log("[CreateDoc] Marked 'Document...' button for interception");
+
+    // Install the global capture listener once
+    if (!_docInterceptReady) {
+      _docInterceptReady = true;
+      document.addEventListener("click", (e) => {
+        const target = e.target.closest?.("[data-oxt-doc-intercept]");
+        if (!target) return;
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        console.log("[CreateDoc] Intercepted click — showing overlay");
+        // Close any open dropdown
+        const openDropdown = document.querySelector("div.dropdown-menu.os-create-menu.show");
+        if (openDropdown) {
+          openDropdown.classList.remove("show");
+          openDropdown.style.display = "none";
+        }
+        // Also click the backdrop/body to dismiss Angular's dropdown state
+        document.body.click();
+        // Show our overlay after a tick so the dropdown cleanup finishes
+        setTimeout(() => showCreateDocOverlay(), 50);
+      }, true); // <-- capture phase: fires before target/bubble
+      console.log("[CreateDoc] Global capture listener installed");
+    }
   }
 
   // ---- Overlay UI ----
