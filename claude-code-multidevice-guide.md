@@ -320,21 +320,32 @@ ssh username@IP_ADDRESS
 
 ## *Step 4 — Remote Devices: Install WSL (Windows Only)*
 
-```powershell
-# [REMOTE PowerShell as Admin]  (can run while SSHed in)
-wsl --install
+`wsl --install` is unreliable over SSH as it expects a GUI environment. Use `dism` instead — it's a pure command-line tool designed for remote/scripted installs.
+
+```bash
+# [YOUR WSL]
+ssh username@IP "dism.exe /online /enable-feature /featurename:Microsoft-Windows-Subsystem-Linux /all /norestart"
+ssh username@IP "dism.exe /online /enable-feature /featurename:VirtualMachinePlatform /all /norestart"
+```
+
+Both commands will exit with code 194 — this means success + restart required, which is normal.
+
+Now restart the remote machine:
+
+```bash
+# [YOUR WSL]
+ssh username@IP "shutdown /r /t 5"
 ```
 
 > **THE REMOTE DEVICE MUST RESTART.**
 > After restart, the remote user must open the Ubuntu app on their own device and complete WSL setup (create a Linux username and password). **This is the only step that cannot be done over SSH — they must do it locally once.**
 
-Once WSL is set up, SSH back in:
+Once WSL is set up, verify from your machine:
 
 ```bash
 # [YOUR WSL]
-ssh username@IP
-wsl
-# You are now inside their WSL environment
+ssh username@IP "wsl echo connected"
+# Should print: connected
 ```
 
 ---
