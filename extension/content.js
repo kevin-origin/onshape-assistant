@@ -47,7 +47,7 @@
   const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip all scanning/sorting/violations
   let _scanning = false;     // lock to prevent concurrent scans
   let _folderCreationInProgress = false; // suppress scans during folder creation
-  let _unpackInProgress = false; // suppress scans during folder unpacking
+  // let _unpackInProgress = false; // suppress scans during folder unpacking
 
   // ---------------------------------------------------------------------------
   // Helpers
@@ -197,10 +197,10 @@
       console.log("[Scanner] autoScan skipped: folder creation in progress");
       return;
     }
-    if (_unpackInProgress) {
-      console.log("[Scanner] autoScan skipped: folder unpack in progress");
-      return;
-    }
+    // if (_unpackInProgress) {
+    //   console.log("[Scanner] autoScan skipped: folder unpack in progress");
+    //   return;
+    // }
     const docId = getDocIdFromUrl();
     if (!docId) { console.log("[Scanner] autoScan: no docId"); return; }
 
@@ -260,15 +260,17 @@
     const folders = Object.keys(folderData);
     const rootTabs = result.root_tabs || [];
 
-    // Auto-unpack illegal folders (names not in ALLOWED_FOLDERS)
+    // // Auto-unpack illegal folders (names not in ALLOWED_FOLDERS)
     const illegalFolders = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
-    if (illegalFolders.length > 0 && !_unpackInProgress) {
-      console.log("[Unpack] Found illegal folders:", illegalFolders);
-      _unpackInProgress = true;
-      showProgressToast("Unpacking illegal folders...");
-      chrome.runtime.sendMessage({ type: "unpack-illegal-folders", folders: illegalFolders });
-      return; // sort + re-scan will happen after unpack completes
-    }
+    // if (illegalFolders.length > 0 && !_unpackInProgress) {
+    //   console.log("[Unpack] Found illegal folders:", illegalFolders);
+    //   _unpackInProgress = true;
+    //   showProgressToast("Unpacking illegal folders...");
+    //   if (HAS_DEBUGGER) {
+    //     chrome.runtime.sendMessage({ type: "unpack-illegal-folders", folders: illegalFolders });
+    //   }
+    //   return; // sort + re-scan will happen after unpack completes
+    // }
 
     const illegal = [
       ...illegalFolders,
@@ -609,9 +611,12 @@
       }
 
     } else if (msg.type === "unpack-progress") {
+      /* unpack disabled
       showProgressToast(`Unpacking folder: "${msg.name}"...`);
+      */
 
     } else if (msg.type === "unpack-done") {
+      /* unpack disabled
       _unpackInProgress = false;
       if (msg.error) {
         const toast = showProgressToast(`Unpack error: ${msg.error}`);
@@ -622,6 +627,7 @@
         setTimeout(removeProgressToast, 3000);
         // sort-tabs + re-scan happen automatically from background.js
       }
+      */
 
     } else if (msg.type === "tab-sort-progress") {
       showProgressToast(`Sorting: moving "${msg.name}"...`);

@@ -1711,6 +1711,7 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
 // Unpack Illegal Folders — CDP right-click > Unpack on non-standard folders
 // ---------------------------------------------------------------------------
 
+/* COMMENTED OUT — unpack functionality disabled
 let _unpackInProgress = false;
 
 async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
@@ -1848,6 +1849,7 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
     }
   }
 }
+*/
 
 // ---------------------------------------------------------------------------
 // Tab Sorter — persistent, moves stray root-level tabs into matching folders
@@ -2677,12 +2679,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sortStrayTabs(tabId, tabId).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
     return true;
 
+  /* COMMENTED OUT — unpack functionality disabled
   } else if (msg.type === "unpack-illegal-folders") {
     const tabId = sender.tab?.id;
     if (!tabId) { sendResponse({ error: "No tab" }); return; }
     unpackIllegalFolders(tabId, tabId, msg.folders || []);
     sendResponse({ ok: true });
     return;
+  */
 
   } else if (msg.type === "check-interference") {
     // Interference detection via CDP — triggered from popup or content.js
@@ -3135,7 +3139,7 @@ const _loadedVersion = chrome.runtime.getManifest().version;
 console.log(`[AutoUpdate] Extension loaded, version: ${_loadedVersion}`);
 
 function isExtensionBusy() {
-  return _drawingInProgress || _sortingInProgress || _interferenceInProgress || _unpackInProgress;
+  return _drawingInProgress || _sortingInProgress || _interferenceInProgress /* || _unpackInProgress */;
 }
 
 let _updatePending = false; // true when update detected but waiting for busy ops to finish
