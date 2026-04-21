@@ -1,0 +1,12 @@
+{
+  "addons": {
+    "onshape-assistant@artila.dev": {
+      "updates": [
+        {
+          "version": "2.1.1",
+          "update_link": "https://github.com/kevin-origin/onshape-assistant/releases/download/v2.1.1/onshape-assistant-firefox.xpi"
+        }
+      ]
+    }
+  }
+}
