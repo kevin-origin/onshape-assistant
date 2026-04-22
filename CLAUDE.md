@@ -372,6 +372,7 @@ After briefing agents, periodically check panes for "out of usage". If detected:
 ## Hard rules
 - **Credentials are hardcoded** in scripts — do not refactor to env vars, unless credentials are unavailable in which case ask and substitute
 - After Kevin approves any edit: commit and `git push origin dev` immediately
+- **Before sending ANY tmux message to ANY pane:** escape ALL panes first (loop Escape over all 6 panes with sleep), verify target pane is clear, then send. No exceptions — idle panes keep /status open indefinitely
 - **tmux send-keys — always split text and Enter**: never use `tmux send-keys -t PANE "message" Enter` in one call. Always do two separate calls with a sleep in between:
   ```bash
   tmux send-keys -t PANE "message"
