@@ -38,7 +38,7 @@ Find any section with: `// Section name`
 | Section header | What lives there |
 |---|---|
 | `Session user cache` | `getSessionUser()` — cached `/api/v10/users/sessioninfo` |
-| `Kill switch` | Blocked emails array (commented on dev, uncommented on main) |
+| `Kill switch` | Blocked emails array (`[]` on dev, `[emails...]` on main — never comment out the block) |
 | `Team members cache` | `getTeamMembers()` — cached team member list |
 | `Onshape API via session cookies` | `onshapeFetch()`, `getXsrfToken()`, `onshapePost()` |
 | `Drawing Creator` | `createDrawingsForUrl()` — full drawing creation orchestrator; `broadcastDrawLog()`, `parsePartStudioUrl()`, `computeScale()`, `pollModify()` |
@@ -196,12 +196,21 @@ KV namespace: `PERMISSIONS` — key = docId, value = JSON array of owner emails.
 
 ## Kill switch (background.js — `Kill switch` section)
 
+**Never comment out the kill switch block.** Commenting only `BLOCKED_EMAILS` causes a `ReferenceError` (functions still reference it). Commenting the whole block means the functions disappear — a dev→main merge then silently removes all kill switch protection.
+
+Control the kill switch by changing only the **array content**:
+
 ```js
-// const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+// dev branch — kill switch active but blocks nobody:
+const BLOCKED_EMAILS = [];
+
+// main branch — kill switch active and blocking:
+const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
 ```
 
-- **`dev` branch**: line must be **commented out**
-- **`main` branch**: line must be **uncommented**
+- **`dev` branch**: `BLOCKED_EMAILS = []` — all functions uncommented and active
+- **`main` branch**: `BLOCKED_EMAILS = [emails...]` — all functions uncommented and active
+- `publish.py` will abort the release if `BLOCKED_EMAILS` is empty (safety guard)
 
 ---
 
