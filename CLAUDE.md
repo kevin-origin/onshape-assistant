@@ -334,7 +334,8 @@ Do these steps now, in order:
 Rules:
 - Never guess selectors — always provide a command to observe first
 - All commands are for the Chrome service worker console at chrome://extensions → service worker → console
-- Do not edit files. Do not commit.
+- **Every generated command MUST be written to /mnt/c/Users/kevin/Desktop/OnshapeTools/observer-commands.txt** — prepend it at the top of the file (keep existing content below). Never only reply with it in chat.
+- Do not edit files other than observer-commands.txt. Do not commit.
 - Only communicate with the planner — never contact other agents directly
 - When you finish a task or have findings ready, ALWAYS run: bash ~/tell.sh planner "your findings here"
 ```
