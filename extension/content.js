@@ -5,42 +5,6 @@
 (function () {
   "use strict";
 
-  // ---------------------------------------------------------------------------
-  // Release settings page guard — only Kevin's accounts may access
-  // ---------------------------------------------------------------------------
-  const RELEASE_URL = "/companySettings/6810c247e7c40668c32816a6/release";
-  const ADMIN_EMAILS = ["kevin@origin.tech", "kevin@10xconstruction.ai"];
-
-  if (window.location.pathname.startsWith(RELEASE_URL)) {
-    chrome.runtime.sendMessage({ type: "get-session-user" }, (user) => {
-      if (user && !user.error && ADMIN_EMAILS.includes(user.email?.toLowerCase())) {
-        console.log("[ReleaseGuard] Admin access granted:", user.email);
-        return; // allowed — do nothing
-      }
-      console.log("[ReleaseGuard] Blocked — unauthorized user:", user?.email || "unknown");
-      // Full-page overlay preventing interaction
-      const overlay = document.createElement("div");
-      overlay.style.cssText = "position:fixed;inset:0;z-index:2147483647;background:#1a1a2e;display:flex;align-items:center;justify-content:center;flex-direction:column;font-family:system-ui,sans-serif;";
-      overlay.innerHTML = `
-        <div style="text-align:center;color:#e0e0e0;max-width:480px;padding:40px;">
-          <div style="font-size:48px;margin-bottom:20px;">&#128274;</div>
-          <h1 style="font-size:24px;margin:0 0 12px;color:#fff;">Access Restricted</h1>
-          <p style="font-size:16px;line-height:1.5;color:#aaa;margin:0 0 24px;">
-            Release management settings are restricted to administrators only.
-            Contact your admin if you need access.
-          </p>
-          <button id="release-guard-back" style="padding:10px 28px;font-size:15px;border:none;border-radius:6px;background:#4a6cf7;color:#fff;cursor:pointer;">
-            Go Back
-          </button>
-        </div>`;
-      document.documentElement.appendChild(overlay);
-      overlay.querySelector("#release-guard-back").addEventListener("click", () => {
-        window.history.back();
-      });
-    });
-    return; // stop all other content.js logic for this page
-  }
-
   const CLICK_DELAY = 500;   // ms after clicking a folder before reading children
   const ROOT_DELAY  = 500;   // ms after clicking "All tabs" breadcrumb
   const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
