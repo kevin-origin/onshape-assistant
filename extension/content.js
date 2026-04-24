@@ -72,6 +72,16 @@
     return document.querySelectorAll(".os-tab-bar-breadcrumb").length;
   }
 
+  function waitForEl(selector, callback) {
+    const el = document.querySelector(selector);
+    if (el) { callback(el); return; }
+    const obs = new MutationObserver(() => {
+      const found = document.querySelector(selector);
+      if (found) { obs.disconnect(); callback(found); }
+    });
+    obs.observe(document.body, { childList: true, subtree: true });
+  }
+
   async function clickAllTabs() {
     // Onshape may start inside a folder (remembers last view).
     // Breadcrumbs may not have rendered yet when waitForTabBar() returns,
@@ -698,7 +708,32 @@
   const POLL_INTERVAL_MS = 600000; // 10 min
   let _killSwitchActive = false; // set true if background says extension is disabled
 
+  // ---------------------------------------------------------------------------
+  // Assembly guard — write oxtAssemblyCount to DOM dataset so content-main.js
+  // (MAIN world) can read it without an extra API call
+  // ---------------------------------------------------------------------------
+  chrome.storage.onChanged.addListener(function(changes, area) {
+    if (area !== 'local' || !changes.docScanResults) return;
+    const docId = getDocIdFromUrl();
+    if (!docId) return;
+    const docResult = (changes.docScanResults.newValue || {})[docId];
+    if (!docResult) return;
+    const count = typeof docResult.totalAssemblies === 'number' ? docResult.totalAssemblies : 0;
+    document.documentElement.dataset.oxtAssemblyCount = String(count);
+    console.log('[AssemblyGuard] Storage updated, totalAssemblies=' + count);
+  });
+
   function runOnDocLoad() {
+    // Pre-populate oxtAssemblyCount from cached scan so content-main.js guard
+    // has a value before any new scan completes
+    chrome.storage.local.get('docScanResults', function(data) {
+      const docId = getDocIdFromUrl();
+      if (!docId) return;
+      const docResult = (data.docScanResults || {})[docId];
+      if (!docResult) return;
+      const count = typeof docResult.totalAssemblies === 'number' ? docResult.totalAssemblies : 0;
+      document.documentElement.dataset.oxtAssemblyCount = String(count);
+    });
     if (_killSwitchActive) return;
     const docId = getDocIdFromUrl();
     if (!docId || docId === _lastDocId) return;

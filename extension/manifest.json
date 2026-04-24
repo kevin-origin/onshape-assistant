@@ -34,6 +34,16 @@
         "content.js"
       ],
       "run_at": "document_idle"
+    },
+    {
+      "matches": [
+        "https://cad.onshape.com/*"
+      ],
+      "js": [
+        "content-main.js"
+      ],
+      "run_at": "document_idle",
+      "world": "MAIN"
     }
   ],
   "icons": {
