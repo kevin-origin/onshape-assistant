@@ -31,6 +31,15 @@ document.getElementById("btnGoMergePerms").addEventListener("click", () => {
   loadMergePermissions();
 });
 document.getElementById("btnBackFromMergePerms").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnGoExport").addEventListener("click", () => showSection("sectionExport"));
+document.getElementById("btnBackFromExport").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnGoExport3D").addEventListener("click", () => showSection("sectionExport3D"));
+document.getElementById("btnBackFromExport3D").addEventListener("click", () => showSection("sectionExport"));
+document.getElementById("btnGoExportBulk").addEventListener("click", () => {
+  showSection("sectionExportBulk");
+  loadExportElements();
+});
+document.getElementById("btnBackFromExportBulk").addEventListener("click", () => showSection("sectionExport"));
 
 // Set merge permissions for current doc — triggers overlay in content script
 document.getElementById("btnSetMergePerms").addEventListener("click", () => {
@@ -47,6 +56,164 @@ document.getElementById("btnSetMergePerms").addEventListener("click", () => {
     });
   });
 });
+
+// Bulk Export — collect selections and send to background
+document.getElementById("btnBulkExport").addEventListener("click", () => {
+  if (!_exportData) return;
+  const btn = document.getElementById("btnBulkExport");
+  const $status = document.getElementById("exportStatus");
+  const $log = document.getElementById("exportLog");
+  const { did, wid } = _exportData;
+
+  // Collect selected part studios with their checked parts
+  const psMap = {};
+  document.querySelectorAll(".part-export-cb:checked").forEach(cb => {
+    const psId = cb.dataset.psId;
+    const psCb = document.querySelector(`.ps-cb[data-ps-id="${psId}"]`);
+    if (!psCb || !psCb.checked) return;
+    if (!psMap[psId]) psMap[psId] = { psId, psName: psCb.dataset.psName, parts: [] };
+    psMap[psId].parts.push({ partName: cb.dataset.partName, deterministicId: cb.dataset.deterministicId });
+  });
+  const selectedPartStudios = Object.values(psMap);
+
+  const selectedDrawings = [];
+  document.querySelectorAll(".drawing-export-cb:checked").forEach(cb => {
+    selectedDrawings.push({ id: cb.dataset.drawingId, name: cb.dataset.drawingName });
+  });
+
+  if (selectedPartStudios.length === 0 && selectedDrawings.length === 0) {
+    $status.style.display = "block";
+    $status.style.color = "#ff6b6b";
+    $status.textContent = "Nothing selected to export";
+    return;
+  }
+
+  btn.disabled = true;
+  $log.style.display = "block";
+  $log.innerHTML = "";
+  $status.style.display = "block";
+  $status.style.color = "#7ec8e3";
+  $status.textContent = "Exporting...";
+
+  chrome.runtime.sendMessage({ type: "bulk-export", did, wid, selectedPartStudios, selectedDrawings });
+});
+
+// ---------------------------------------------------------------------------
+// Export element loader + renderer
+// ---------------------------------------------------------------------------
+
+function loadExportElements() {
+  const $panel = document.getElementById("exportElementsPanel");
+  const $status = document.getElementById("exportStatus");
+  const $log = document.getElementById("exportLog");
+  _exportData = null;
+  $panel.style.display = "none";
+  $log.style.display = "none";
+  $log.innerHTML = "";
+  $status.style.display = "block";
+  $status.style.color = "#7ec8e3";
+  $status.textContent = "Loading elements...";
+
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) { $status.textContent = "No active tab"; return; }
+    const url = tabs[0].url || "";
+    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
+    const widMatch = url.match(/\/w\/([a-f0-9]+)/);
+    if (!docMatch || !widMatch) {
+      $status.textContent = "Not an Onshape workspace";
+      return;
+    }
+    _exportData = { did: docMatch[1], wid: widMatch[1] };
+    chrome.runtime.sendMessage({ type: "fetch-export-elements", did: docMatch[1], wid: widMatch[1] });
+  });
+}
+
+function renderExportElements(partStudios, drawings) {
+  const $status = document.getElementById("exportStatus");
+  const $panel = document.getElementById("exportElementsPanel");
+  const $psList = document.getElementById("exportPsList");
+  const $drawList = document.getElementById("exportDrawingsList");
+
+  $psList.innerHTML = "";
+  $drawList.innerHTML = "";
+
+  const psWithParts = partStudios.filter(ps => ps.flatParts.length > 0);
+
+  if (psWithParts.length === 0 && drawings.length === 0) {
+    $status.textContent = "No exportable elements found";
+    return;
+  }
+
+  $status.style.display = "none";
+  $panel.style.display = "block";
+
+  // Part Studios
+  if (psWithParts.length === 0) {
+    $psList.innerHTML = '<div style="color:#555;font-size:13px;padding:3px 0;">No flat patterns found</div>';
+  }
+  for (const ps of psWithParts) {
+    const psRow = document.createElement("div");
+    psRow.className = "part-item";
+    const psCb = document.createElement("input");
+    psCb.type = "checkbox";
+    psCb.checked = true;
+    psCb.className = "ps-cb";
+    psCb.dataset.psId = ps.id;
+    psCb.dataset.psName = ps.name;
+    const psLabel = document.createElement("span");
+    psLabel.style.fontWeight = "600";
+    psLabel.textContent = ps.name;
+    psRow.appendChild(psCb);
+    psRow.appendChild(psLabel);
+    const partContainer = document.createElement("div");
+    partContainer.style.paddingLeft = "18px";
+    psRow.addEventListener("click", (e) => {
+      if (e.target !== psCb) psCb.checked = !psCb.checked;
+      partContainer.style.display = psCb.checked ? "block" : "none";
+    });
+    $psList.appendChild(psRow);
+
+    for (const part of ps.flatParts) {
+      const partRow = document.createElement("div");
+      partRow.className = "part-item";
+      const partCb = document.createElement("input");
+      partCb.type = "checkbox";
+      partCb.checked = true;
+      partCb.className = "part-export-cb";
+      partCb.dataset.psId = ps.id;
+      partCb.dataset.deterministicId = part.deterministicId;
+      partCb.dataset.partName = part.partName;
+      const partLabel = document.createElement("span");
+      partLabel.textContent = part.partName;
+      partRow.appendChild(partCb);
+      partRow.appendChild(partLabel);
+      partRow.addEventListener("click", (e) => { if (e.target !== partCb) partCb.checked = !partCb.checked; });
+      partContainer.appendChild(partRow);
+    }
+    $psList.appendChild(partContainer);
+  }
+
+  // Drawings
+  if (drawings.length === 0) {
+    $drawList.innerHTML = '<div style="color:#555;font-size:13px;padding:3px 0;">No drawings found</div>';
+  }
+  for (const d of drawings) {
+    const row = document.createElement("div");
+    row.className = "part-item";
+    const cb = document.createElement("input");
+    cb.type = "checkbox";
+    cb.checked = true;
+    cb.className = "drawing-export-cb";
+    cb.dataset.drawingId = d.id;
+    cb.dataset.drawingName = d.name;
+    const label = document.createElement("span");
+    label.textContent = d.name;
+    row.appendChild(cb);
+    row.appendChild(label);
+    row.addEventListener("click", (e) => { if (e.target !== cb) cb.checked = !cb.checked; });
+    $drawList.appendChild(row);
+  }
+}
 
 // Generate Folders — opens folder creation overlay in content script
 document.getElementById("btnGenerateFolders").addEventListener("click", () => {
@@ -289,6 +456,114 @@ function validateFolders(result) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Export 3D (STEP / STL)
+// ---------------------------------------------------------------------------
+
+let _export3dFormat = "STEP";
+let _export3dParts  = [];
+
+const $btnFormatStep  = document.getElementById("btnFormatStep");
+const $btnFormatStl   = document.getElementById("btnFormatStl");
+
+function setExport3dFormat(fmt) {
+  _export3dFormat = fmt;
+  $btnFormatStep.style.background = fmt === "STEP" ? "#1b4332" : "#1a1a40";
+  $btnFormatStep.style.color      = fmt === "STEP" ? "#95d5b2" : "#7ec8e3";
+  $btnFormatStep.style.border     = fmt === "STEP" ? "none" : "1px solid #333";
+  $btnFormatStl.style.background  = fmt === "STL"  ? "#1b4332" : "#1a1a40";
+  $btnFormatStl.style.color       = fmt === "STL"  ? "#95d5b2" : "#7ec8e3";
+  $btnFormatStl.style.border      = fmt === "STL"  ? "none" : "1px solid #333";
+}
+
+$btnFormatStep.addEventListener("click", () => setExport3dFormat("STEP"));
+$btnFormatStl.addEventListener("click",  () => setExport3dFormat("STL"));
+
+function append3dLog(text, cls) {
+  const $log = document.getElementById("export3dLog");
+  $log.style.display = "block";
+  const line = document.createElement("div");
+  line.className = "log-line" + (cls ? " " + cls : "");
+  line.textContent = text;
+  $log.appendChild(line);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+document.getElementById("btnLoadExport3dParts").addEventListener("click", () => {
+  const url = document.getElementById("export3dUrl").value.trim();
+  if (!url || !url.includes("cad.onshape.com/documents/")) {
+    append3dLog("Enter a valid Part Studio URL", "log-err");
+    return;
+  }
+  const btn = document.getElementById("btnLoadExport3dParts");
+  btn.disabled = true;
+  document.getElementById("export3dPartPanel").style.display = "none";
+  document.getElementById("export3dLog").style.display = "none";
+  document.getElementById("export3dLog").innerHTML = "";
+  append3dLog("Fetching parts...");
+
+  chrome.runtime.sendMessage({ type: "fetch-parts", url }, (response) => {
+    btn.disabled = false;
+    if (!response || response.error) {
+      append3dLog(response ? response.error : "No response from background", "log-err");
+      return;
+    }
+    _export3dParts = response.parts || [];
+    if (_export3dParts.length === 0) {
+      append3dLog("No parts found", "log-err");
+      return;
+    }
+    document.getElementById("export3dLog").style.display = "none";
+    document.getElementById("export3dLog").innerHTML = "";
+
+    const $list = document.getElementById("export3dPartList");
+    $list.innerHTML = "";
+    document.getElementById("chkExport3dSelectAll").checked = true;
+    _export3dParts.forEach((part, i) => {
+      const div = document.createElement("div");
+      div.className = "part-item";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.checked = true;
+      cb.className = "export3d-part-cb";
+      cb.dataset.index = i;
+      const label = document.createElement("span");
+      label.textContent = part.name || `Part ${i + 1}`;
+      div.appendChild(cb);
+      div.appendChild(label);
+      div.addEventListener("click", (e) => {
+        if (e.target !== cb) cb.checked = !cb.checked;
+        const all = $list.querySelectorAll(".export3d-part-cb");
+        document.getElementById("chkExport3dSelectAll").checked = Array.from(all).every(c => c.checked);
+      });
+      $list.appendChild(div);
+    });
+    document.getElementById("export3dPartPanel").style.display = "block";
+  });
+});
+
+document.getElementById("chkExport3dSelectAll").addEventListener("change", (e) => {
+  document.getElementById("export3dPartList").querySelectorAll(".export3d-part-cb")
+    .forEach(cb => cb.checked = e.target.checked);
+});
+
+document.getElementById("btnRunExport3d").addEventListener("click", () => {
+  const url = document.getElementById("export3dUrl").value.trim();
+  const boxes = document.getElementById("export3dPartList").querySelectorAll(".export3d-part-cb:checked");
+  const selectedParts = Array.from(boxes).map(cb => _export3dParts[parseInt(cb.dataset.index)]);
+  if (selectedParts.length === 0) { append3dLog("No parts selected", "log-err"); return; }
+
+  const btn = document.getElementById("btnRunExport3d");
+  btn.disabled = true;
+  document.getElementById("export3dLog").innerHTML = "";
+  append3dLog(`Exporting ${selectedParts.length} part(s) as ${_export3dFormat}...`);
+
+  chrome.runtime.sendMessage({ type: "export-3d-parts", url, format: _export3dFormat, selectedParts }, (response) => {
+    if (!response) { append3dLog("No response from background", "log-err"); btn.disabled = false; }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Drawing Creator elements
 const $partStudioUrl   = document.getElementById("partStudioUrl");
 const $btnCreateDraw   = document.getElementById("btnCreateDrawings");
@@ -301,6 +576,8 @@ const $btnCancel       = document.getElementById("btnCancelDrawings");
 
 // Cached parts list after fetch
 let _fetchedParts = [];
+// Cached export element data { did, wid }
+let _exportData = null;
 
 // Scanner elements
 const $btnRescan    = document.getElementById("btnRescan");
@@ -474,6 +751,53 @@ chrome.runtime.onMessage.addListener((msg) => {
   } else if (msg.type === "violations-updated") {
     if (document.getElementById("sectionViolations").classList.contains("active")) {
       loadViolations();
+    }
+  } else if (msg.type === "export-elements-loaded") {
+    renderExportElements(msg.partStudios || [], msg.drawings || []);
+  } else if (msg.type === "export-elements-error") {
+    const $status = document.getElementById("exportStatus");
+    $status.style.display = "block";
+    $status.style.color = "#ff6b6b";
+    $status.textContent = "Error: " + msg.error;
+  } else if (msg.type === "bulk-export-progress") {
+    const $log = document.getElementById("exportLog");
+    $log.style.display = "block";
+    const line = document.createElement("div");
+    line.className = "log-line";
+    line.textContent = msg.message;
+    $log.appendChild(line);
+    $log.scrollTop = $log.scrollHeight;
+  } else if (msg.type === "export-3d-progress") {
+    append3dLog(msg.message, msg.cls);
+  } else if (msg.type === "export-3d-done") {
+    document.getElementById("btnRunExport3d").disabled = false;
+    if (msg.error) {
+      append3dLog("Error: " + msg.error, "log-err");
+    } else {
+      (msg.files || []).forEach(f => {
+        const a = document.createElement("a");
+        a.href = "data:application/octet-stream;base64," + f.base64;
+        a.download = f.name;
+        a.click();
+      });
+      append3dLog(`Done — ${(msg.files || []).length} file(s) downloaded`, "log-ok");
+    }
+  } else if (msg.type === "bulk-export-done") {
+    const btn = document.getElementById("btnBulkExport");
+    const $status = document.getElementById("exportStatus");
+    btn.disabled = false;
+    $status.style.display = "block";
+    if (msg.error) {
+      $status.textContent = "Error: " + msg.error;
+      $status.style.color = "#ff6b6b";
+    } else {
+      $status.textContent = "Download ready";
+      $status.style.color = "#95d5b2";
+      // Trigger download via data URL
+      const a = document.createElement("a");
+      a.href = "data:application/zip;base64," + msg.zipBase64;
+      a.download = msg.filename || "export.zip";
+      a.click();
     }
   }
 });

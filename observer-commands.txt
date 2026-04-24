@@ -1,3 +1,1029 @@
+== STEP + STL EXPORT PER-PART — service worker console ==
+// Fetches all parts in the Part Studio, then exports each one individually as STEP and STL.
+// One file per part per format: <partName>.step and <partName>.stl
+// Jobs are fired in parallel per part; downloads trigger as each job finishes.
+
+(async () => {
+  const did = '77e426c4e48bab78ab55f328';
+  const wid = 'd438ed0bea7c7531dfa1e4c7';
+  const eid = '396221d2d539911e722e6301'; // Sheet Metal 1 Part Studio
+
+  const poll = async (jobId) => {
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const t = await onshapeFetch(`/api/v6/translations/${jobId}`);
+      if (t.requestState !== 'ACTIVE') return t;
+    }
+    return { requestState: 'TIMEOUT' };
+  };
+
+  function toBase64(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return btoa(s);
+  }
+  const download = (data, filename) =>
+    chrome.downloads.download({ url: 'data:application/octet-stream;base64,' + toBase64(data), filename });
+
+  // Fetch parts list (v10/parts is what the extension uses — v6/partstudios/parts returns 404)
+  const partsResp = await onshapeFetch(`/api/v10/parts/d/${did}/w/${wid}/e/${eid}`);
+  const parts = Array.isArray(partsResp) ? partsResp : (partsResp.items || []);
+  console.log('[Export] Parts found:', parts.map(p => `${p.name} (${p.partId})`));
+
+  for (const part of parts) {
+    const safeName = (part.name || part.partId).replace(/[^a-zA-Z0-9_\-]/g, '_');
+    console.log(`[Export] Processing: ${part.name} (${part.partId})`);
+
+    // Fire STEP and STL jobs in parallel for this part
+    const [stepJob, stlJob] = await Promise.all([
+      onshapePost(`/api/v6/partstudios/d/${did}/w/${wid}/e/${eid}/translations`, {
+        formatName: 'STEP', storeInDocument: false, partIds: part.partId,
+      }),
+      onshapePost(`/api/v6/partstudios/d/${did}/w/${wid}/e/${eid}/translations`, {
+        formatName: 'STL', storeInDocument: false, units: 'millimeter', partIds: part.partId,
+      }),
+    ]);
+    console.log(`[Export] ${part.name} — STEP job: ${stepJob.id}  STL job: ${stlJob.id}`);
+
+    const [stepResult, stlResult] = await Promise.all([poll(stepJob.id), poll(stlJob.id)]);
+
+    // STEP download
+    if (stepResult.requestState === 'DONE' && stepResult.resultExternalDataIds?.length) {
+      const r = await fetch(`https://cad.onshape.com/api/v6/documents/d/${stepResult.documentId || did}/externaldata/${stepResult.resultExternalDataIds[0]}`, { credentials: 'include' });
+      if (r.ok) { download(new Uint8Array(await r.arrayBuffer()), safeName + '.step'); console.log(`[Export] ${part.name} STEP ✓`); }
+      else console.warn(`[Export] ${part.name} STEP blob failed:`, r.status);
+    } else console.warn(`[Export] ${part.name} STEP failed:`, stepResult.requestState, stepResult.failureReason || '');
+
+    // STL download
+    if (stlResult.requestState === 'DONE' && stlResult.resultExternalDataIds?.length) {
+      const r = await fetch(`https://cad.onshape.com/api/v6/documents/d/${stlResult.documentId || did}/externaldata/${stlResult.resultExternalDataIds[0]}`, { credentials: 'include' });
+      if (r.ok) { download(new Uint8Array(await r.arrayBuffer()), safeName + '.stl'); console.log(`[Export] ${part.name} STL ✓`); }
+      else console.warn(`[Export] ${part.name} STL blob failed:`, r.status);
+    } else console.warn(`[Export] ${part.name} STL failed:`, stlResult.requestState, stlResult.failureReason || '');
+  }
+
+  console.log('[Export] All done');
+})();
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+== BULK EXPORT DEBUG: dump flat body deterministicId + test exportinternal ==
+// Fetches first PS insertables, logs first 3 flat bodies, tries one exportinternal and logs full response body.
+
+(async () => {
+  const [tab] = await chrome.tabs.query({ url: 'https://cad.onshape.com/*' });
+  const u = new URL(tab.url);
+  const ps = u.pathname.split('/');
+  const did = ps[ps.indexOf('documents') + 1];
+  const wid = ps[ps.indexOf('w') + 1];
+
+  // 1. All PARTSTUDIO elements
+  const els = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+  const allEls = Array.isArray(els) ? els : (els?.items || []);
+  const psEls = allEls.filter(e => e.elementType === 'PARTSTUDIO');
+  console.log('[Debug] Part Studios:', psEls.map(e => `${e.name} (${e.id})`));
+  if (!psEls.length) { console.error('[Debug] No Part Studio found'); return; }
+  const psEl = psEls[0];
+
+  // 2. Insertables for first PS
+  const params = new URLSearchParams({ includeFlattenedBodies: 'true', includeParts: 'false', elementId: psEl.id });
+  const ins = await onshapeFetch(`/api/documents/d/${did}/w/${wid}/insertables?${params}`);
+  const flatParts = (ins?.items || []).filter(p => p.isFlattenedBody);
+  console.log('[Debug] Total flat bodies:', flatParts.length);
+
+  // 3. Log first 3
+  for (const fp of flatParts.slice(0, 3)) {
+    console.log('[Debug] item — deterministicId:', fp.deterministicId, '| id:', fp.id, '| name:', fp.name, '| partId:', fp.partId);
+    console.log('[Debug] full item:', JSON.stringify(fp));
+  }
+
+  if (!flatParts.length) { console.error('[Debug] No flat bodies found'); return; }
+  const first = flatParts[0];
+
+  // 4. One exportinternal with deterministicId — log full response body
+  const mvR = await fetch(`https://cad.onshape.com/api/v14/documents/d/${did}/w/${wid}/microversion`, { credentials: 'include' });
+  const microversion = (await mvR.text()).trim();
+  const xsrf = await getXsrfToken(tab.id);
+
+  const body = {
+    format: 'DXF', microversion,
+    view: '1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1',
+    destinationName: 'debug_export',
+    version: 'Release 14', units: 'millimeter',
+    flatten: 'true', includeBendCenterlines: 'true', includeSketches: 'true',
+    sheetMetalFlat: 'true', triggerAutoDownload: 'true', storeInDocument: 'false',
+    configuration: '', cloudStorageAccountId: '', cloudObjectId: '',
+    partIds: first.deterministicId
+  };
+  console.log('[Debug] Sending exportinternal — did:', did, 'wid:', wid, 'psElId:', psEl.id, 'partIds:', first.deterministicId);
+  const r = await fetch(`https://cad.onshape.com/api/documents/d/${did}/w/${wid}/e/${psEl.id}/exportinternal`, {
+    method: 'POST', credentials: 'include',
+    headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json;charset=UTF-8', 'x-xsrf-token': xsrf },
+    body: JSON.stringify(body)
+  });
+  const txt = await r.text();
+  console.log('[Debug] status:', r.status, 'content-type:', r.headers.get('content-type'));
+  console.log('[Debug] response:', txt.slice(0, 1000));
+})();
+
+== BULK EXPORT: combined ZIP — flat pattern DXFs + drawing PDFs ==
+// dxf/<name>.dxf for each flat pattern in Sheet Metal 1
+// pdf/<name>.pdf for each drawing element (elementType APPLICATION)
+// Single export_bundle.zip download.
+
+(async () => {
+  const did = '77e426c4e48bab78ab55f328';
+  const wid = 'd438ed0bea7c7531dfa1e4c7';
+  const psElId = '396221d2d539911e722e6301'; // Sheet Metal 1
+
+  const [tab] = await chrome.tabs.query({ url: 'https://cad.onshape.com/*' });
+  const xsrf = await getXsrfToken(tab.id);
+  const enc = new TextEncoder();
+
+  // --- minimal ZIP builder ---
+  function crc32(buf) {
+    const t = new Uint32Array(256);
+    for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[i] = c; }
+    let crc = -1;
+    for (let i = 0; i < buf.length; i++) crc = t[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+    return (crc ^ -1) >>> 0;
+  }
+  function makeZip(files) {
+    const locals = [], dirs = [];
+    let off = 0;
+    for (const { name, data } of files) {
+      const nb = enc.encode(name), crc = crc32(data);
+      const lh = new Uint8Array(30 + nb.length + data.length);
+      const dv = new DataView(lh.buffer);
+      dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true);
+      dv.setUint32(14, crc, true); dv.setUint32(18, data.length, true); dv.setUint32(22, data.length, true);
+      dv.setUint16(26, nb.length, true); lh.set(nb, 30); lh.set(data, 30 + nb.length);
+      locals.push(lh);
+      const cd = new Uint8Array(46 + nb.length);
+      const cv = new DataView(cd.buffer);
+      cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+      cv.setUint32(16, crc, true); cv.setUint32(20, data.length, true); cv.setUint32(24, data.length, true);
+      cv.setUint16(28, nb.length, true); cv.setUint32(42, off, true); cd.set(nb, 46);
+      dirs.push(cd); off += lh.length;
+    }
+    const cdOff = off, cdSize = dirs.reduce((s, d) => s + d.length, 0);
+    const eocd = new Uint8Array(22);
+    const ev = new DataView(eocd.buffer);
+    ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, files.length, true); ev.setUint16(10, files.length, true);
+    ev.setUint32(12, cdSize, true); ev.setUint32(16, cdOff, true);
+    const all = [...locals, ...dirs, eocd];
+    const out = new Uint8Array(all.reduce((s, a) => s + a.length, 0));
+    let pos = 0; for (const a of all) { out.set(a, pos); pos += a.length; }
+    return out;
+  }
+  function toBase64(bytes) {
+    let s = '';
+    for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
+    return btoa(s);
+  }
+  // --- end ZIP builder ---
+
+  const zipFiles = [];
+
+  // === Part 1: Flat pattern DXFs via exportinternal ===
+  const mvR = await fetch(`https://cad.onshape.com/api/v14/documents/d/${did}/w/${wid}/microversion`, { credentials: 'include' });
+  const microversion = (await mvR.text()).trim();
+  const params = new URLSearchParams({ includeFlattenedBodies: 'true', includeParts: 'false', elementId: psElId });
+  const ins = await onshapeFetch(`/api/documents/d/${did}/w/${wid}/insertables?${params}`);
+  const flatParts = (ins?.items || []).filter(p => p.isFlattenedBody);
+  console.log('[Combined] Flat patterns:', flatParts.length);
+
+  for (const fp of flatParts) {
+    const body = {
+      format: 'DXF', microversion,
+      view: '1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1',
+      destinationName: (fp.partName || 'FlatPattern') + '_export',
+      version: 'Release 14', units: 'millimeter',
+      flatten: 'true', includeBendCenterlines: 'true', includeSketches: 'true',
+      sheetMetalFlat: 'true', triggerAutoDownload: 'true', storeInDocument: 'false',
+      configuration: '', cloudStorageAccountId: '', cloudObjectId: '',
+      partIds: fp.deterministicId
+    };
+    const r = await fetch(`https://cad.onshape.com/api/documents/d/${did}/w/${wid}/e/${psElId}/exportinternal`, {
+      method: 'POST', credentials: 'include',
+      headers: { 'accept': 'application/json, text/plain, */*', 'content-type': 'application/json;charset=UTF-8', 'x-xsrf-token': xsrf },
+      body: JSON.stringify(body)
+    });
+    if (!r.ok) { console.warn('[Combined] DXF FAIL', fp.partName, r.status); continue; }
+    const dxfText = await r.text();
+    const safeName = (fp.partName || 'FlatPattern').replace(/[^a-zA-Z0-9_\-]/g, '_') + '.dxf';
+    zipFiles.push({ name: 'dxf/' + safeName, data: enc.encode(dxfText) });
+    console.log('[Combined] DXF ok:', safeName, dxfText.length, 'bytes');
+  }
+
+  // === Part 2: Drawing PDFs via translations ===
+  const elements = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+  const allEls = Array.isArray(elements) ? elements : (elements?.items || []);
+  const drawingEls = allEls.filter(e => e.elementType === 'APPLICATION');
+  console.log('[Combined] Drawing elements:', drawingEls.map(e => e.name));
+
+  const poll = async (jobId) => {
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      const t = await onshapeFetch(`/api/v6/translations/${jobId}`);
+      if (t.requestState !== 'ACTIVE') return t;
+    }
+    return { requestState: 'TIMEOUT' };
+  };
+
+  // Fire all PDF jobs in parallel
+  const pdfJobs = await Promise.all(drawingEls.map(async el => {
+    try {
+      const job = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${el.id}/translations`, {
+        formatName: 'PDF', storeInDocument: false,
+      });
+      return { name: el.name, jobId: job.id, documentId: job.documentId || did };
+    } catch(e) { console.warn('[Combined] PDF job error:', el.name, e.message); return null; }
+  }));
+  console.log('[Combined] PDF jobs fired:', pdfJobs.filter(Boolean).length);
+
+  // Poll + collect binary
+  for (const job of pdfJobs.filter(Boolean)) {
+    const t = await poll(job.jobId);
+    if (t.requestState !== 'DONE' || !t.resultExternalDataIds?.length) {
+      console.warn('[Combined] PDF failed:', job.name, t.requestState, t.failureReason || '');
+      continue;
+    }
+    const url = `https://cad.onshape.com/api/v6/documents/d/${t.documentId || did}/externaldata/${t.resultExternalDataIds[0]}`;
+    const resp = await fetch(url, { credentials: 'include' });
+    if (!resp.ok) { console.warn('[Combined] PDF blob fail:', job.name, resp.status); continue; }
+    const data = new Uint8Array(await resp.arrayBuffer());
+    const safeName = (job.name || 'Drawing').replace(/[^a-zA-Z0-9_\-]/g, '_') + '.pdf';
+    zipFiles.push({ name: 'pdf/' + safeName, data });
+    console.log('[Combined] PDF ok:', safeName, data.length, 'bytes');
+  }
+
+  // === ZIP + download ===
+  const zip = makeZip(zipFiles);
+  console.log('[Combined] ZIP size:', zip.length, 'bytes across', zipFiles.length, 'files');
+  chrome.downloads.download({ url: 'data:application/zip;base64,' + toBase64(zip), filename: 'export_bundle.zip' });
+  console.log('[Combined] Done');
+})();
+
+
+== DIAGNOSTIC: addOverallDimensions coord system check ==
+// Run this on the Cradle drawing to see raw view.position and jsongeometry coords.
+// Tells us whether geometry is view-relative or sheet-absolute, and what scale is in use.
+// Replace DRAWING_EID with the eid of the Cradle drawing just created.
+
+(async () => {
+  const did = '77e426c4e48bab78ab55f328';
+  const wid = 'd438ed0bea7c7531dfa1e4c7';
+  const DRAWING_EID = 'c7396374ccdbfbc2208fe215';  // ← paste Cradle drawing eid here
+
+  const views = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${DRAWING_EID}/views`);
+  const sheet1 = (views.items || []).filter(v => (v.sheetIndex || 0) === 0);
+  console.log('[Diag] Sheet 1 views:', sheet1.map(v => ({
+    viewId: v.viewId, label: v.label,
+    pos: v.position,   // raw meters from API
+    viewMatrix: v.viewMatrix,
+  })));
+
+  // Pick first non-iso view
+  const nonIso = sheet1.find(v => (v.viewMatrix || []).every(x => x === 0 || x === 1 || x === -1));
+  if (!nonIso) { console.log('[Diag] no non-iso view found'); return; }
+
+  const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${DRAWING_EID}/views/${nonIso.viewId}/jsongeometry`);
+  const lines = (j.bodyData || []).filter(e => e.type === 'line');
+  const xA = 0, hA = 1;
+  const allX = lines.flatMap(e => [e.data.start[xA], e.data.end[xA]]);
+  const allH = lines.flatMap(e => [e.data.start[hA], e.data.end[hA]]);
+  console.log('[Diag] View pos (m):', nonIso.position);
+  console.log('[Diag] View pos (mm):', { x: nonIso.position.x * 1000, y: nonIso.position.y * 1000 });
+  console.log('[Diag] Geometry X range (raw):', Math.min(...allX).toFixed(6), 'to', Math.max(...allX).toFixed(6));
+  console.log('[Diag] Geometry H range (raw):', Math.min(...allH).toFixed(6), 'to', Math.max(...allH).toFixed(6));
+  console.log('[Diag] If range is ~0.0x (meters, view-relative): sc() correct, pos is the bug');
+  console.log('[Diag] If range is ~0.1x (meters, sheet-absolute): need to subtract pos before sc()');
+  console.log('[Diag] First 2 lines:', JSON.stringify(lines.slice(0, 2)));
+})();
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+== END-TO-END TEST: createDrawingsForUrl with addOverallDimensions ==
+// Triggers full drawing creation + auto-dimensioning on the specified Part Studio.
+// Run in SW console: chrome://extensions → Onshape Assistant → service worker → Console
+// Watch the popup Drawing log for progress. Dimensions should appear on Sheet 1.
+
+// ⚠️ You are already inside the SW context — call the function directly, do NOT use sendMessage
+// ⚠️ Must be a PART STUDIO eid — not a Drawing or Assembly
+createDrawingsForUrl(
+  "https://cad.onshape.com/documents/77e426c4e48bab78ab55f328/w/d438ed0bea7c7531dfa1e4c7/e/396221d2d539911e722e6301",
+  null
+);
+
+// Expected log sequence in popup:
+//   labels applied
+//   adding overall dimensions...
+//   <viewId> HEIGHT <N>mm
+//   <viewId> WIDTH <N>mm
+//   submitting N dimension annotations
+//   dimensions added   ← green
+//   done               ← green
+// If "dimensions: no non-iso views on sheet 1" — check sheetIndex filter in addOverallDimensions line 543
+// If "dimensions: modify failed" — check browser network tab for 4xx on /modify endpoint
+// If dims appear at wrong position — log view.position from /views API and compare to expected:
+//   front={x:0.1218,y:0.2212}, side={x:0.2982,y:0.2212}, top={x:0.1218,y:0.1114}
+
+== ALL 6 DIMS — ONE MODIFY CALL — service worker console ==
+// Builds all 6 annotations (3 heights + 3 widths) then submits in ONE atomic modify.
+// Avoids per-view lock that causes widths to silently fail after heights in same view.
+// Delete existing dims from the drawing before running to avoid stacking duplicates.
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const scaleNum=1, scaleDen=16;
+  const sc = v => v*1000*scaleNum/scaleDen;
+  const views = [
+    { vid:'08dfb241295d5d5f442f1493', pos:{x:121.8,   y:221.2056}, name:'front', hA:1, dA:2, xA:0 },
+    { vid:'52de9f6c8346eccc70b47947', pos:{x:298.2,   y:221.2056}, name:'side',  hA:1, dA:2, xA:0 },
+    { vid:'d98d6fce163a124b5038845a', pos:{x:121.8,   y:111.434},  name:'top',   hA:1, dA:2, xA:0 }
+  ];
+  const annotations = [];
+  for (const {vid, pos, name, hA, dA, xA} of views) {
+    const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+    const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+    if (!lines.length) { console.log(name,'no lines'); continue; }
+    const avgH = e=>(e.data.start[hA]+e.data.end[hA])/2;
+    const avgD = e=>(e.data.start[dA]+e.data.end[dA])/2;
+    const spanX = e=>Math.abs(e.data.end[xA]-e.data.start[xA]);
+    const spanH = e=>Math.abs(e.data.end[hA]-e.data.start[hA]);
+    // HEIGHT annotation
+    const horiz = lines.filter(e=>Math.abs(e.data.end[hA]-e.data.start[hA])<0.0001 && spanX(e)>0.0001);
+    if (horiz.length) {
+      const minH=Math.min(...horiz.map(avgH)), maxH=Math.max(...horiz.map(avgH));
+      const botCands=horiz.filter(e=>Math.abs(avgH(e)-minH)<0.0001); botCands.sort((a,b)=>avgD(b)-avgD(a));
+      const topCands=horiz.filter(e=>Math.abs(avgH(e)-maxH)<0.0001); topCands.sort((a,b)=>avgD(a)-avgD(b));
+      const bottomEdge=botCands[0], topEdge=topCands[0];
+      const maxXval=Math.max(...lines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]));
+      const hTextPos=[pos.x+sc(maxXval)+20, pos.y, 0];
+      console.log(`${name} HEIGHT bottom:${bottomEdge.uniqueId} top:${topEdge.uniqueId} SPAN:${((maxH-minH)*1000).toFixed(1)}mm`);
+      annotations.push({type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:bottomEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:topEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:hTextPos,type:'Onshape::Reference::Point'}}});
+    } else { console.log(name,'HEIGHT: no horiz lines'); }
+    // WIDTH annotation
+    const vert = lines.filter(e=>spanX(e)<0.0001 && spanH(e)>0.0001);
+    const srcLines = vert.length ? vert : lines;
+    const allX = srcLines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]);
+    const minX=Math.min(...allX), maxX=Math.max(...allX);
+    const leftEdge=srcLines.find(e=>Math.abs(Math.min(e.data.start[xA],e.data.end[xA])-minX)<0.0001);
+    const rightEdge=srcLines.find(e=>Math.abs(Math.max(e.data.start[xA],e.data.end[xA])-maxX)<0.0001);
+    if (!leftEdge||!rightEdge) { console.log(name,'WIDTH: edge undefined'); continue; }
+    const maxHval=Math.max(...lines.flatMap(e=>[e.data.start[hA],e.data.end[hA]]));
+    const wTextPos=[pos.x+sc((minX+maxX)/2), pos.y+sc(maxHval)+20, 0];
+    console.log(`${name} WIDTH  left:${leftEdge.uniqueId} right:${rightEdge.uniqueId} SPAN:${((maxX-minX)*1000).toFixed(1)}mm`);
+    annotations.push({type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:leftEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:rightEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:wTextPos,type:'Onshape::Reference::Point'}}});
+  }
+  console.log(`Submitting ${annotations.length} annotations in one modify call`);
+  const body={description:'all dims',jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations}]};
+  const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+  console.log(`modify:${r.id}`);
+  await new Promise(res=>setTimeout(res,5000));
+  try {
+    const s = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modificationstatus/${r.id}`);
+    console.log(`STATUS=${JSON.stringify(s)}`);
+  } catch(e) { console.log('status 404 (done — check drawing)'); }
+  console.log('ALL DONE');
+})();
+
+== ALL 6 DIMS SERIALIZED — service worker console ==
+// Creates HEIGHT + WIDTH for front, side, top — one at a time, waits for each to
+// fully settle (polls modificationstatus) before firing the next.
+// Confirmed working: all 6 dims appear. Do NOT run if dims already exist — duplicates
+// will stack. Delete existing dims from the drawing first if re-running.
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const scaleNum=1, scaleDen=16;
+  const sc = v => v*1000*scaleNum/scaleDen;
+  const views = [
+    { vid:'08dfb241295d5d5f442f1493', pos:{x:121.8,   y:221.2056}, name:'front', hA:1, dA:2, xA:0 },
+    { vid:'52de9f6c8346eccc70b47947', pos:{x:298.2,   y:221.2056}, name:'side',  hA:1, dA:2, xA:0 },
+    { vid:'d98d6fce163a124b5038845a', pos:{x:121.8,   y:111.434},  name:'top',   hA:1, dA:2, xA:0 }
+  ];
+  const waitDone = async (id) => {
+    for (let i=0; i<20; i++) {
+      await new Promise(r=>setTimeout(r,1000));
+      try {
+        const s = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modificationstatus/${id}`);
+        if (s.requestState==='DONE'||s.requestState==='FAILED') return s.requestState;
+      } catch(e) { return 'DONE(404)'; }
+    }
+    return 'TIMEOUT';
+  };
+  for (const {vid, pos, name, hA, dA, xA} of views) {
+    try {
+      const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+      const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+      if (!lines.length) { console.log(name,'no lines'); continue; }
+      const avgH = e=>(e.data.start[hA]+e.data.end[hA])/2;
+      const avgD = e=>(e.data.start[dA]+e.data.end[dA])/2;
+      const spanX = e=>Math.abs(e.data.end[xA]-e.data.start[xA]);
+      const spanH = e=>Math.abs(e.data.end[hA]-e.data.start[hA]);
+      // HEIGHT
+      const horiz = lines.filter(e=>Math.abs(e.data.end[hA]-e.data.start[hA])<0.0001 && spanX(e)>0.0001);
+      if (horiz.length) {
+        const minH=Math.min(...horiz.map(avgH)), maxH=Math.max(...horiz.map(avgH));
+        const botCands=horiz.filter(e=>Math.abs(avgH(e)-minH)<0.0001); botCands.sort((a,b)=>avgD(b)-avgD(a));
+        const topCands=horiz.filter(e=>Math.abs(avgH(e)-maxH)<0.0001); topCands.sort((a,b)=>avgD(a)-avgD(b));
+        const bottomEdge=botCands[0], topEdge=topCands[0];
+        const maxXval=Math.max(...lines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]));
+        const hTextPos=[pos.x+sc(maxXval)+20, pos.y, 0];
+        const hBody={description:'height '+name,jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:bottomEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:topEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:hTextPos,type:'Onshape::Reference::Point'}}}]}]};
+        const hr=await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`,hBody);
+        const hState=await waitDone(hr.id);
+        console.log(`${name} HEIGHT SPAN:${((maxH-minH)*1000).toFixed(1)}mm modify:${hr.id} state:${hState}`);
+      } else { console.log(name,'HEIGHT: no horiz lines'); }
+      // WIDTH
+      const vert = lines.filter(e=>spanX(e)<0.0001 && spanH(e)>0.0001);
+      const srcLines = vert.length ? vert : lines;
+      const allX = srcLines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]);
+      const minX=Math.min(...allX), maxX=Math.max(...allX);
+      const leftEdge=srcLines.find(e=>Math.abs(Math.min(e.data.start[xA],e.data.end[xA])-minX)<0.0001);
+      const rightEdge=srcLines.find(e=>Math.abs(Math.max(e.data.start[xA],e.data.end[xA])-maxX)<0.0001);
+      if (!leftEdge||!rightEdge) { console.log(name,'WIDTH: edge undefined'); continue; }
+      const maxHval=Math.max(...lines.flatMap(e=>[e.data.start[hA],e.data.end[hA]]));
+      const wTextPos=[pos.x+sc((minX+maxX)/2), pos.y+sc(maxHval)+20, 0];
+      const wBody={description:'width '+name,jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:leftEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:rightEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:wTextPos,type:'Onshape::Reference::Point'}}}]}]};
+      const wr=await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`,wBody);
+      const wState=await waitDone(wr.id);
+      console.log(`${name} WIDTH  SPAN:${((maxX-minX)*1000).toFixed(1)}mm modify:${wr.id} state:${wState}`);
+    } catch(e) { console.log(name,'ERR:',e.message); }
+  }
+  console.log('ALL DONE');
+})();
+
+== TOP HEIGHT ONLY — service worker console ==
+// Creates just the top view HEIGHT dim in isolation.
+// Top HEIGHT: hA=1 (Y-axis, 850mm span), dA=2 (depth sort).
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const vid='d98d6fce163a124b5038845a'; // top view
+  const pos={x:121.8, y:111.434};
+  const scaleNum=1, scaleDen=16;
+  const sc = v => v*1000*scaleNum/scaleDen;
+  const hA=1, dA=2, xA=0;
+  const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+  const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+  const avgH = e=>(e.data.start[hA]+e.data.end[hA])/2;
+  const avgD = e=>(e.data.start[dA]+e.data.end[dA])/2;
+  const spanX = e=>Math.abs(e.data.end[xA]-e.data.start[xA]);
+  const horiz = lines.filter(e=>Math.abs(e.data.end[hA]-e.data.start[hA])<0.0001 && spanX(e)>0.0001);
+  console.log(`top: total=${lines.length} horiz=${horiz.length}`);
+  if (!horiz.length) { console.log('top: no horiz lines — aborting'); return; }
+  const minH=Math.min(...horiz.map(avgH)), maxH=Math.max(...horiz.map(avgH));
+  console.log(`top: minH=${minH.toFixed(4)} maxH=${maxH.toFixed(4)} SPAN=${((maxH-minH)*1000).toFixed(1)}mm`);
+  const botCands=horiz.filter(e=>Math.abs(avgH(e)-minH)<0.0001); botCands.sort((a,b)=>avgD(b)-avgD(a));
+  const topCands=horiz.filter(e=>Math.abs(avgH(e)-maxH)<0.0001); topCands.sort((a,b)=>avgD(a)-avgD(b));
+  const bottomEdge=botCands[0], topEdge=topCands[0];
+  console.log(`top: bottom=${bottomEdge.uniqueId} top=${topEdge.uniqueId}`);
+  const maxXval=Math.max(...lines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]));
+  const hTextPos=[pos.x+sc(maxXval)+20, pos.y, 0];
+  console.log(`top: textPos=${JSON.stringify(hTextPos)}`);
+  const body={description:'height top',jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:bottomEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:topEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:hTextPos,type:'Onshape::Reference::Point'}}}]}]};
+  const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+  console.log(`top: modify=${r.id}`);
+  await new Promise(res=>setTimeout(res,4000));
+  try {
+    const s = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modificationstatus/${r.id}`);
+    console.log(`top: STATUS=${JSON.stringify(s)}`);
+  } catch(e) { console.log('top: status 404 (done — check drawing)'); }
+})();
+
+== FRONT WIDTH ONLY TEST — service worker console ==
+// Creates just the front WIDTH dim in isolation.
+// If it appears → batch interference was the root cause.
+// Paste STATUS= output back so we can confirm.
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const vid='08dfb241295d5d5f442f1493'; // front
+  const pos={x:121.8, y:221.2056};
+  const scaleNum=1, scaleDen=16;
+  const sc = v => v*1000*scaleNum/scaleDen;
+  const hA=1, xA=0;
+  const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+  const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+  const spanX = e=>Math.abs(e.data.end[xA]-e.data.start[xA]);
+  const spanH = e=>Math.abs(e.data.end[hA]-e.data.start[hA]);
+  const vert = lines.filter(e=>spanX(e)<0.0001 && spanH(e)>0.0001);
+  const srcLines = vert.length ? vert : lines;
+  console.log(`front: total=${lines.length} vert=${vert.length} src=${srcLines.length}`);
+  const allX = srcLines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]);
+  const minX=Math.min(...allX), maxX=Math.max(...allX);
+  const leftEdge  = srcLines.find(e=>Math.abs(Math.min(e.data.start[xA],e.data.end[xA])-minX)<0.0001);
+  const rightEdge = srcLines.find(e=>Math.abs(Math.max(e.data.start[xA],e.data.end[xA])-maxX)<0.0001);
+  console.log(`front: minX=${minX.toFixed(4)} maxX=${maxX.toFixed(4)} SPAN=${((maxX-minX)*1000).toFixed(1)}mm`);
+  console.log(`front: left=${leftEdge?.uniqueId} right=${rightEdge?.uniqueId}`);
+  if (!leftEdge || !rightEdge) { console.log('front: SKIP — edge undefined'); return; }
+  const maxHval = Math.max(...lines.flatMap(e=>[e.data.start[hA],e.data.end[hA]]));
+  const wTextPos = [pos.x+sc((minX+maxX)/2), pos.y+sc(maxHval)+20, 0];
+  console.log(`front: textPos=${JSON.stringify(wTextPos)}`);
+  const body={description:'width front',jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:leftEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:rightEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:wTextPos,type:'Onshape::Reference::Point'}}}]}]};
+  const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+  console.log(`front: modify=${r.id}`);
+  await new Promise(res=>setTimeout(res,4000));
+  try {
+    const s = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modificationstatus/${r.id}`);
+    console.log(`front: STATUS=${JSON.stringify(s)}`);
+  } catch(e) { console.log('front: status 404 (done — check drawing)'); }
+})();
+
+== SIDE + TOP WIDTH DIAGNOSTIC — service worker console ==
+// Isolates width dim for side and top only. Logs edge IDs, textPos, and modify status.
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const scaleNum=1, scaleDen=16;
+  const sc = v => v*1000*scaleNum/scaleDen;
+  const views = [
+    { vid:'52de9f6c8346eccc70b47947', pos:{x:298.2,   y:221.2056}, name:'side',  hA:1, xA:0 },
+    { vid:'d98d6fce163a124b5038845a', pos:{x:121.8,   y:111.434},  name:'top',   hA:1, xA:0 }
+  ];
+  for (const {vid, pos, name, hA, xA} of views) {
+    try {
+      const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+      const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+      const spanX = e=>Math.abs(e.data.end[xA]-e.data.start[xA]);
+      const spanH = e=>Math.abs(e.data.end[hA]-e.data.start[hA]);
+      const vert = lines.filter(e=>spanX(e)<0.0001 && spanH(e)>0.0001);
+      const srcLines = vert.length ? vert : lines;
+      console.log(`${name}: total=${lines.length} vert=${vert.length} src=${srcLines.length}`);
+      const allX = srcLines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]);
+      const minX=Math.min(...allX), maxX=Math.max(...allX);
+      const leftEdge  = srcLines.find(e=>Math.abs(Math.min(e.data.start[xA],e.data.end[xA])-minX)<0.0001);
+      const rightEdge = srcLines.find(e=>Math.abs(Math.max(e.data.start[xA],e.data.end[xA])-maxX)<0.0001);
+      console.log(`${name}: minX=${minX.toFixed(4)} maxX=${maxX.toFixed(4)} SPAN=${((maxX-minX)*1000).toFixed(1)}mm`);
+      console.log(`${name}: left=${leftEdge?.uniqueId} right=${rightEdge?.uniqueId}`);
+      if (!leftEdge || !rightEdge) { console.log(`${name}: SKIP — edge undefined`); continue; }
+      const maxHval = Math.max(...lines.flatMap(e=>[e.data.start[hA],e.data.end[hA]]));
+      const wTextPos = [pos.x+sc((minX+maxX)/2), pos.y+sc(maxHval)+20, 0];
+      console.log(`${name}: textPos=${JSON.stringify(wTextPos)}`);
+      const body={description:'width '+name,jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:leftEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:rightEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:wTextPos,type:'Onshape::Reference::Point'}}}]}]};
+      const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+      console.log(`${name}: modify=${r.id}`);
+      await new Promise(res=>setTimeout(res,3000));
+      try {
+        const s = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modificationstatus/${r.id}`);
+        console.log(`${name}: STATUS=${JSON.stringify(s)}`);
+      } catch(e) { console.log(`${name}: status 404 (likely done — check drawing)`); }
+    } catch(e) { console.log(name,'ERR:',e.message); }
+  }
+})();
+
+== SIDE HEIGHT VIA CROSS-VIEW EDGES — service worker console ==
+// Side view has no usable vertical-span edges of its own.
+// Try referencing front view's confirmed height edges (f4242/f4253) with the side viewId.
+// If Onshape accepts it, a 200mm vertical dim will appear in the side view.
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const sideVid='52de9f6c8346eccc70b47947';
+  const sidePos={x:298.2, y:221.2056};
+  const scaleNum=1, scaleDen=16;
+  const sc = v => v*1000*scaleNum/scaleDen;
+  // front view's confirmed bottom/top edges — try placing them in side view
+  const bottomId='f4242', topId='f4253';
+  // textPos: right of side view (same pattern as front height dim)
+  const sideLines = ((await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${sideVid}/jsongeometry`)).bodyData||[]).filter(e=>e.type==='line');
+  const maxXval = Math.max(...sideLines.flatMap(e=>[e.data.start[1],e.data.end[1]])); // xA:1 for side
+  const textPos = [sidePos.x + sc(maxXval) + 20, sidePos.y, 0];
+  console.log('textPos:', JSON.stringify(textPos));
+  const body={description:'height side (cross-view)',jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:bottomId,viewId:sideVid},edge2:{type:'Onshape::Reference::Edge',uniqueId:topId,viewId:sideVid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:textPos,type:'Onshape::Reference::Point'}}}]}]};
+  const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+  console.log('modify id:', r.id);
+  await new Promise(res=>setTimeout(res,3000));
+  try {
+    const s = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modificationstatus/${r.id}`);
+    console.log('STATUS:', JSON.stringify(s));
+  } catch(e) { console.log('status 404 (likely done — check drawing)'); }
+})();
+
+== HEIGHT + WIDTH DIMS ALL VIEWS (except iso) — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const scaleNum=1, scaleDen=16;
+  const sc = v => v*1000*scaleNum/scaleDen;
+  const views = [
+    { vid:'08dfb241295d5d5f442f1493', pos:{x:121.8,   y:221.2056}, name:'front', hA:1, dA:2, xA:0 },
+    { vid:'52de9f6c8346eccc70b47947', pos:{x:298.2,   y:221.2056}, name:'side',  hA:1, dA:2, xA:0 },
+    { vid:'d98d6fce163a124b5038845a', pos:{x:121.8,   y:111.434},  name:'top',   hA:1, dA:2, xA:0 }
+  ];
+  for (const {vid, pos, name, hA, dA, xA} of views) {
+    try {
+      const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+      const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+      if (!lines.length) { console.log(name,'no lines'); continue; }
+      const avgH = e=>(e.data.start[hA]+e.data.end[hA])/2;
+      const avgD = e=>(e.data.start[dA]+e.data.end[dA])/2;
+      const spanX = e=>Math.abs(e.data.end[xA]-e.data.start[xA]);
+      const spanH = e=>Math.abs(e.data.end[hA]-e.data.start[hA]);
+
+      // --- HEIGHT DIM ---
+      const horiz = lines.filter(e=>Math.abs(e.data.end[hA]-e.data.start[hA])<0.0001 && spanX(e)>0.0001);
+      if (horiz.length) {
+        const minH=Math.min(...horiz.map(avgH)), maxH=Math.max(...horiz.map(avgH));
+        const botCands=horiz.filter(e=>Math.abs(avgH(e)-minH)<0.0001);
+        botCands.sort((a,b)=>avgD(b)-avgD(a));
+        const bottomEdge=botCands[0];
+        const topCands=horiz.filter(e=>Math.abs(avgH(e)-maxH)<0.0001);
+        topCands.sort((a,b)=>avgD(a)-avgD(b));
+        const topEdge=topCands[0];
+        const maxXval=Math.max(...lines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]));
+        const hTextPos=[pos.x+sc(maxXval)+20, pos.y, 0];
+        console.log(`${name} HEIGHT bottom:${bottomEdge.uniqueId} top:${topEdge.uniqueId} SPAN:${((maxH-minH)*1000).toFixed(1)}mm`);
+        const hBody={description:'height '+name,jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:bottomEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:topEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:hTextPos,type:'Onshape::Reference::Point'}}}]}]};
+        const hr=await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`,hBody);
+        console.log(`${name} height modify:${hr.id}`);
+        await new Promise(res=>setTimeout(res,2000));
+      } else { console.log(name,'HEIGHT: no horiz lines'); }
+
+      // --- WIDTH DIM ---
+      const vert = lines.filter(e=>spanX(e)<0.0001 && spanH(e)>0.0001);
+      const srcLines = vert.length ? vert : lines;
+      const allX = srcLines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]);
+      const minX=Math.min(...allX), maxX=Math.max(...allX);
+      const leftEdge=srcLines.filter(e=>Math.abs(Math.min(e.data.start[xA],e.data.end[xA])-minX)<0.0001)[0];
+      const rightEdge=srcLines.filter(e=>Math.abs(Math.max(e.data.start[xA],e.data.end[xA])-maxX)<0.0001)[0];
+      const maxHval=Math.max(...lines.flatMap(e=>[e.data.start[hA],e.data.end[hA]]));
+      const wTextPos=[pos.x+sc((minX+maxX)/2), pos.y+sc(maxHval)+20, 0];
+      console.log(`${name} WIDTH  left:${leftEdge.uniqueId} right:${rightEdge.uniqueId} SPAN:${((maxX-minX)*1000).toFixed(1)}mm`);
+      const wBody={description:'width '+name,jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:leftEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:rightEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:wTextPos,type:'Onshape::Reference::Point'}}}]}]};
+      const wr=await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`,wBody);
+      console.log(`${name} width  modify:${wr.id}`);
+      await new Promise(res=>setTimeout(res,2000));
+    } catch(e) { console.log(name,'ERR:',e.message); }
+  }
+})();
+
+== SIDE+TOP HIDDEN LINES Z-SPAN — service worker console ==
+// Purpose: check if includeHiddenLines=true exposes the z=0.225 and z=0.425 edges
+// needed for the 200mm height dim in side and top views.
+// Look in the output for lines where data[2] ≈ 0.225 or ≈ 0.425.
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const views = [
+    { vid:'52de9f6c8346eccc70b47947', name:'side' },
+    { vid:'d98d6fce163a124b5038845a', name:'top'  }
+  ];
+  for (const {vid, name} of views) {
+    const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry?includeHiddenLines=true`);
+    const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+    const r = ax => {
+      const vals = lines.flatMap(e=>[e.data.start[ax],e.data.end[ax]]);
+      return {min:Math.min(...vals).toFixed(4), max:Math.max(...vals).toFixed(4), span:((Math.max(...vals)-Math.min(...vals))*1000).toFixed(1)+'mm'};
+    };
+    console.log(`=== ${name} with hidden lines (${lines.length} lines total) ===`);
+    console.log(`  data[0]: ${r(0).min} -> ${r(0).max}  span=${r(0).span}`);
+    console.log(`  data[1]: ${r(1).min} -> ${r(1).max}  span=${r(1).span}`);
+    console.log(`  data[2]: ${r(2).min} -> ${r(2).max}  span=${r(2).span}`);
+    // Show edges at z≈0.225 (bottom target) and z≈0.425 (top target)
+    const near = (v, t) => Math.abs(v-t) < 0.005;
+    const avgZ = e => (e.data.start[2]+e.data.end[2])/2;
+    const atBot = lines.filter(e => near(avgZ(e), 0.225));
+    const atTop = lines.filter(e => near(avgZ(e), 0.425));
+    console.log(`  edges near z=0.225 (bottom): ${atBot.length}`, atBot.map(e=>({id:e.uniqueId,z:avgZ(e).toFixed(4),hidden:e.data.hidden||false})));
+    console.log(`  edges near z=0.425 (top):    ${atTop.length}`, atTop.map(e=>({id:e.uniqueId,z:avgZ(e).toFixed(4),hidden:e.data.hidden||false})));
+  }
+})();
+
+== HEIGHT DIM ALL VIEWS (except iso) — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const scaleNum=1, scaleDen=16;
+  // hA = height axis (vertical in drawing), dA = depth axis (into view), xA = horizontal axis
+  // Rule: bottomEdge = max depth at minHeight (outer back/far face)
+  //        topEdge   = min depth at maxHeight (outer front/near face)
+  const views = [
+    { vid:'08dfb241295d5d5f442f1493', pos:{x:121.8,   y:221.2056}, name:'front', hA:2, dA:1, xA:0 },
+    { vid:'52de9f6c8346eccc70b47947', pos:{x:298.2,   y:221.2056}, name:'side',  hA:2, dA:0, xA:1 },
+    { vid:'d98d6fce163a124b5038845a', pos:{x:121.8,   y:111.434},  name:'top',   hA:1, dA:2, xA:0 }
+  ];
+  for (const {vid, pos, name, hA, dA, xA} of views) {
+    try {
+      const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+      const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+      if (!lines.length) { console.log(name,'no lines'); continue; }
+      const avgH = e=>(e.data.start[hA]+e.data.end[hA])/2;
+      const avgD = e=>(e.data.start[dA]+e.data.end[dA])/2;
+      const spanH = e=>Math.abs(e.data.end[xA]-e.data.start[xA]);
+      // Horizontal in this view = constant along height axis, with non-zero horizontal span
+      const horiz = lines.filter(e=>Math.abs(e.data.end[hA]-e.data.start[hA])<0.0001 && spanH(e)>0.0001);
+      if (!horiz.length) { console.log(name,'no horiz lines'); continue; }
+      const minH=Math.min(...horiz.map(avgH)), maxH=Math.max(...horiz.map(avgH));
+      // bottomEdge: at minH, pick max depth (outer far face — confirmed on front view)
+      const botCands=horiz.filter(e=>Math.abs(avgH(e)-minH)<0.0001);
+      botCands.sort((a,b)=>avgD(b)-avgD(a));
+      const bottomEdge=botCands[0];
+      // topEdge: at maxH, pick min depth (outer near face)
+      const topCands=horiz.filter(e=>Math.abs(avgH(e)-maxH)<0.0001);
+      topCands.sort((a,b)=>avgD(a)-avgD(b));
+      const topEdge=topCands[0];
+      const maxXval=Math.max(...lines.flatMap(e=>[e.data.start[xA],e.data.end[xA]]));
+      const textPos=[pos.x+maxXval*1000*scaleNum/scaleDen+20, pos.y, 0];
+      console.log(`${name} BOTTOM:${bottomEdge.uniqueId} h:${avgH(bottomEdge).toFixed(4)} d:${avgD(bottomEdge).toFixed(4)} TOP:${topEdge.uniqueId} h:${maxH.toFixed(4)} d:${avgD(topEdge).toFixed(4)} SPAN:${((maxH-minH)*1000).toFixed(1)}mm textPos:${JSON.stringify(textPos)}`);
+      const body={description:'height '+name,jsonRequests:[{messageName:'onshapeCreateAnnotations',formatVersion:'2021-01-01',annotations:[{type:'Onshape::Dimension::LineToLine',lineToLineDimension:{edge1:{type:'Onshape::Reference::Edge',uniqueId:bottomEdge.uniqueId,viewId:vid},edge2:{type:'Onshape::Reference::Edge',uniqueId:topEdge.uniqueId,viewId:vid},formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'},textOverride:'',textPosition:{coordinate:textPos,type:'Onshape::Reference::Point'}}}]}]};
+      const r=await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`,body);
+      console.log(`${name} modify:${r.id}`);
+      await new Promise(res=>setTimeout(res,2000));
+    } catch(e) { console.log(name,'ERR:',e.message); }
+  }
+})();
+
+== SIDE+TOP AXIS DISCOVERY — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const views = [
+    { vid:'52de9f6c8346eccc70b47947', name:'side' },
+    { vid:'d98d6fce163a124b5038845a', name:'top'  }
+  ];
+  for (const {vid, name} of views) {
+    const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+    const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+    const r = ax => {
+      const vals = lines.flatMap(e=>[e.data.start[ax],e.data.end[ax]]);
+      return {min:Math.min(...vals).toFixed(4), max:Math.max(...vals).toFixed(4), span:((Math.max(...vals)-Math.min(...vals))*1000).toFixed(1)+'mm'};
+    };
+    console.log(`=== ${name} (${lines.length} lines) ===`);
+    console.log(`  data[0]: ${r(0).min} -> ${r(0).max}  span=${r(0).span}`);
+    console.log(`  data[1]: ${r(1).min} -> ${r(1).max}  span=${r(1).span}`);
+    console.log(`  data[2]: ${r(2).min} -> ${r(2).max}  span=${r(2).span}`);
+    // 4 sample edges
+    lines.slice(0,4).forEach(e=>console.log(`  ${e.uniqueId} [${e.data.start.map(v=>v.toFixed(4))}] -> [${e.data.end.map(v=>v.toFixed(4))}]`));
+  }
+})();
+
+== DUPLICATE EDGE FULL DATA — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff',vid='08dfb241295d5d5f442f1493';
+  const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+  const lines = (j.bodyData||[]).filter(e => e.type === 'line');
+  const ids = ['f424e','f4245','f4253','f4247'];
+  ids.forEach(id => {
+    const e = lines.find(l => l.uniqueId === id);
+    if (e) console.log('FULL:', id, JSON.stringify(e));
+    else console.log('NOT FOUND:', id);
+  });
+})();
+
+== HEIGHT EDGE DIAGNOSTIC — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff',vid='08dfb241295d5d5f442f1493';
+  const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+  const lines = (j.bodyData||[]).filter(e => e.type === 'line');
+  const avgZ = e => (e.data.start[2]+e.data.end[2])/2;
+  const spanX = e => Math.abs(e.data.end[0]-e.data.start[0]);
+  const isHoriz = e => Math.abs(e.data.end[2]-e.data.start[2]) < 0.0001;
+  // Show ALL lines sorted by z, flagging the two correct edges
+  lines.sort((a,b) => avgZ(a)-avgZ(b));
+  console.log('=== ALL LINES sorted by avgZ ===');
+  lines.forEach(e => {
+    const tag = (e.uniqueId==='F424E'||e.uniqueId==='F4253') ? ' <-- CORRECT DIM EDGE' : '';
+    console.log(e.uniqueId, isHoriz(e)?'HORIZ':'OTHER',
+      'z:['+e.data.start[2].toFixed(4)+'->'+e.data.end[2].toFixed(4)+']',
+      'x:['+e.data.start[0].toFixed(4)+'->'+e.data.end[0].toFixed(4)+']',
+      'spanX:'+spanX(e).toFixed(4), 'hidden:'+(e.data.hidden||false) + tag);
+  });
+  // Show what the algorithm would pick
+  const horiz = lines.filter(e => isHoriz(e) && spanX(e) > 0.0001);
+  const minHz = Math.min(...horiz.map(avgZ));
+  const maxHz = Math.max(...horiz.map(avgZ));
+  const botPick = horiz.filter(e=>Math.abs(avgZ(e)-minHz)<0.0001).sort((a,b)=>spanX(b)-spanX(a))[0];
+  const topPick = horiz.filter(e=>Math.abs(avgZ(e)-maxHz)<0.0001).sort((a,b)=>spanX(b)-spanX(a))[0];
+  console.log('ALGORITHM PICKS — bottom:', botPick?.uniqueId, 'z:', minHz.toFixed(4), '| top:', topPick?.uniqueId, 'z:', maxHz.toFixed(4));
+  console.log('CORRECT EDGES  — bottom: F424E | top: F4253');
+  console.log('MATCH:', botPick?.uniqueId==='F424E' && topPick?.uniqueId==='F4253' ? 'YES' : 'NO');
+})();
+
+== HEIGHT DIM FRONT VIEW (lowest z) — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff',vid='08dfb241295d5d5f442f1493';
+  const scaleNum=1, scaleDen=16;
+  const viewPos = { x: 121.8, y: 221.2056 };
+  const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+  const lines = (j.bodyData||[]).filter(e => e.type === 'line');
+  const avgZ = e => (e.data.start[2]+e.data.end[2])/2;
+  const spanX = e => Math.abs(e.data.end[0]-e.data.start[0]);
+  // Only horizontal lines with non-zero x-span are valid height dim references
+  const horiz = lines.filter(e => Math.abs(e.data.end[2]-e.data.start[2]) < 0.0001 && spanX(e) > 0.0001);
+  const avgY = e => (e.data.start[1]+e.data.end[1])/2;
+  const minHz = Math.min(...horiz.map(avgZ));
+  const maxHz = Math.max(...horiz.map(avgZ));
+  // bottomEdge: at minZ, pick MAX Y (outer back face, not inner wall face)
+  const bottomCands = horiz.filter(e => Math.abs(avgZ(e)-minHz) < 0.0001);
+  bottomCands.sort((a,b) => avgY(b)-avgY(a));
+  const bottomEdge = bottomCands[0];
+  // topEdge: at maxZ, pick MIN Y (outer front face, not inner wall face)
+  const topCands = horiz.filter(e => Math.abs(avgZ(e)-maxHz) < 0.0001);
+  topCands.sort((a,b) => avgY(a)-avgY(b));
+  const topEdge = topCands[0];
+  // textPos: right of view, y=viewPos.y (confirmed from stored dim)
+  const maxModelX = Math.max(...lines.flatMap(e => [e.data.start[0], e.data.end[0]]));
+  const textPos = [viewPos.x + maxModelX*1000*scaleNum/scaleDen + 20, viewPos.y, 0];
+  console.log('BOTTOM:', bottomEdge.uniqueId, 'z:', avgZ(bottomEdge).toFixed(4));
+  console.log('TOP:', topEdge.uniqueId, 'z:', maxHz.toFixed(4));
+  console.log('HEIGHT mm:', ((maxHz - avgZ(bottomEdge))*1000).toFixed(1));
+  console.log('textPos:', JSON.stringify(textPos));
+  const body = {
+    description: 'Add height dim front',
+    jsonRequests: [{
+      messageName: 'onshapeCreateAnnotations',
+      formatVersion: '2021-01-01',
+      annotations: [{
+        type: 'Onshape::Dimension::LineToLine',
+        lineToLineDimension: {
+          edge1: { type: 'Onshape::Reference::Edge', uniqueId: bottomEdge.uniqueId, viewId: vid },
+          edge2: { type: 'Onshape::Reference::Edge', uniqueId: topEdge.uniqueId, viewId: vid },
+          formatting: { dimdec: 2, dimlim: false, dimpost: '', dimtm: 0, dimtol: false, dimtp: 0, type: 'Onshape::Formatting::Dimension' },
+          textOverride: '',
+          textPosition: { coordinate: textPos, type: 'Onshape::Reference::Point' }
+        }
+      }]
+    }]
+  };
+  const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+  console.log('modify id:', r.id);
+  await new Promise(res => setTimeout(res, 3000));
+  try {
+    const s = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modificationstatus/${r.id}`);
+    console.log('STATUS:', JSON.stringify(s));
+  } catch(e) { console.log('status 404 (likely done)'); }
+})();
+
+== DRAWING JSON EXPORT — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const exp = await onshapePost(`/api/drawings/d/${did}/w/${wid}/e/${eid}/translations`, { formatName: 'DRAWING_JSON', storeInDocument: false, level: 'full' });
+  let trans; for (let i=0; i<20; i++) { await new Promise(r=>setTimeout(r,2000)); trans = await onshapeFetch(`/api/translations/${exp.id}`); if (trans.requestState !== 'ACTIVE') break; }
+  const extId = trans.resultExternalDataIds[0];
+  const raw = await onshapeFetch(`/api/documents/d/${trans.documentId}/externaldata/${extId}`);
+  const sheet = (raw.sheets||raw)[0];
+  console.log('SHEET KEYS:', JSON.stringify(Object.keys(sheet||raw)));
+  const views = sheet?.views||[];
+  console.log('VIEWS:', JSON.stringify(views.map(v=>({ id:v.viewId||v.id, pos:v.position||v.viewPosition, scale:v.scale }))));
+  const dims = (sheet?.annotations||[]).filter(a=>a.type&&a.type.toLowerCase().includes('dim'));
+  console.log('DIM COUNT:', dims.length);
+  // Show edge references for each dimension so we can learn which edges a manually-placed dim uses
+  dims.forEach((d,i) => {
+    const ll = d.lineToLineDimension||d.linearDimension||d.dimensionData||d;
+    const e1 = ll.edge1||ll.reference1||ll.firstReference;
+    const e2 = ll.edge2||ll.reference2||ll.secondReference;
+    console.log(`DIM[${i}] type:${d.type} edge1:${JSON.stringify(e1)} edge2:${JSON.stringify(e2)} textPos:${JSON.stringify(ll.textPosition||ll.labelPosition)}`);
+  });
+})();
+
+== JSONGEOMETRY WITH HIDDEN LINES — service worker console ==
+
+onshapeFetch('/api/v6/drawings/d/77e426c4e48bab78ab55f328/w/d438ed0bea7c7531dfa1e4c7/e/f78f452794788855c3ea4eff/views/08dfb241295d5d5f442f1493/jsongeometry?includeHiddenLines=true').then(j => { const lines = (j.bodyData||[]).filter(e => e.type==='line'); const allZ = lines.flatMap(e=>[e.data.start[2],e.data.end[2]]); console.log('LINE COUNT:', lines.length, 'Z min/max:', Math.min(...allZ).toFixed(4), Math.max(...allZ).toFixed(4)); const hLines = lines.filter(e => Math.abs(e.data.end[0]-e.data.start[0]) > 0.001); hLines.sort((a,b)=>a.data.start[2]-b.data.start[2]); console.log('HORIZ BOTTOM:', JSON.stringify(hLines[0])); console.log('HORIZ TOP:', JSON.stringify(hLines[hLines.length-1])); }).catch(e => console.log('FAIL:', e.message));
+
+== ALL VIEWS EDGE SUMMARY — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const vr = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views`);
+  const views = vr.items||[];
+  console.log('TOTAL VIEWS:', views.length);
+  for (const v of views) {
+    const vid = v.id||v.viewId;
+    try {
+      const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+      const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+      const classify = e => {
+        const dx=Math.abs(e.data.end[0]-e.data.start[0]);
+        const dz=Math.abs(e.data.end[2]-e.data.start[2]);
+        if(dx<0.0001&&dz<0.0001) return 'DEPTH';
+        if(dz<0.0001) return 'HORIZ';
+        if(dx<0.0001) return 'VERT';
+        return 'DIAG';
+      };
+      const counts = {DEPTH:0,HORIZ:0,VERT:0,DIAG:0};
+      lines.forEach(e=>counts[classify(e)]++);
+      const allZ=lines.flatMap(e=>[e.data.start[2],e.data.end[2]]);
+      const allX=lines.flatMap(e=>[e.data.start[0],e.data.end[0]]);
+      console.log(`VIEW ${vid} name:${v.name||v.viewType||'?'} lines:${lines.length}`,
+        `HORIZ:${counts.HORIZ} VERT:${counts.VERT} DEPTH:${counts.DEPTH} DIAG:${counts.DIAG}`,
+        `z:[${Math.min(...allZ).toFixed(3)}->${Math.max(...allZ).toFixed(3)}]`,
+        `x:[${Math.min(...allX).toFixed(3)}->${Math.max(...allX).toFixed(3)}]`);
+    } catch(e) { console.log(`VIEW ${vid} FAIL:`, e.message); }
+  }
+})();
+
+== EDGE TYPE DIAGNOSTIC — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff',vid='08dfb241295d5d5f442f1493';
+  const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+  const lines = (j.bodyData||[]).filter(e => e.type === 'line');
+  const classify = e => {
+    const dx=Math.abs(e.data.end[0]-e.data.start[0]);
+    const dz=Math.abs(e.data.end[2]-e.data.start[2]);
+    if(dx<0.0001&&dz<0.0001) return 'DEPTH';
+    if(dz<0.0001) return 'HORIZ';
+    if(dx<0.0001) return 'VERT';
+    return 'DIAG';
+  };
+  const avgZ = e => (e.data.start[2]+e.data.end[2])/2;
+  lines.sort((a,b)=>avgZ(a)-avgZ(b));
+  console.log('=== ALL EDGES sorted by avgZ ===');
+  lines.forEach(e => {
+    const t=classify(e), s=e.data.start, en=e.data.end;
+    console.log(t, e.uniqueId, 'z:['+s[2].toFixed(4)+'->'+en[2].toFixed(4)+'] x:['+s[0].toFixed(4)+'->'+en[0].toFixed(4)+']');
+  });
+  const nonDepth = lines.filter(e=>classify(e)!=='DEPTH');
+  const ndMaxZ = Math.max(...nonDepth.flatMap(e=>[e.data.start[2],e.data.end[2]]));
+  const ndMinZ = Math.min(...nonDepth.flatMap(e=>[e.data.start[2],e.data.end[2]]));
+  console.log('NON-DEPTH endpoint z range:', ndMinZ.toFixed(4), '->', ndMaxZ.toFixed(4));
+})();
+
+== HEIGHT DIM — OTHER VIEWS — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff';
+  const scaleNum=1, scaleDen=16;
+  // All non-front views from export. textY = viewPos.y (confirmed correct from stored dim)
+  const views = [
+    { vid:'52de9f6c8346eccc70b47947', pos:{x:298.2, y:221.2056}, name:'side' },
+    { vid:'d98d6fce163a124b5038845a', pos:{x:121.8, y:111.434},  name:'top'  },
+    { vid:'8e33c29a646fa5efb10eb189', pos:{x:298.93,y:123.067},  name:'iso'  }
+  ];
+  const avgZ = e=>(e.data.start[2]+e.data.end[2])/2;
+  const len  = e=>Math.abs(e.data.end[0]-e.data.start[0]);
+  for (const {vid, pos, name} of views) {
+    try {
+      const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+      const lines = (j.bodyData||[]).filter(e=>e.type==='line');
+      if (!lines.length) { console.log(name,'no lines'); continue; }
+      lines.sort((a,b)=>avgZ(a)-avgZ(b));
+      const bottomEdge = lines[0];
+      const horiz = lines.filter(e=>Math.abs(e.data.end[2]-e.data.start[2])<0.0001 && len(e)>0.0001);
+      if (!horiz.length) { console.log(name,'no horiz'); continue; }
+      const maxHz = Math.max(...horiz.map(avgZ));
+      const topCands = horiz.filter(e=>Math.abs(avgZ(e)-maxHz)<0.0001);
+      topCands.sort((a,b)=>len(b)-len(a));
+      const topEdge = topCands[0];
+      const maxModelX = Math.max(...lines.flatMap(e=>[e.data.start[0],e.data.end[0]]));
+      const textPos = [pos.x + maxModelX*1000*scaleNum/scaleDen + 20, pos.y, 0];
+      console.log(`${name}(${vid}) BOTTOM:${bottomEdge.uniqueId} z:${avgZ(bottomEdge).toFixed(4)} TOP:${topEdge.uniqueId} z:${maxHz.toFixed(4)} H:${((maxHz-avgZ(bottomEdge))*1000).toFixed(1)}mm textPos:${JSON.stringify(textPos)}`);
+      const body = { description:'height '+name, jsonRequests:[{ messageName:'onshapeCreateAnnotations', formatVersion:'2021-01-01', annotations:[{ type:'Onshape::Dimension::LineToLine', lineToLineDimension:{ edge1:{type:'Onshape::Reference::Edge',uniqueId:bottomEdge.uniqueId,viewId:vid}, edge2:{type:'Onshape::Reference::Edge',uniqueId:topEdge.uniqueId,viewId:vid}, formatting:{dimdec:2,dimlim:false,dimpost:'',dimtm:0,dimtol:false,dimtp:0,type:'Onshape::Formatting::Dimension'}, textOverride:'', textPosition:{coordinate:textPos,type:'Onshape::Reference::Point'} }}]}]};
+      const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+      console.log(`${name} modify:${r.id}`);
+      await new Promise(res=>setTimeout(res,2000));
+    } catch(e) { console.log(name,'ERR:',e.message); }
+  }
+})();
+
+== ALL EDGES Z RANGE — service worker console ==
+
+onshapeFetch('/api/v6/drawings/d/77e426c4e48bab78ab55f328/w/d438ed0bea7c7531dfa1e4c7/e/f78f452794788855c3ea4eff/views/08dfb241295d5d5f442f1493/jsongeometry').then(j => { const lines = (j.bodyData||[]).filter(e => e.type==='line'); const allZ = lines.flatMap(e=>[e.data.start[2],e.data.end[2]]); const allX = lines.flatMap(e=>[e.data.start[0],e.data.end[0]]); console.log('Z min/max:', Math.min(...allZ).toFixed(4), Math.max(...allZ).toFixed(4)); console.log('X min/max:', Math.min(...allX).toFixed(4), Math.max(...allX).toFixed(4)); console.log('ALL uniqueIds+z:', JSON.stringify(lines.map(e=>({id:e.uniqueId,z0:+e.data.start[2].toFixed(4),z1:+e.data.end[2].toFixed(4),x0:+e.data.start[0].toFixed(4),x1:+e.data.end[0].toFixed(4)})))); });
+
+== CREATE WIDTH DIMENSION (sheet coords) — service worker console ==
+
+(async () => {
+  const did='77e426c4e48bab78ab55f328',wid='d438ed0bea7c7531dfa1e4c7',eid='f78f452794788855c3ea4eff',vid='08dfb241295d5d5f442f1493';
+  const scaleNum=1, scaleDen=16;
+  const viewPos = { x: 121.8, y: 221.2056 };
+  const j = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/views/${vid}/jsongeometry`);
+  const lines = (j.bodyData||[]).filter(e => e.type === 'line');
+  const toSheet = (mx, mz) => ({ x: viewPos.x + mx*1000*scaleNum/scaleDen, y: viewPos.y + mz*1000*scaleNum/scaleDen });
+  const midSheet = e => toSheet((e.data.start[0]+e.data.end[0])/2, (e.data.start[2]+e.data.end[2])/2);
+  lines.sort((a,b) => midSheet(a).x - midSheet(b).x);
+  const leftEdge = lines[0], rightEdge = lines[lines.length-1];
+  // View is centred on model origin. Bottom half is hidden geometry — mirror max Z to find view bottom.
+  const maxModelZ = Math.max(...lines.flatMap(e=>[e.data.start[2],e.data.end[2]]));
+  const viewBottomSheet = viewPos.y - maxModelZ*1000*scaleNum/scaleDen;
+  const textPos = [ (midSheet(leftEdge).x + midSheet(rightEdge).x) / 2, viewBottomSheet - 20, 0 ];
+  console.log('LEFT:', leftEdge.uniqueId, 'RIGHT:', rightEdge.uniqueId, 'textPos:', textPos);
+  const body = { description: 'Add width dim', jsonRequests: [{ messageName: 'onshapeCreateAnnotations', formatVersion: '2021-01-01', annotations: [{ type: 'Onshape::Dimension::LineToLine', lineToLineDimension: { edge1: { type: 'Onshape::Reference::Edge', uniqueId: leftEdge.uniqueId, viewId: vid }, edge2: { type: 'Onshape::Reference::Edge', uniqueId: rightEdge.uniqueId, viewId: vid }, formatting: { dimdec: 2, dimlim: false, dimpost: '', dimtm: 0, dimtol: false, dimtp: 0, type: 'Onshape::Formatting::Dimension' }, textOverride: '', textPosition: { coordinate: textPos, type: 'Onshape::Reference::Point' } } }] }] };
+  const r = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modify`, body);
+  console.log('modify id:', r.id);
+  await new Promise(res => setTimeout(res, 3000));
+  try { const s = await onshapeFetch(`/api/v6/drawings/d/${did}/w/${wid}/e/${eid}/modificationstatus/${r.id}`); console.log('STATUS:', JSON.stringify(s)); } catch(e) { console.log('status 404 (likely done)'); }
+})();
+
+== VIEW JSONGEOMETRY PROBE — service worker console ==
+
+onshapeFetch('/api/v6/drawings/d/77e426c4e48bab78ab55f328/w/d438ed0bea7c7531dfa1e4c7/e/f78f452794788855c3ea4eff/views/08dfb241295d5d5f442f1493/jsongeometry').then(j => { console.log('KEYS:', JSON.stringify(Object.keys(j))); const dims = (j.items||j.geomEntities||j.entities||[]).filter(x => x.type && x.type.toLowerCase().includes('dim')); console.log('DIMS:', JSON.stringify(dims.slice(0,2), null, 2)); }).catch(e => console.log('FAIL:', e.message));
+
+== DIMENSION MESSAGENAME PROBE — service worker console ==
+
+onshapePost('/api/v6/drawings/d/77e426c4e48bab78ab55f328/w/d438ed0bea7c7531dfa1e4c7/e/f78f452794788855c3ea4eff/modify', { description: 'probe', jsonRequests: [{ messageName: 'onshapeCreateAnnotations', formatVersion: '2021-01-01', annotations: [] }] }).then(j => console.log('RESP:', JSON.stringify(j))).catch(e => console.log('FAIL:', e.message));
+
+== VIEWS API — service worker console ==
+
+onshapeFetch('/api/v6/drawings/d/77e426c4e48bab78ab55f328/w/d438ed0bea7c7531dfa1e4c7/e/f78f452794788855c3ea4eff/views').then(j => { console.log('VIEW ITEM KEYS:', JSON.stringify(Object.keys(j.items[0]))); console.log('SAMPLE VIEW:', JSON.stringify(j.items[0])); });
+
 == WORKSPACE PROTECTION OBSERVER ==
 
 Paste in devtools (top context) on an Onshape doc, then manually

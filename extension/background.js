@@ -57,7 +57,7 @@ async function getSessionUser() {
 // Kill switch — deactivate extension for specific user accounts
 // ---------------------------------------------------------------------------
 
-const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+const BLOCKED_EMAILS = [];
 const KILL_SWITCH_DURATION = 24 * 60 * 60 * 1000; // 24 hours
 let _extensionDisabled = false;
 
@@ -326,8 +326,9 @@ async function createDrawingsForUrl(url, selectedParts) {
 
     // 2c. Get bounding box + compute scale
     let scale = [1, 5];
+    let bb = null;
     try {
-      const bb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${partId}/boundingboxes`);
+      bb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${partId}/boundingboxes`);
       scale = computeScale(bb);
     } catch (e) {
       broadcastDrawLog(`  bbox failed (${e.message}), using 1:5`, "log-err");
@@ -336,11 +337,32 @@ async function createDrawingsForUrl(url, selectedParts) {
 
     const ref = { documentId: docId, workspaceId: wid, elementId: eid, partId: partId };
 
-    // A3 landscape sheet: 0.420 x 0.297m
-    // Title block ~60mm at bottom, usable area roughly y: 0.070 to 0.280
-    // Center views vertically at y=0.155, spread horizontally
+    // Dynamic view positions derived from bounding box so dim text never goes off-sheet.
+    // A3 landscape, Y-up (origin bottom-left, title block ~60mm at bottom).
+    // Formulas calibrated to reproduce confirmed-working observer command values for Cradle at 1:16:
+    //   front≈{121.8,221.2}, side≈{298.2,221.2}, top≈{121.8,111.4}
+    // frontPtY = 239 - scmm(highY)  → Cradle: 239-18.1=220.9mm ≈ 221.2 ✓
+    // frontPtX = 103 - scmm(lowX)   → Cradle: 103+18.75=121.75mm ≈ 121.8 ✓
+    // topPtY   = 75 + (frontPtY-75)/4 → Cradle: 75+36.5=111.5mm ≈ 111.4 ✓
+    // sidePtX  = frontPtX + scmm(highX) + 22 + 22 - scmm(lowZ)
+    const FALLBACK = { front: { x: 0.1218, y: 0.2212 }, top: { x: 0.1218, y: 0.1114 }, left: { x: 0.2982, y: 0.2212 } };
+    let FRONT_POS_M, TOP_POS_M, LEFT_POS_M;
+    if (bb) {
+      const scmm = v => v * 1000 * scale[0] / scale[1];
+      const frontPtY = 239 - scmm(bb.highY);
+      const frontPtX = 103 - scmm(bb.lowX);
+      const topPtY   = 75 + (frontPtY - 75) / 4;
+      const sidePtX  = frontPtX + scmm(bb.highX) + 22 + 22 - scmm(bb.lowZ);
+      FRONT_POS_M = { x: frontPtX / 1000, y: frontPtY / 1000 };
+      TOP_POS_M   = { x: frontPtX / 1000, y: topPtY   / 1000 };
+      LEFT_POS_M  = { x: sidePtX  / 1000, y: frontPtY / 1000 };
+    } else {
+      FRONT_POS_M = FALLBACK.front;
+      TOP_POS_M   = FALLBACK.top;
+      LEFT_POS_M  = FALLBACK.left;
+    }
 
-    // Step 1: Create front + iso views
+    // Step 1: Create front + top + left + iso views
     try {
       const viewBody = {
         description: "Add views",
@@ -353,6 +375,21 @@ async function createDrawingsForUrl(url, selectedParts) {
               orientation: "front",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
+              point: FRONT_POS_M,
+            },
+            {
+              viewType: "TopLevel",
+              orientation: "top",
+              scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+              reference: ref,
+              point: TOP_POS_M,
+            },
+            {
+              viewType: "TopLevel",
+              orientation: "left",
+              scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
+              reference: ref,
+              point: LEFT_POS_M,
             },
             {
               viewType: "TopLevel",
@@ -407,7 +444,23 @@ async function createDrawingsForUrl(url, selectedParts) {
         const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
         const editMid = editResp.id || "";
         if (editMid) await pollModify(docId, wid, drawingEid, editMid);
+        // Build viewPosMm: use v.position from API if present (diagnostic confirmed it returns
+        // position for settled views), fall back to hardcoded FRONT_POS_M for Front view.
+        const viewPosMm = {};
+        for (const v of viewList) {
+          if (v.position) {
+            viewPosMm[v.viewId] = { x: v.position.x * 1000, y: v.position.y * 1000 };
+          } else if (identifyView(v) === "Front") {
+            viewPosMm[v.viewId] = { x: FRONT_POS_M.x * 1000, y: FRONT_POS_M.y * 1000 };
+          } else if (identifyView(v) === "Top") {
+            viewPosMm[v.viewId] = { x: TOP_POS_M.x * 1000, y: TOP_POS_M.y * 1000 };
+          } else if (identifyView(v) === "Left") {
+            viewPosMm[v.viewId] = { x: LEFT_POS_M.x * 1000, y: LEFT_POS_M.y * 1000 };
+          }
+        }
         broadcastDrawLog(`  labels applied`);
+        broadcastDrawLog(`  adding overall dimensions...`);
+        await addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm);
       }
     } catch (e) {
       broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
@@ -504,6 +557,159 @@ async function createDrawingsForUrl(url, selectedParts) {
 
   _drawingInProgress = false;
   chrome.runtime.sendMessage({ type: "draw-done", created, failed }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
+// Auto-dimension helpers
+// ---------------------------------------------------------------------------
+
+// Add overall height + width dimensions to every non-isometric view on Sheet 1.
+// All annotations are collected first, then submitted in ONE atomic modify call.
+// This avoids Onshape's per-view lock that silently drops width annotations when
+// they follow a height annotation for the same view in separate modify calls.
+//
+// Axis assignments for Y-up Onshape model space:
+//   data[0] = X (width direction)
+//   data[1] = Y (height direction)
+//   data[2] = Z (depth direction — used only for front/back edge disambiguation)
+//
+// Parameters:
+//   docId, wid, drawingEid — drawing coordinates
+//   scale                  — [scaleNum, scaleDen] from computeScale()
+async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {}) {
+  const [scaleNum, scaleDen] = scale;
+  const sc = v => v * 1000 * scaleNum / scaleDen;
+  const hA = 1, dA = 2, xA = 0;
+
+  // Fetch all views; keep only Sheet 1 non-isometric views
+  let viewList;
+  try {
+    const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
+    viewList = viewsResp.items || [];
+  } catch (e) {
+    broadcastDrawLog(`  dimensions: failed to fetch views: ${e.message}`, "log-err");
+    return;
+  }
+
+  const targetViews = viewList.filter(v => {
+    if ((v.sheetIndex || 0) !== 0) return false;
+    const m = v.viewMatrix || [];
+    return !m.some(val => val !== 0 && val !== 1 && val !== -1); // exclude iso
+  });
+
+  if (!targetViews.length) {
+    broadcastDrawLog(`  dimensions: no non-iso views on sheet 1`, "log-err");
+    return;
+  }
+
+  const annotations = [];
+
+  for (const view of targetViews) {
+    const vid = view.viewId;
+    // Prefer view.position from this fetch (freshest); fall back to caller-passed viewPosMm.
+    const vp = view.position;
+    const knownPos = viewPosMm[vid] || {};
+    const pos = {
+      x: (vp?.x != null ? vp.x * 1000 : knownPos.x) || 0,
+      y: (vp?.y != null ? vp.y * 1000 : knownPos.y) || 0,
+    };
+
+    let lines = [];
+    for (let attempt = 1; attempt <= 5; attempt++) {
+      try {
+        const j = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views/${vid}/jsongeometry`);
+        lines = (j.bodyData || []).filter(e => e.type === "line");
+      } catch (e) {
+        broadcastDrawLog(`  dimensions: geometry failed for ${vid} (attempt ${attempt}): ${e.message}`, "log-err");
+      }
+      if (lines.length) break;
+      if (attempt < 5) {
+        broadcastDrawLog(`  dimensions: geometry not ready for ${vid}, retrying in 2s (attempt ${attempt}/5)...`);
+        await new Promise(r => setTimeout(r, 2000));
+      }
+    }
+    if (!lines.length) {
+      broadcastDrawLog(`  dimensions: geometry still empty for ${vid} after 5 attempts, skipping`, "log-err");
+      continue;
+    }
+
+    const avgH  = e => (e.data.start[hA] + e.data.end[hA]) / 2;
+    const avgD  = e => (e.data.start[dA] + e.data.end[dA]) / 2;
+    const spanX = e => Math.abs(e.data.end[xA] - e.data.start[xA]);
+    const spanH = e => Math.abs(e.data.end[hA] - e.data.start[hA]);
+
+    const allGX = lines.flatMap(e => [e.data.start[xA], e.data.end[xA]]);
+    const allGH = lines.flatMap(e => [e.data.start[hA], e.data.end[hA]]);
+
+    // HEIGHT: topmost vs bottommost horizontal edge, sorted by depth to pick visible face
+    const horiz = lines.filter(e => Math.abs(e.data.end[hA] - e.data.start[hA]) < 0.0001 && spanX(e) > 0.0001);
+    if (horiz.length) {
+      const minH = Math.min(...horiz.map(avgH));
+      const maxH = Math.max(...horiz.map(avgH));
+      const botCands = horiz.filter(e => Math.abs(avgH(e) - minH) < 0.0001);
+      botCands.sort((a, b) => avgD(b) - avgD(a));
+      const topCands = horiz.filter(e => Math.abs(avgH(e) - maxH) < 0.0001);
+      topCands.sort((a, b) => avgD(a) - avgD(b));
+      const bottomEdge = botCands[0];
+      const topEdge    = topCands[0];
+      const maxXval = Math.max(...allGX);
+      const hTextPos = [pos.x + sc(maxXval) + 20, pos.y, 0];
+      broadcastDrawLog(`  ${vid} HEIGHT ${((maxH - minH) * 1000).toFixed(1)}mm`);
+      annotations.push({
+        type: "Onshape::Dimension::LineToLine",
+        lineToLineDimension: {
+          edge1: { type: "Onshape::Reference::Edge", uniqueId: bottomEdge.uniqueId, viewId: vid },
+          edge2: { type: "Onshape::Reference::Edge", uniqueId: topEdge.uniqueId,    viewId: vid },
+          formatting: { dimdec: 2, dimlim: false, dimpost: "", dimtm: 0, dimtol: false, dimtp: 0, type: "Onshape::Formatting::Dimension" },
+          textOverride: "",
+          textPosition: { coordinate: hTextPos, type: "Onshape::Reference::Point" },
+        },
+      });
+    }
+
+    // WIDTH: leftmost vs rightmost vertical edge; fall back to all lines if no pure-vertical found
+    const vert = lines.filter(e => spanX(e) < 0.0001 && spanH(e) > 0.0001);
+    const srcLines = vert.length ? vert : lines;
+    const allX     = srcLines.flatMap(e => [e.data.start[xA], e.data.end[xA]]);
+    const minX     = Math.min(...allX);
+    const maxX     = Math.max(...allX);
+    const leftEdge  = srcLines.find(e => Math.abs(Math.min(e.data.start[xA], e.data.end[xA]) - minX) < 0.0001);
+    const rightEdge = srcLines.find(e => Math.abs(Math.max(e.data.start[xA], e.data.end[xA]) - maxX) < 0.0001);
+    if (leftEdge && rightEdge) {
+      const maxHval  = Math.max(...allGH);
+      const wTextPos = [pos.x + sc((minX + maxX) / 2), pos.y + sc(maxHval) + 20, 0];
+      broadcastDrawLog(`  ${vid} WIDTH ${((maxX - minX) * 1000).toFixed(1)}mm`);
+      annotations.push({
+        type: "Onshape::Dimension::LineToLine",
+        lineToLineDimension: {
+          edge1: { type: "Onshape::Reference::Edge", uniqueId: leftEdge.uniqueId,  viewId: vid },
+          edge2: { type: "Onshape::Reference::Edge", uniqueId: rightEdge.uniqueId, viewId: vid },
+          formatting: { dimdec: 2, dimlim: false, dimpost: "", dimtm: 0, dimtol: false, dimtp: 0, type: "Onshape::Formatting::Dimension" },
+          textOverride: "",
+          textPosition: { coordinate: wTextPos, type: "Onshape::Reference::Point" },
+        },
+      });
+    }
+  }
+
+  if (!annotations.length) {
+    broadcastDrawLog(`  dimensions: no annotations built`, "log-err");
+    return;
+  }
+
+  broadcastDrawLog(`  submitting ${annotations.length} dimension annotations`);
+  try {
+    const body = {
+      description: "all dims",
+      jsonRequests: [{ messageName: "onshapeCreateAnnotations", formatVersion: "2021-01-01", annotations }],
+    };
+    const r   = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, body);
+    const mid = r.id || "";
+    if (mid) await pollModify(docId, wid, drawingEid, mid);
+    broadcastDrawLog(`  dimensions added`, "log-ok");
+  } catch (e) {
+    broadcastDrawLog(`  dimensions: modify failed: ${e.message}`, "log-err");
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -2528,6 +2734,185 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
 }
 
 // ---------------------------------------------------------------------------
+// Bulk Exporter
+// ---------------------------------------------------------------------------
+
+// Export flat-pattern DXFs for the provided selection.
+// selectedPartStudios: [{ psId, psName, parts: [{partName, deterministicId}] }]
+// Returns array of { name: 'dxf/<safeName>.dxf', data: Uint8Array }.
+async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
+  const enc = new TextEncoder();
+
+  // Fetch microversion once (plain-text endpoint)
+  const mvResp = await fetch(`${ONSHAPE_BASE}/api/v14/documents/d/${did}/w/${wid}/microversion`, {
+    credentials: "include",
+    headers: { Accept: "text/plain, */*" },
+  });
+  if (!mvResp.ok) throw new Error(`Microversion fetch failed: ${mvResp.status}`);
+  const microversion = (await mvResp.text()).trim();
+  console.log("[BulkExport] Microversion:", microversion);
+
+  const xsrf = await getXsrfToken();
+  const files = [];
+
+  for (const ps of selectedPartStudios) {
+    console.log("[BulkExport]", ps.psName, "parts:", ps.parts.length);
+    chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `${ps.psName}: ${ps.parts.length} flat pattern(s)` }).catch(() => {});
+
+    for (const item of ps.parts) {
+      const body = {
+        format: "DXF",
+        microversion,
+        view: "1,0,0,0,0,1,0,0,0,0,1,0,0,0,0,1",
+        destinationName: (item.partName || "FlatPattern") + "_export",
+        version: "Release 14",
+        units: "millimeter",
+        flatten: "true",
+        includeBendCenterlines: "true",
+        includeSketches: "true",
+        sheetMetalFlat: "true",
+        triggerAutoDownload: "true",
+        storeInDocument: "false",
+        configuration: "",
+        cloudStorageAccountId: "",
+        cloudObjectId: "",
+        partIds: item.deterministicId,
+      };
+      try {
+        const r = await fetch(
+          `${ONSHAPE_BASE}/api/documents/d/${did}/w/${wid}/e/${ps.psId}/exportinternal`,
+          {
+            method: "POST",
+            credentials: "include",
+            headers: {
+              Accept: "application/json, text/plain, */*",
+              "Content-Type": "application/json;charset=UTF-8",
+              "X-XSRF-TOKEN": xsrf,
+            },
+            body: JSON.stringify(body),
+          }
+        );
+        if (!r.ok) {
+          const errBody = await r.text();
+          console.warn("[BulkExport] DXF failed:", item.partName, r.status, errBody.slice(0, 200));
+          chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  SKIP ${item.partName} (${r.status})` }).catch(() => {});
+          continue;
+        }
+        const dxfText = await r.text();
+        const safeName = (item.partName || "FlatPattern").replace(/[^a-zA-Z0-9_\-]/g, "_") + ".dxf";
+        files.push({ name: "dxf/" + safeName, data: enc.encode(dxfText) });
+        console.log("[BulkExport] DXF ok:", safeName, dxfText.length, "bytes");
+        chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  DXF: ${safeName}` }).catch(() => {});
+      } catch (e) {
+        console.warn("[BulkExport] DXF error:", item.partName, e.message);
+        chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  ERROR ${item.partName}: ${e.message}` }).catch(() => {});
+      }
+    }
+  }
+
+  return files;
+}
+
+// Export drawings as PDFs for the provided selection.
+// selectedDrawings: [{ id, name }]
+// Returns array of { name: 'pdf/<safeName>.pdf', data: Uint8Array }.
+async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
+  console.log("[BulkExport] Drawing elements:", selectedDrawings.map(e => e.name));
+  chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `${selectedDrawings.length} drawing(s) to export` }).catch(() => {});
+
+  // Fire all PDF translation jobs in parallel
+  const jobs = await Promise.all(selectedDrawings.map(async el => {
+    try {
+      const job = await onshapePost(
+        `/api/v6/drawings/d/${did}/w/${wid}/e/${el.id}/translations`,
+        { formatName: "PDF", storeInDocument: false }
+      );
+      return { name: el.name, jobId: job.id, documentId: job.documentId || did };
+    } catch (e) {
+      console.warn("[BulkExport] PDF job failed:", el.name, e.message);
+      chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF job failed: ${el.name}` }).catch(() => {});
+      return null;
+    }
+  }));
+
+  // 3. Poll + collect binary
+  const files = [];
+  for (const job of jobs.filter(Boolean)) {
+    let t;
+    for (let i = 0; i < 30; i++) {
+      await new Promise(r => setTimeout(r, 2000));
+      t = await onshapeFetch(`/api/v6/translations/${job.jobId}`);
+      if (t.requestState !== "ACTIVE") break;
+    }
+    if (!t || t.requestState !== "DONE" || !t.resultExternalDataIds?.length) {
+      console.warn("[BulkExport] PDF failed:", job.name, t?.requestState, t?.failureReason || "");
+      chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF failed: ${job.name}` }).catch(() => {});
+      continue;
+    }
+    try {
+      const resp = await fetch(
+        `${ONSHAPE_BASE}/api/v6/documents/d/${t.documentId || did}/externaldata/${t.resultExternalDataIds[0]}`,
+        { credentials: "include" }
+      );
+      if (!resp.ok) throw new Error(`blob fetch ${resp.status}`);
+      const data = new Uint8Array(await resp.arrayBuffer());
+      const safeName = (job.name || "Drawing").replace(/[^a-zA-Z0-9_\-]/g, "_") + ".pdf";
+      files.push({ name: "pdf/" + safeName, data });
+      console.log("[BulkExport] PDF ok:", safeName, data.length, "bytes");
+      chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF: ${safeName}` }).catch(() => {});
+    } catch (e) {
+      console.warn("[BulkExport] PDF blob error:", job.name, e.message);
+      chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF blob error: ${job.name}` }).catch(() => {});
+    }
+  }
+
+  return files;
+}
+
+// Pure-JS ZIP builder — no dependencies.
+function crc32(buf) {
+  const t = new Uint32Array(256);
+  for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[i] = c; }
+  let crc = -1;
+  for (let i = 0; i < buf.length; i++) crc = t[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
+  return (crc ^ -1) >>> 0;
+}
+function makeZip(files) {
+  const enc = new TextEncoder();
+  const locals = [], dirs = [];
+  let off = 0;
+  for (const { name, data } of files) {
+    const nb = enc.encode(name), crc = crc32(data);
+    const lh = new Uint8Array(30 + nb.length + data.length);
+    const dv = new DataView(lh.buffer);
+    dv.setUint32(0, 0x04034b50, true); dv.setUint16(4, 20, true);
+    dv.setUint32(14, crc, true); dv.setUint32(18, data.length, true); dv.setUint32(22, data.length, true);
+    dv.setUint16(26, nb.length, true); lh.set(nb, 30); lh.set(data, 30 + nb.length);
+    locals.push(lh);
+    const cd = new Uint8Array(46 + nb.length);
+    const cv = new DataView(cd.buffer);
+    cv.setUint32(0, 0x02014b50, true); cv.setUint16(4, 20, true); cv.setUint16(6, 20, true);
+    cv.setUint32(16, crc, true); cv.setUint32(20, data.length, true); cv.setUint32(24, data.length, true);
+    cv.setUint16(28, nb.length, true); cv.setUint32(42, off, true); cd.set(nb, 46);
+    dirs.push(cd); off += lh.length;
+  }
+  const cdOff = off, cdSize = dirs.reduce((s, d) => s + d.length, 0);
+  const eocd = new Uint8Array(22);
+  const ev = new DataView(eocd.buffer);
+  ev.setUint32(0, 0x06054b50, true); ev.setUint16(8, files.length, true); ev.setUint16(10, files.length, true);
+  ev.setUint32(12, cdSize, true); ev.setUint32(16, cdOff, true);
+  const all = [...locals, ...dirs, eocd];
+  const out = new Uint8Array(all.reduce((s, a) => s + a.length, 0));
+  let pos = 0; for (const a of all) { out.set(a, pos); pos += a.length; }
+  return out;
+}
+function toBase64(bytes) {
+  let s = "";
+  for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  return btoa(s);
+}
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -3029,6 +3414,113 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return true;
+
+  } else if (msg.type === "fetch-export-elements") {
+    const { did, wid } = msg;
+    if (!did || !wid) { sendResponse({ error: "Missing did or wid" }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const elResp = await onshapeFetch(`/api/documents/d/${did}/w/${wid}/elements`);
+        const allEls = Array.isArray(elResp) ? elResp : (elResp.items || []);
+        const partStudioEls = allEls.filter(e => e.elementType === "PARTSTUDIO");
+        const drawings = allEls.filter(e => e.elementType === "APPLICATION").map(e => ({ id: e.id, name: e.name }));
+
+        const partStudios = await Promise.all(partStudioEls.map(async ps => {
+          try {
+            const params = new URLSearchParams({ includeFlattenedBodies: "true", includeParts: "false", elementId: ps.id });
+            const ins = await onshapeFetch(`/api/documents/d/${did}/w/${wid}/insertables?${params}`);
+            const flatParts = (ins.items || [])
+              .filter(i => i.isFlattenedBody)
+              .map(i => ({ partName: i.partName || i.name || "FlatPattern", deterministicId: i.deterministicId }));
+            return { id: ps.id, name: ps.name, flatParts };
+          } catch (e) {
+            return { id: ps.id, name: ps.name, flatParts: [] };
+          }
+        }));
+
+        chrome.runtime.sendMessage({ type: "export-elements-loaded", partStudios, drawings }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "export-elements-error", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
+  } else if (msg.type === "bulk-export") {
+    const { did, wid, selectedPartStudios, selectedDrawings } = msg;
+    if (!did || !wid) { sendResponse({ error: "Missing did or wid" }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        chrome.runtime.sendMessage({ type: "bulk-export-progress", message: "Starting bulk export..." }).catch(() => {});
+        const [dxfFiles, pdfFiles] = await Promise.all([
+          selectedPartStudios?.length ? bulkExportFlatPatterns(did, wid, selectedPartStudios) : Promise.resolve([]),
+          selectedDrawings?.length ? bulkExportDrawingPdfs(did, wid, selectedDrawings) : Promise.resolve([]),
+        ]);
+        const allFiles = [...dxfFiles, ...pdfFiles];
+        chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `Building ZIP: ${allFiles.length} file(s)...` }).catch(() => {});
+        const zip = makeZip(allFiles);
+        const zipBase64 = toBase64(zip);
+        const filename = `export_${did}.zip`;
+        chrome.runtime.sendMessage({ type: "bulk-export-done", zipBase64, filename }).catch(() => {});
+        console.log("[BulkExport] Done:", allFiles.length, "files,", zip.length, "bytes");
+      } catch (e) {
+        console.error("[BulkExport] Fatal:", e.message);
+        chrome.runtime.sendMessage({ type: "bulk-export-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
+  } else if (msg.type === "export-3d-parts") {
+    const { url, format, selectedParts } = msg;
+    if (!url || !format || !selectedParts?.length) { sendResponse({ ok: true }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const parsed = parsePartStudioUrl(url);
+        if (!parsed) throw new Error("Invalid Part Studio URL");
+        const { docId: did, wid, eid } = parsed;
+        const ext = format === "STEP" ? "step" : "stl";
+        const files = [];
+        chrome.runtime.sendMessage({ type: "export-3d-progress", message: `Starting ${format} export for ${selectedParts.length} part(s)...` }).catch(() => {});
+
+        for (const part of selectedParts) {
+          const safeName = (part.name || part.partId).replace(/[^a-zA-Z0-9_\-]/g, "_");
+          chrome.runtime.sendMessage({ type: "export-3d-progress", message: `  ${part.name}...` }).catch(() => {});
+          try {
+            const jobBody = { formatName: format, storeInDocument: false, partIds: part.partId };
+            if (format === "STL") jobBody.units = "millimeter";
+            const job = await onshapePost(`/api/v6/partstudios/d/${did}/w/${wid}/e/${eid}/translations`, jobBody);
+            let t;
+            for (let i = 0; i < 30; i++) {
+              await new Promise(r => setTimeout(r, 2000));
+              t = await onshapeFetch(`/api/v6/translations/${job.id}`);
+              if (t.requestState !== "ACTIVE") break;
+            }
+            if (!t || t.requestState !== "DONE" || !t.resultExternalDataIds?.length) {
+              chrome.runtime.sendMessage({ type: "export-3d-progress", message: `  FAILED: ${part.name} (${t?.requestState || "no result"})`, cls: "log-err" }).catch(() => {});
+              continue;
+            }
+            const resp = await fetch(
+              `${ONSHAPE_BASE}/api/v6/documents/d/${t.documentId || did}/externaldata/${t.resultExternalDataIds[0]}`,
+              { credentials: "include" }
+            );
+            if (!resp.ok) throw new Error(`blob fetch ${resp.status}`);
+            const data = new Uint8Array(await resp.arrayBuffer());
+            files.push({ name: `${safeName}.${ext}`, data });
+            chrome.runtime.sendMessage({ type: "export-3d-progress", message: `  OK: ${safeName}.${ext}` }).catch(() => {});
+          } catch (e) {
+            chrome.runtime.sendMessage({ type: "export-3d-progress", message: `  ERROR: ${part.name}: ${e.message}`, cls: "log-err" }).catch(() => {});
+          }
+        }
+
+        if (!files.length) throw new Error("No files exported");
+        chrome.runtime.sendMessage({ type: "export-3d-done", files: files.map(f => ({ name: f.name, base64: toBase64(f.data) })) }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "export-3d-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
   }
 });
 
