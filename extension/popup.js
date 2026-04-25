@@ -737,6 +737,141 @@ $btnConfirm.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
+// Notes panel
+// ---------------------------------------------------------------------------
+
+let _notesDrawings = [];
+
+document.getElementById("btnLoadDrawings").addEventListener("click", () => {
+  const $items  = document.getElementById("notesDrawingItems");
+  const $list   = document.getElementById("notesDrawingList");
+  const $status = document.getElementById("notesDrawingStatus");
+  $list.style.display   = "none";
+  $items.innerHTML      = "";
+  $status.style.display = "block";
+  $status.textContent   = "Loading drawings...";
+  $status.style.color   = "#666";
+  _notesDrawings = [];
+
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) { $status.textContent = "No active tab"; return; }
+    const url      = tabs[0].url || "";
+    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
+    const widMatch = url.match(/\/w\/([a-f0-9]+)/);
+    if (!docMatch || !widMatch) { $status.textContent = "Not an Onshape workspace"; return; }
+
+    chrome.runtime.sendMessage({
+      type: "fetch-drawing-elements",
+      did: docMatch[1],
+      wid: widMatch[1],
+    }, (response) => {
+      if (!response || response.error) {
+        $status.textContent = response ? response.error : "No response";
+        $status.style.color = "#ff6b6b";
+        return;
+      }
+      _notesDrawings = response.drawings || [];
+      if (_notesDrawings.length === 0) {
+        $status.textContent = "No drawings found in this doc";
+        return;
+      }
+      $status.style.display = "none";
+      $list.style.display   = "block";
+
+      _notesDrawings.forEach((d, i) => {
+        const item = document.createElement("div");
+        item.className = "notes-drawing-item";
+
+        const header = document.createElement("div");
+        header.className = "notes-drawing-header";
+
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.checked = true;
+        cb.className = "notes-drawing-cb";
+        cb.dataset.index = i;
+
+        const nameSpan = document.createElement("span");
+        nameSpan.textContent = d.name;
+
+        header.appendChild(cb);
+        header.appendChild(nameSpan);
+        header.addEventListener("click", (e) => { if (e.target !== cb) cb.checked = !cb.checked; });
+
+        const textInput = document.createElement("input");
+        textInput.type = "text";
+        textInput.className = "note-text-input";
+        textInput.placeholder = "Note text...";
+
+        item.appendChild(header);
+        item.appendChild(textInput);
+        $items.appendChild(item);
+      });
+    });
+  });
+});
+
+document.getElementById("chkSelectAllDrawings").addEventListener("change", (e) => {
+  document.querySelectorAll(".notes-drawing-cb").forEach(cb => cb.checked = e.target.checked);
+});
+
+document.getElementById("btnApplyNotes").addEventListener("click", () => {
+  const $log = document.getElementById("notesLog");
+  const $btn = document.getElementById("btnApplyNotes");
+  const height = parseFloat(document.getElementById("noteTextHeight").value) || 4.0;
+
+  const drawings = [];
+  document.querySelectorAll("#notesDrawingItems .notes-drawing-item").forEach((item, i) => {
+    const cb   = item.querySelector(".notes-drawing-cb");
+    const text = item.querySelector(".note-text-input").value.trim();
+    if (cb && cb.checked && text) {
+      drawings.push({ ...(_notesDrawings[parseInt(cb.dataset.index)]), text });
+    }
+  });
+
+  if (drawings.length === 0) {
+    $log.style.display = "block";
+    appendNotesLog("Select drawings and fill in note text", "log-err");
+    return;
+  }
+
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (tabs.length === 0) return;
+    const url      = tabs[0].url || "";
+    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
+    const widMatch = url.match(/\/w\/([a-f0-9]+)/);
+    if (!docMatch || !widMatch) {
+      appendNotesLog("Not an Onshape workspace", "log-err");
+      $log.style.display = "block";
+      return;
+    }
+
+    $log.innerHTML     = "";
+    $log.style.display = "block";
+    $btn.disabled      = true;
+    appendNotesLog(`Applying notes to ${drawings.length} drawing(s)...`);
+
+    chrome.runtime.sendMessage({
+      type: "apply-drawing-notes",
+      did: docMatch[1],
+      wid: widMatch[1],
+      drawings,
+      height,
+    });
+  });
+});
+
+function appendNotesLog(text, cls) {
+  const $log = document.getElementById("notesLog");
+  $log.style.display = "block";
+  const line = document.createElement("div");
+  line.className = "log-line" + (cls ? " " + cls : "");
+  line.textContent = text;
+  $log.appendChild(line);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+// ---------------------------------------------------------------------------
 // Listen for messages from background.js
 // ---------------------------------------------------------------------------
 
@@ -782,6 +917,11 @@ chrome.runtime.onMessage.addListener((msg) => {
       });
       append3dLog(`Done — ${(msg.files || []).length} file(s) downloaded`, "log-ok");
     }
+  } else if (msg.type === "notes-progress") {
+    appendNotesLog(msg.message, msg.cls);
+  } else if (msg.type === "notes-done") {
+    document.getElementById("btnApplyNotes").disabled = false;
+    appendNotesLog("Done", "log-ok");
   } else if (msg.type === "bulk-export-done") {
     const btn = document.getElementById("btnBulkExport");
     const $status = document.getElementById("exportStatus");

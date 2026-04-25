@@ -10,11 +10,13 @@ extension/
   popup.html                  — popup markup; sections: Drawing, Scanner, Violations, Interference, Merge
   manifest.json               — MV3, permissions, host_permissions, service_worker, content_scripts
 publish.py                    — automates version bump, CRX pack, GitHub release
+build-edge.py                 — copies extension/ to build/edge/, strips update_url from manifest
 generate_admin_guide.py       — PDF guide generator (FPDF)
 onshape-assistant-sync/
   src/index.js                — Cloudflare Worker: KV-backed merge permissions API
   wrangler.toml               — Worker config
 updates.xml                   — Auto-update manifest (Chrome polls this for new .crx)
+updates-edge.xml              — Auto-update manifest (Edge polls this for new .zip)
 ```
 
 ---
@@ -218,20 +220,6 @@ const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
 
 **Kevin's Claude is the planner only — it must never edit code files directly.** All file edits must be delegated to remote devices.
 
-After Kevin approves a plan:
-- Identify all files that need editing
-- Select up to 3 remote devices at random from the connected device list
-- Distribute files across those devices — no two devices may edit the same file, but one device may edit multiple files
-- Assign each device its files and run the edits in parallel
-- Each device pushes its changes to a shared feature branch and opens a single PR
-- Kevin reviews and merges
-
-Example: plan touches background.js, content.js, popup.js → device A gets background.js, device B gets content.js + popup.js (or split across 3 if 3 devices available)
-
-**Chrome + Firefox parity:** Every code change must be applied to both extensions. Since the Firefox build is generated from `extension/` via `build-firefox.py`, changes to `extension/` files automatically flow to Firefox. However, always check whether the change involves any CDP/HAS_DEBUGGER logic that needs Firefox-specific handling. When 2 remotes are available, prefer assigning one remote per browser concern:
-- One remote handles `extension/` file edits (Chrome)
-- The other handles any Firefox-specific follow-up (build-firefox.py, updates-firefox.json, HAS_DEBUGGER guards)
-
 **Usage monitoring:** After assigning a task to a remote device, periodically check its `capture-pane` output for "out of usage". If detected:
 - Mark that device as exhausted
 - Reassign its remaining incomplete files to one of the other active devices
@@ -239,57 +227,21 @@ Example: plan touches background.js, content.js, popup.js → device A gets back
 
 ---
 
-## Remote device connections (Rohit + any future remotes)
-
-When asked to connect to a remote device or start a session on one:
-
-1. Create the tmux session with a keepalive window to prevent WSL from shutting down:
-   ```bash
-   ssh user@IP "wsl tmux new-session -d -s shared"
-   ssh user@IP "wsl tmux new-window -t shared"
-   ssh user@IP "wsl tmux send-keys -t shared:1 'tail -f /dev/null' Enter"
-   ```
-2. Launch Claude with `--dangerously-skip-permissions` in window 0:
-   ```bash
-   ssh user@IP "wsl tmux send-keys -t shared:0 'cd ~/OnshapeTools && claude --dangerously-skip-permissions' Enter"
-   ```
-3. Always use `ssh user@IP "wsl tmux ..."` — never attach interactively
-4. Read the session with `capture-pane -t shared:0 -p`, write with `send-keys -t shared:0`
-5. If the tmux socket is missing (`No such file or directory`), WSL shut down — recreate from step 1
-
-Rohit's machine: `rohit@10.30.3.8`
-
----
-
 ## Multi-agent workflow
+
+### Known agents
+
+Local Claude accounts in the claude-monitor tmux session:
+- claude_vishal, claude_kaustubh, claude_rohith, claude_hriday, claude_harini (and others)
+
+Identify active agents by reading each pane's `/status` output — do not assume which panes are occupied.
 
 ### Role assignment sequence
 
 Once the monitor is open, run this automatically — no prompting needed:
 
 1. **Map panes to agents** — send `/status` to each pane, parse the `Email:` line, build a pane-index→agent-name table
-2. **Randomly shuffle** the active agents
-3. **Assign roles:**
-   - Agents 1–3: Chrome editors — assign `background.js`, `content.js`, `popup.js` one each (random)
-   - Agent 4: Firefox editor
-   - Agent 5: Service worker specialist
-   - Agent 6: Reviewer — receives the same three files as the Chrome editors
-4. **Send each agent their briefing** (templates below) via `tmux send-keys -t claude-monitor:0.N`
-5. **Poll for acknowledgement** — read each pane until you see their ack string
-6. **Report to Kevin:** table of agent → role → assigned file
-
-### Chrome editor briefing
-
-Send to each of the 3 Chrome editors (substitute `[FILE]`):
-
-```
-You are a Chrome extension file editor for this session. You are NOT the planner.
-Assigned file: [FILE]
-
-Do these steps now, in order:
-1. Read CLAUDE.md at /mnt/c/Users/kevin/Desktop/OnshapeTools/CLAUDE.md in full
-2. Read extension/[FILE]
-3. Reply exactly: "acknowledged: chrome editor for [FILE]" — then wait for your task
+2. Select the agents with lowest usage for tasks
 
 Constraints:
 - Edit [FILE] only — no other files
@@ -301,37 +253,8 @@ Constraints:
 - When you finish a task, ALWAYS run: bash ~/tell.sh planner "done: [file] — [brief summary]"
 ```
 
-### Firefox editor briefing
 
-```
-You are the Firefox compatibility editor for this session. You are NOT the planner.
-
-Do these steps now, in order:
-1. Read CLAUDE.md at /mnt/c/Users/kevin/Desktop/OnshapeTools/CLAUDE.md in full
-2. Reply exactly: "acknowledged: firefox editor" — then wait
-
-When the planner tells you Chrome editors are done, read every file they touched,
-then apply Firefox-specific changes (CDP/HAS_DEBUGGER guards, build-firefox.py).
-
-Constraints: only touch build-firefox.py and HAS_DEBUGGER guards. Do not commit.
-- When you finish a task, ALWAYS run: bash ~/tell.sh planner "done: firefox — [brief summary]"
-```
-
-### Service worker specialist briefing
-
-```
-You are the service worker console specialist for this session. You are NOT the planner.
-
-Your two jobs:
-1. GENERATE — when the planner or Kevin needs to observe DOM changes or run diagnostics, write the exact chrome.runtime.sendMessage(...) command to paste into the Chrome service worker console, plus what to do manually to trigger the event.
-2. INTERPRET — when Kevin pastes raw console output back (DOM mutations, JSON dumps, error traces), parse it and extract the actionable selectors, values, or root causes. Reply with a clean summary: selectors found, what they mean, and what the editor should target.
-
-Do these steps now, in order:
-1. Read CLAUDE.md at /mnt/c/Users/kevin/Desktop/OnshapeTools/CLAUDE.md in full
-2. Read extension/background.js
-3. Reply exactly: "acknowledged: sw specialist" — then wait
-
-Rules:
+Rules for service worker testing:
 - Never guess selectors — always provide a command to observe first
 - All commands are for the Chrome service worker console at chrome://extensions → service worker → console
 - **Every generated command MUST be written to /mnt/c/Users/kevin/Desktop/OnshapeTools/observer-commands.txt** — prepend it at the top of the file (keep existing content below). Never only reply with it in chat.
@@ -340,39 +263,54 @@ Rules:
 - When you finish a task or have findings ready, ALWAYS run: bash ~/tell.sh planner "your findings here"
 ```
 
-### Reviewer briefing
-
-Send to Agent 6:
-
-```
-You are the code reviewer for this session. You are NOT the planner.
-
-Do these steps now, in order:
-1. Read CLAUDE.md at /mnt/c/Users/kevin/Desktop/OnshapeTools/CLAUDE.md in full
-2. Reply exactly: "acknowledged: reviewer" — then wait for tasks
-
-When the planner tells you a task is complete, re-read the affected file and report any issues you notice — bugs, edge cases, broken logic, anything that looks wrong. Keep it short: one line per issue.
-
-Constraints:
-- Do not edit any files. Do not commit.
-- Only communicate with the planner — never contact other agents directly
-- When you have findings ready, ALWAYS run: bash ~/tell.sh planner "review: [brief findings]"
-- If you find no issues, still run: bash ~/tell.sh planner "review: all clear"
-```
-
 ### Usage monitoring
 
-After briefing agents, periodically check panes for "out of usage". If detected:
-- Mark that agent exhausted
-- Reassign their file to another active Chrome editor
-- Notify Kevin only if all agents are exhausted
+**Trigger: every time an agent sends a tell.sh inbox message.** Since agents only send tell.sh when they finish a task (i.e. they are idle and waiting), that is the right moment to check their usage — no interruption risk.
+
+After receiving any inbox message, before sending the agent their next task:
+1. Identify the agent's pane index from your pane→agent table
+2. Send `/usage` to their pane (two separate send-keys calls with sleep 1 between, per hard rules):
+   ```bash
+   tmux send-keys -t claude-monitor:0.N "/usage"
+   sleep 1
+   tmux send-keys -t claude-monitor:0.N Enter
+   ```
+3. Wait 2 seconds, then capture the pane and read the usage %
+4. Send Escape to dismiss the overlay:
+   ```bash
+   sleep 2
+   tmux capture-pane -t claude-monitor:0.N -p   # read the %
+   tmux send-keys -t claude-monitor:0.N Escape
+   ```
+5. If usage ≥ 75%: warn Kevin before assigning more work to that agent
+6. If usage = "out of extra usage" / frozen: mark exhausted, reassign their file, notify Kevin only if all agents exhausted
+
+**Hourly fallback poll:** In addition to the tell.sh trigger, once per hour loop through all active agent panes and run the same `/usage` check on each. This catches agents that run out mid-task before they can send a tell.sh.
+
+Use **CronCreate** (not Monitor) for this. CronCreate fires a prompt to the planner on a schedule — the planner then uses its full tool set to send `/usage` to each pane, interpret results, and reassign if needed.
+
+Create both crons **immediately after all agents have acknowledged their briefings** (step 5 of the role assignment sequence):
+```
+// Hourly usage sweep
+CronCreate(
+  cron: "7 * * * *",   // every hour at :07, off the :00 mark
+  prompt: "Hourly usage sweep: send /usage to every active agent pane, capture the result, send Escape to dismiss. Report each agent's usage %. If any agent is ≥75%, warn Kevin. If any agent shows 'out of extra usage', mark exhausted and reassign their file."
+)
+
+// Every 30 min context sweep
+CronCreate(
+  cron: "17,47 * * * *",   // at :17 and :47 each hour
+  prompt: "Context sweep: (1) Check your own context with /context — if your free space is below 50%, run /compact on yourself first. (2) For each active agent pane, send /context, wait 2s, capture the pane, parse the 'Free space' % line, send Escape to dismiss. If any agent has less than 50% free space remaining, send /compact to that pane. Report all free space %s including your own."
+)
+```
 
 ---
 
 ## Hard rules
 - **Credentials are hardcoded** in scripts — do not refactor to env vars, unless credentials are unavailable in which case ask and substitute
+- **Always edit on `dev`, never `main`**: before touching any file, verify `git branch` shows `dev`. If on main, run `git checkout dev` first. This applies to all agents and all sessions.
 - After Kevin approves any edit: commit and `git push origin dev` immediately
-- **Before sending ANY tmux message to ANY pane:** escape ALL panes first (loop Escape over all 6 panes with sleep), verify target pane is clear, then send. No exceptions — idle panes keep /status open indefinitely
+- **At session startup only, before sending initial briefings:** escape ALL active agent panes once (loop Escape over every pane with a sleep between each) to clear any /status overlays. Do NOT escape before every individual tmux message — only once at the start of the briefing sequence.
 - **tmux send-keys — always split text and Enter**: never use `tmux send-keys -t PANE "message" Enter` in one call. Always do two separate calls with a sleep in between:
   ```bash
   tmux send-keys -t PANE "message"

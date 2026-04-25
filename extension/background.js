@@ -2960,6 +2960,58 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     sendResponse({ ok: true });
     return;
 
+  } else if (msg.type === "fetch-drawing-elements") {
+    (async () => {
+      const { did, wid } = msg;
+      try {
+        const data = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+        const drawings = (data || [])
+          .filter(e => e.dataType === "onshape-app/drawing")
+          .map(e => ({ id: e.id, name: e.name || "Untitled Drawing" }));
+        sendResponse({ drawings });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "apply-drawing-notes") {
+    sendResponse({ ok: true });
+    (async () => {
+      const { did, wid, drawings, height } = msg;
+      const textHeight = height || 4.0;
+      const broadcast = (message, cls) =>
+        chrome.runtime.sendMessage({ type: "notes-progress", message, cls }).catch(() => {});
+
+      for (const drawing of drawings) {
+        broadcast(`Applying to "${drawing.name}"...`);
+        try {
+          const body = {
+            description: "Add note",
+            jsonRequests: [{
+              messageName: "onshapeCreateAnnotations",
+              formatVersion: "2021-01-01",
+              annotations: [{
+                type: "Onshape::Note",
+                note: {
+                  position: { type: "Onshape::Reference::Point", coordinate: [20, 50, 0] },
+                  contents: drawing.text,
+                  textHeight,
+                },
+              }],
+            }],
+          };
+          const json = await onshapePost(`/api/v6/drawings/d/${did}/w/${wid}/e/${drawing.id}/modify`, body);
+          await pollModify(did, wid, drawing.id, json.id, 30);
+          broadcast(`✓ ${drawing.name}`, "log-ok");
+        } catch (e) {
+          broadcast(`✗ ${drawing.name}: ${e.message}`, "log-err");
+        }
+      }
+      chrome.runtime.sendMessage({ type: "notes-done" }).catch(() => {});
+    })();
+    return;
+
   } else if (msg.type === "tab-folder-result") {
     // Auto-scan result from content.js — store per doc
     storeDocScanResult(msg.data);
@@ -3668,3 +3720,12 @@ setInterval(checkForLocalUpdate, 5 * 60 * 1000);
 setInterval(() => { if (_updatePending) checkForLocalUpdate(); }, 30000);
 // Check shortly after startup (in case git pull ran while Chrome was open)
 setTimeout(checkForLocalUpdate, 30000);
+
+// ---------------------------------------------------------------------------
+// Dev relay — CDP mode
+// ---------------------------------------------------------------------------
+// sw-relay.py connects to Chrome --remote-debugging-port=9222 and evals
+// expressions directly in this SW via CDP Runtime.evaluate (bypasses CSP).
+// No code needed here — the relay talks to the SW target over CDP.
+// sw-exec.py  →  ws://localhost:9300/cmd  →  relay  →  CDP  →  SW
+// ---------------------------------------------------------------------------

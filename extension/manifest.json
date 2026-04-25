@@ -13,7 +13,8 @@
     "notifications",
     "webNavigation",
     "debugger",
-    "downloads"
+    "downloads",
+    "alarms"
   ],
   "host_permissions": [
     "https://cad.onshape.com/*",
