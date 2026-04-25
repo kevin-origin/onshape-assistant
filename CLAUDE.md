@@ -324,7 +324,33 @@ CronCreate(
 ## Commands
 
 ```bash
-python publish.py   # bump version, pack CRX, push, create GitHub release
+python3 publish.py   # bump version, pack CRX, push, create GitHub release
+```
+
+## Service worker testing (sw-relay)
+
+Run arbitrary JS in the Chrome extension service worker from WSL — no manual console needed.
+
+**Setup:**
+1. Launch Chrome: `powershell.exe -File /mnt/c/Users/kevin/Desktop/chrome-debug.ps1` — then load the unpacked extension manually
+2. `python3 ~/sw-relay.py` — connects to Chrome CDP at localhost:9223, listens on ws://localhost:9300/cmd
+3. `python3 ~/sw-exec.py "<js expression>"` — sends expression, prints result
+
+**Architecture:**
+```
+sw-exec.py → ws://localhost:9300/cmd → sw-relay.py → CDP Runtime.evaluate → SW
+```
+
+- `sw-relay.py` uses `urllib.request` (not asyncio) for `/json/list` — asyncio TCP reads time out in WSL2 mirrored networking
+- `awaitPromise: true` — Promises resolve before result is returned
+- Wrap multi-statement code in `(async () => { ... })()` — top-level await not supported in CDP eval
+
+**Examples:**
+```bash
+python3 ~/sw-exec.py "typeof onshapeFetch"
+python3 ~/sw-exec.py "(async()=>{ return JSON.stringify(await getSessionUser()) })()"
+python3 ~/sw-exec.py "new Promise(r => chrome.storage.local.get(null, r))"
+```
 
 ## Onshape API notes
 
