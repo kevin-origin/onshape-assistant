@@ -54,6 +54,41 @@ async function getSessionUser() {
 }
 
 // ---------------------------------------------------------------------------
+// Top-level folder walk — walks parentId chain up to the root
+// ---------------------------------------------------------------------------
+
+async function getTopLevelFolder(docId) {
+  const cacheKey = `topFolder_${docId}`;
+  const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
+  if (cached[cacheKey] && (Date.now() - cached[cacheKey].ts < 3600000)) {
+    console.log(`[TopFolder] Cache hit: ${docId} → ${cached[cacheKey].topFolderName}`);
+    return cached[cacheKey];
+  }
+
+  const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
+  let currentId = doc.parentId;
+  let topFolder = null;
+  let depth = 0;
+
+  while (currentId && depth < 10) {
+    const folder = await onshapeFetch(`/api/v10/folders/${currentId}`);
+    topFolder = folder;
+    if (!folder.parentId || folder.jsonType !== "folder") break;
+    currentId = folder.parentId;
+    depth++;
+  }
+
+  const result = {
+    topFolderName: topFolder?.name || null,
+    topFolderId: topFolder?.id || null,
+    ts: Date.now()
+  };
+  chrome.storage.local.set({ [cacheKey]: result });
+  console.log(`[TopFolder] ${docId} → ${result.topFolderName} (${depth} hops)`);
+  return result;
+}
+
+// ---------------------------------------------------------------------------
 // Kill switch — deactivate extension for specific user accounts
 // ---------------------------------------------------------------------------
 //
@@ -3369,6 +3404,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const doc = await onshapeFetch(`/api/v10/documents/${msg.docId}`);
         sendResponse({ creator: doc.createdBy });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "get-top-folder") {
+    (async () => {
+      try {
+        const result = await getTopLevelFolder(msg.docId);
+        sendResponse(result);
       } catch (e) {
         sendResponse({ error: e.message });
       }

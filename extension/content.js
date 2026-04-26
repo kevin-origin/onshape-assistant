@@ -1860,9 +1860,56 @@
     console.log("[ProtectionGuard] Observer started");
   }
 
+  // ---------------------------------------------------------------------------
+  // Insert tab import guard — disable Import in insert-tab dropdown unless
+  // the doc's top-level folder is "OTS Parts"
+  // ---------------------------------------------------------------------------
+  // Selector confirmed via live DOM observation:
+  //   Dropdown:    ul.dropdown-menu.bottom-up  (added to DOM when insert button clicked)
+  //   Import item: a#upload-button.dropdown-item  (inside a <li> in that ul)
+  // ---------------------------------------------------------------------------
+  function initInsertTabGuard() {
+    function applyGuard() {
+      const menu = document.querySelector("ul.dropdown-menu.bottom-up");
+      if (!menu || menu.offsetHeight === 0) return;
+      const importItem = menu.querySelector("a#upload-button");
+      if (!importItem || importItem.dataset.oxtImportGuarded) return;
+      importItem.dataset.oxtImportGuarded = "1";
+
+      // Disable by default
+      importItem.style.opacity = "0.4";
+      importItem.style.pointerEvents = "none";
+      importItem.style.cursor = "not-allowed";
+      console.log("[InsertTabGuard] Import disabled by default");
+
+      const docId = getDocIdFromUrl();
+      if (!docId) return;
+
+      chrome.runtime.sendMessage({ type: "get-top-folder", docId }, (resp) => {
+        if (resp?.topFolderName === "OTS Parts") {
+          importItem.style.opacity = "";
+          importItem.style.pointerEvents = "";
+          importItem.style.cursor = "";
+          console.log("[InsertTabGuard] Import enabled — OTS Parts doc");
+        } else {
+          console.log("[InsertTabGuard] Import stays disabled — top folder: " + resp?.topFolderName);
+        }
+      });
+    }
+
+    const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
+      applyGuard();
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[InsertTabGuard] Observer started");
+  }
+
   // Start interceptors
   initCreateDocInterceptor();
   initVersionDescriptionEnforcer();
   initProtectionGuard();
+  initInsertTabGuard();
 
 })();
