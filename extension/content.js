@@ -963,6 +963,44 @@
   // Selector confirmed via live DOM: div.modal.selective-preview-dialog.show
   // Merge button: button.submit-button (type=submit) — Cancel/X left enabled.
   // Checks check-merge-allowed in background (backend → local fallback).
+  // applyMergeBlock retries until Angular renders .modal-body and button.submit-button
+  // (the permission check resolves from cache before Angular finishes rendering).
+
+  function applyMergeBlock(modal, attempts) {
+    attempts = attempts || 0;
+    const modalBody = modal.querySelector(".modal-body");
+    const mergeBtn = modal.querySelector("button.submit-button");
+    if (!modalBody || !mergeBtn) {
+      if (attempts < 20) setTimeout(() => applyMergeBlock(modal, attempts + 1), 50);
+      return;
+    }
+
+    const banner = document.createElement("div");
+    banner.id = "oxt-merge-blocker";
+    banner.style.cssText = `
+      background: #533a0f; border: 1px solid #f59e0b; border-radius: 4px;
+      padding: 10px 14px; margin: 10px 16px; font-size: 13px;
+      color: #f0c040; font-weight: 500;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    `;
+    banner.textContent = "You do not have permission to merge branches. Contact the document owner.";
+    modalBody.parentNode.insertBefore(banner, modalBody);
+
+    mergeBtn.disabled = true;
+    mergeBtn.style.opacity = "0.4";
+    mergeBtn.style.cursor = "not-allowed";
+    mergeBtn.title = "Merge not allowed — contact document owner";
+    console.log(`[MergeBlock] Blocked after ${attempts} retries`);
+
+    const form = modal.querySelector("form");
+    if (form) {
+      form.addEventListener("submit", (e) => {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        console.log("[MergeBlock] Form submit blocked");
+      }, true);
+    }
+  }
 
   (function initMergeBlocker() {
     let _lastModal = null;
@@ -982,41 +1020,8 @@
               console.log("[MergeBlock] User is allowed to merge");
               return;
             }
-
-            console.log("[MergeBlock] User NOT allowed — blocking merge");
-
-            // Banner inserted before .modal-body
-            const modalBody = modal.querySelector(".modal-body");
-            const banner = document.createElement("div");
-            banner.id = "oxt-merge-blocker";
-            banner.style.cssText = `
-              background: #533a0f; border: 1px solid #f59e0b; border-radius: 4px;
-              padding: 10px 14px; margin: 10px 16px; font-size: 13px;
-              color: #f0c040; font-weight: 500;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            `;
-            banner.textContent = "You do not have permission to merge branches. Contact the document owner.";
-            if (modalBody) modalBody.parentNode.insertBefore(banner, modalBody);
-
-            // Disable Merge button — Cancel (.button-cancel) and X (.btn-close) stay enabled
-            const mergeBtn = modal.querySelector("button.submit-button");
-            if (mergeBtn) {
-              mergeBtn.disabled = true;
-              mergeBtn.style.opacity = "0.4";
-              mergeBtn.style.cursor = "not-allowed";
-              mergeBtn.title = "Merge not allowed — contact document owner";
-              console.log("[MergeBlock] Disabled Merge button");
-            }
-
-            // Block form submit as secondary safety (Angular ng-submit)
-            const form = modal.querySelector("form");
-            if (form) {
-              form.addEventListener("submit", (e) => {
-                e.preventDefault();
-                e.stopImmediatePropagation();
-                console.log("[MergeBlock] Form submit blocked");
-              }, true);
-            }
+            console.log("[MergeBlock] User NOT allowed — waiting for modal content then blocking");
+            applyMergeBlock(modal);
           });
         }
       } else if (!modal && _lastModal) {
