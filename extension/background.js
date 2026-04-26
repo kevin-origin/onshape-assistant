@@ -149,25 +149,31 @@ async function refreshAndApplyKillSwitch() {
   }
 }
 
-// Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
-// Layer 2 is skipped at startup because we don't have the email yet without a network call;
-// the remote fetch populates the cache and applies in one step.
-checkKillSwitchSync().then(blocked => {
-  if (!blocked) refreshAndApplyKillSwitch();
-});
+// Kill switch only runs on production (CRX-installed) builds.
+// Chrome strips update_url from unpacked/dev extensions at runtime, so this
+// naturally evaluates to false on dev and true on any installed CRX build.
+const IS_PRODUCTION_BUILD = !!chrome.runtime.getManifest().update_url;
 
-// Hourly alarm: keep blocked state current without waiting for a tab load
-chrome.alarms.create("kill-switch-refresh", { periodInMinutes: 60 });
-chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === "kill-switch-refresh") refreshAndApplyKillSwitch();
-});
+if (IS_PRODUCTION_BUILD) {
+  // Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
+  checkKillSwitchSync().then(blocked => {
+    if (!blocked) refreshAndApplyKillSwitch();
+  });
+
+  // Hourly alarm: keep blocked state current without waiting for a tab load
+  chrome.alarms.create("kill-switch-refresh", { periodInMinutes: 60 });
+  chrome.alarms.onAlarm.addListener(alarm => {
+    if (alarm.name === "kill-switch-refresh") refreshAndApplyKillSwitch();
+  });
+} else {
+  console.log("[KillSwitch] Dev build — kill switch inactive");
+}
 
 // ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
 // ---------------------------------------------------------------------------
 
 let _teamMembers = null; // [{ email, name, id }]
-let _docCreatorCache = {}; // { docId: { id, name, email } }
 
 async function getTeamMembers() {
   if (_teamMembers) return _teamMembers;
@@ -3081,13 +3087,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   } else if (msg.type === "check-releases") {
     (async () => {
       try {
-        const data = await onshapeFetch(`/api/v10/revisions/d/${msg.docId}`);
-        const items = data.items || [];
-        console.log(`[ExportDetect] Doc ${msg.docId}: ${items.length} revision(s)`);
-        sendResponse({ hasReleases: items.length > 0, count: items.length });
+        const [revData, docData] = await Promise.all([
+          onshapeFetch(`/api/v10/revisions/d/${msg.docId}`),
+          onshapeFetch(`/api/v10/documents/${msg.docId}`)
+        ]);
+        const items = revData.items || [];
+        if (items.length === 0) {
+          console.log(`[ExportDetect] Doc ${msg.docId}: no revisions`);
+          sendResponse({ hasReleases: false, staleRevision: false, count: 0 });
+          return;
+        }
+        const latestRevAt = items
+          .map(r => new Date(r.createdAt).getTime())
+          .reduce((a, b) => Math.max(a, b), 0);
+        const modifiedAt = new Date(docData.modifiedAt).getTime();
+        const stale = modifiedAt > latestRevAt;
+        console.log(`[ExportDetect] Doc ${msg.docId}: ${items.length} revision(s), latest=${new Date(latestRevAt).toISOString()}, modifiedAt=${docData.modifiedAt}, stale=${stale}`);
+        sendResponse({ hasReleases: true, staleRevision: stale, count: items.length });
       } catch (e) {
         console.log(`[ExportDetect] Release check failed: ${e.message}`);
-        sendResponse({ hasReleases: false, count: 0, error: e.message });
+        sendResponse({ hasReleases: false, staleRevision: false, count: 0, error: e.message });
       }
     })();
     return true; // async sendResponse
@@ -3485,36 +3504,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         sendResponse({ docId, url });
       } catch (e) {
         console.error("[CreateDoc] Failed:", e.message);
-        sendResponse({ error: e.message });
-      }
-    })();
-    return true;
-
-  } else if (msg.type === "get-doc-creator") {
-    (async () => {
-      const docId = msg.docId;
-      if (_docCreatorCache[docId]) {
-        sendResponse(_docCreatorCache[docId]);
-        return;
-      }
-      try {
-        const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
-        const owner = doc.owner || {};
-        // Company account owns the doc — not a real person
-        const isCompany = owner.id === COMPANY_ID;
-        const creator = {
-          id: owner.id || "", name: owner.name || "Unknown",
-          email: owner.email || "", isCompany,
-        };
-        if (!creator.email && !isCompany) {
-          const members = await getTeamMembers();
-          const match = members.find(m => m.id === creator.id);
-          if (match) creator.email = match.email;
-        }
-        _docCreatorCache[docId] = creator;
-        sendResponse(creator);
-      } catch (e) {
-        console.error("[DocCreator] Failed:", e.message);
         sendResponse({ error: e.message });
       }
     })();
