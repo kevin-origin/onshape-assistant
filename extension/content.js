@@ -1897,12 +1897,33 @@
       });
     }
 
+    // Watch for insert tab button click to eagerly fetch assembly count
+    // so content-main.js assembly guard has fresh data before the dropdown renders
+    function attachInsertBtnListener() {
+      const btn = document.querySelector('[data-bs-original-title="Insert new tab"]');
+      if (!btn || btn.dataset.oxtInsertListening) return;
+      btn.dataset.oxtInsertListening = "1";
+      btn.addEventListener("click", () => {
+        const docId = getDocIdFromUrl();
+        const wid = getWidFromUrl();
+        if (!docId || !wid) return;
+        chrome.runtime.sendMessage({ type: "get-assembly-count", docId, wid }, (resp) => {
+          if (resp && typeof resp.count === "number") {
+            document.documentElement.dataset.oxtAssemblyCount = String(resp.count);
+            console.log("[InsertTabGuard] Assembly count refreshed:", resp.count);
+          }
+        });
+      }, true);
+    }
+
     const observer = new MutationObserver(() => {
       if (_killSwitchActive) return;
       applyGuard();
+      attachInsertBtnListener();
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
+    attachInsertBtnListener();
     console.log("[InsertTabGuard] Observer started");
   }
 

@@ -3421,6 +3421,19 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
 
+  } else if (msg.type === "get-assembly-count") {
+    (async () => {
+      try {
+        const elements = await onshapeFetch(`/api/v10/documents/d/${msg.docId}/w/${msg.wid}/elements`);
+        const items = elements.items || elements || [];
+        const count = items.filter(e => e.elementType === "ASSEMBLY").length;
+        sendResponse({ count });
+      } catch (e) {
+        sendResponse({ error: e.message, count: 0 });
+      }
+    })();
+    return true;
+
   } else if (msg.type === "get-team-members") {
     (async () => {
       const members = await getTeamMembers();

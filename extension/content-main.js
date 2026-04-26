@@ -13,7 +13,7 @@
 
   function initAssemblyCreationGuard() {
     waitForEl('ul#document-tabs-create-ul', (ul) => {
-      new MutationObserver(() => {
+      function applyAssemblyGuard() {
         if (ul.offsetHeight === 0) return;
 
         const hasAssembly = parseInt(document.documentElement.dataset.oxtAssemblyCount || '0') > 0;
@@ -48,7 +48,15 @@
             btn._assemblyGuardListener = null;
           }
         }
-      }).observe(ul, { attributes: true, attributeFilter: ['style', 'class'] });
+      }
+
+      // Fire when dropdown becomes visible (style/class toggle)
+      new MutationObserver(applyAssemblyGuard)
+        .observe(ul, { attributes: true, attributeFilter: ['style', 'class'] });
+
+      // Also re-check when oxtAssemblyCount is updated by content.js mid-open
+      new MutationObserver(applyAssemblyGuard)
+        .observe(document.documentElement, { attributes: true, attributeFilter: ['data-oxt-assembly-count'] });
     });
   }
 
