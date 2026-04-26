@@ -53,5 +53,6 @@
   "action": {
     "default_popup": "popup.html",
     "default_title": "Onshape Assistant"
-  }
+  },
+  "dev_build": true
 }

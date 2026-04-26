@@ -149,10 +149,9 @@ async function refreshAndApplyKillSwitch() {
   }
 }
 
-// Kill switch only runs on production (CRX-installed) builds.
-// Chrome strips update_url from unpacked/dev extensions at runtime, so this
-// naturally evaluates to false on dev and true on any installed CRX build.
-const IS_PRODUCTION_BUILD = !!chrome.runtime.getManifest().update_url;
+// Kill switch only runs on production builds.
+// dev branch manifest has "dev_build": true — absent on main.
+const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 
 if (IS_PRODUCTION_BUILD) {
   // Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
