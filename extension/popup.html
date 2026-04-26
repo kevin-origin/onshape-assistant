@@ -4,73 +4,24 @@
   <meta charset="utf-8">
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-
-    /* ── Theme tokens ───────────────────────────────────────────── */
-    :root {
-      /* Onshape Dark (default) */
-      --bg-base:        #333;
-      --bg-panel:       #2c2c2c;
-      --bg-input:       #2c2c2c;
-      --text:           #fff;
-      --text-muted:     #ccc;
-      --text-dim:       #888;
-      --accent:         #3e94ff;
-      --accent-cb:      #3e94ff;
-      --border:         #495057;
-      --border-subtle:  #3a3a3a;
-      --hover-bg:       #404040;
-      --btn-draw-bg:    #0b450b;
-      --btn-draw-text:  #75b798;
-      --btn-sec-bg:     #2c2c2c;
-      --btn-sec-text:   #3e94ff;
-      --badge-ok-bg:    #0b450b;  --badge-ok-text:   #75b798;
-      --badge-warn-bg:  #6a4f06;  --badge-warn-text: #ffda6a;
-      --badge-err-bg:   #683232;  --badge-err-text:  #ea868f;
-      --log-ok:         #75b798;
-      --log-err:        #ea868f;
-    }
-    :root[data-theme="light"] {
-      /* Onshape Light */
-      --bg-base:        #f5f5f5;
-      --bg-panel:       #fff;
-      --bg-input:       #fff;
-      --text:           #333;
-      --text-muted:     #555;
-      --text-dim:       #888;
-      --accent:         #1651b0;
-      --accent-cb:      #1651b0;
-      --border:         #d7d7d7;
-      --border-subtle:  #e0e0e0;
-      --hover-bg:       #eaeaea;
-      --btn-draw-bg:    #ddf6cc;
-      --btn-draw-text:  #009400;
-      --btn-sec-bg:     #fff;
-      --btn-sec-text:   #1651b0;
-      --badge-ok-bg:    #ddf6cc;  --badge-ok-text:   #009400;
-      --badge-warn-bg:  #fff8e6;  --badge-warn-text: #825f00;
-      --badge-err-bg:   #f9ebec;  --badge-err-text:  #bd3039;
-      --log-ok:         #009400;
-      --log-err:        #bd3039;
-    }
-
     body {
       width: 340px;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
       font-size: 15px;
-      background: var(--bg-base);
-      color: var(--text);
+      background: #1a1a2e;
+      color: #e0e0e0;
       padding: 12px;
     }
     h2 {
       font-size: 16px;
-      color: var(--text);
+      color: #fff;
       margin-bottom: 10px;
-      border-bottom: 1px solid var(--border-subtle);
+      border-bottom: 1px solid #333;
       padding-bottom: 6px;
     }
     h3 {
       font-size: 15px;
-      color: var(--text);
+      color: #fff;
       margin-bottom: 8px;
       display: flex;
       align-items: center;
@@ -78,27 +29,27 @@
     }
     .btn-back {
       background: none;
-      border: 1px solid var(--border);
-      color: var(--accent);
+      border: 1px solid #444;
+      color: #7ec8e3;
       padding: 2px 8px;
       border-radius: 3px;
       font-size: 13px;
       cursor: pointer;
       flex: none;
     }
-    .btn-back:hover { border-color: var(--accent); }
+    .btn-back:hover { border-color: #7ec8e3; }
     label {
       display: block;
       font-size: 13px;
-      color: var(--text-muted);
+      color: #aaa;
       margin-bottom: 3px;
       margin-top: 10px;
     }
     textarea, input[type="text"] {
       width: 100%;
-      background: var(--bg-input);
-      border: 1px solid var(--border-subtle);
-      color: var(--text);
+      background: #16213e;
+      border: 1px solid #333;
+      color: #e0e0e0;
       border-radius: 4px;
       padding: 6px 8px;
       font-family: monospace;
@@ -107,7 +58,6 @@
     }
     textarea { height: 60px; }
     input[type="text"] { height: 30px; }
-    input[type="checkbox"] { accent-color: var(--accent-cb); }
     .btn-row {
       display: flex;
       gap: 6px;
@@ -126,9 +76,9 @@
     button:hover { opacity: 0.85; }
     button:disabled { opacity: 0.4; cursor: not-allowed; }
     .btn-menu {
-      background: var(--bg-panel);
-      color: var(--text);
-      border: 1px solid var(--border-subtle);
+      background: #16213e;
+      color: #e0e0e0;
+      border: 1px solid #333;
       padding: 12px 10px;
       text-align: left;
       font-size: 15px;
@@ -137,26 +87,23 @@
       display: block;
       width: 100%;
     }
-    .btn-menu:hover { border-color: var(--accent); }
+    .btn-menu:hover { border-color: #7ec8e3; color: #fff; }
     .btn-menu .menu-desc {
       font-size: 12px;
-      color: var(--text-dim);
+      color: #666;
       margin-top: 3px;
       font-weight: 400;
     }
-    .btn-draw   { background: var(--btn-draw-bg); color: var(--btn-draw-text); }
-    .btn-rescan { background: var(--btn-sec-bg);  color: var(--btn-sec-text);  border: 1px solid var(--border-subtle); }
-    /* Format toggle buttons (STEP / STL) */
-    .btn-fmt { border-radius: 4px; padding: 7px 10px; font-size: 14px; font-weight: 600; cursor: pointer; flex: 1; }
-    .btn-fmt-active   { background: var(--btn-draw-bg); color: var(--btn-draw-text); border: none; }
-    .btn-fmt-inactive { background: var(--btn-sec-bg);  color: var(--btn-sec-text);  border: 1px solid var(--border-subtle); }
+    .btn-draw { background: #1b4332; color: #95d5b2; }
+    /* .btn-scan removed — no bulk scan */
+    .btn-rescan { background: #1a1a40; color: #7ec8e3; border: 1px solid #333; }
     #status {
       margin-top: 10px;
       padding: 6px 8px;
-      background: var(--bg-panel);
+      background: #16213e;
       border-radius: 4px;
       font-size: 13px;
-      color: var(--accent);
+      color: #7ec8e3;
       min-height: 20px;
       display: none;
     }
@@ -168,7 +115,7 @@
     }
     .result-item {
       padding: 5px 8px;
-      background: var(--bg-panel);
+      background: #16213e;
       border-radius: 3px;
       margin-bottom: 3px;
       font-size: 13px;
@@ -185,12 +132,12 @@
       margin-left: 6px;
       white-space: nowrap;
     }
-    .badge-ok   { background: var(--badge-ok-bg);   color: var(--badge-ok-text); }
-    .badge-warn { background: var(--badge-warn-bg);  color: var(--badge-warn-text); }
-    .badge-err  { background: var(--badge-err-bg);   color: var(--badge-err-text); }
+    .badge-ok { background: #1b4332; color: #95d5b2; }
+    .badge-warn { background: #533a0f; color: #f0c040; }
+    .badge-err { background: #4a1525; color: #ff6b6b; }
     .summary {
       font-size: 13px;
-      color: var(--text-muted);
+      color: #aaa;
       margin-top: 6px;
       margin-bottom: 4px;
     }
@@ -200,24 +147,24 @@
       overflow-y: auto;
       font-size: 13px;
       font-family: monospace;
-      color: var(--text-muted);
+      color: #aaa;
       display: none;
     }
     #drawLog .log-line {
       padding: 2px 6px;
-      border-bottom: 1px solid var(--border-subtle);
+      border-bottom: 1px solid #222;
     }
-    #drawLog .log-ok  { color: var(--log-ok); }
-    #drawLog .log-err { color: var(--log-err); }
+    #drawLog .log-ok { color: #95d5b2; }
+    #drawLog .log-err { color: #ff6b6b; }
     .section { display: none; }
     .section.active { display: block; }
     /* Part selection panel */
     #partSelectPanel {
       display: none;
       margin-top: 10px;
-      border: 1px solid var(--border-subtle);
+      border: 1px solid #333;
       border-radius: 6px;
-      background: var(--bg-panel);
+      background: #16213e;
       padding: 10px;
     }
     #partSelectPanel .panel-header {
@@ -229,7 +176,7 @@
     #partSelectPanel .panel-header span {
       font-size: 14px;
       font-weight: 600;
-      color: var(--text);
+      color: #e0e0e0;
     }
     .part-list {
       max-height: 160px;
@@ -243,17 +190,18 @@
       padding: 5px 6px;
       border-radius: 3px;
       font-size: 13px;
-      color: var(--text);
+      color: #e0e0e0;
       cursor: pointer;
     }
-    .part-item:hover { background: var(--hover-bg); }
+    .part-item:hover { background: #1a1a40; }
     .part-item input[type="checkbox"] {
+      accent-color: #7ec8e3;
       width: 15px;
       height: 15px;
       flex-shrink: 0;
     }
     .weldment-section {
-      border-top: 1px solid var(--border-subtle);
+      border-top: 1px solid #333;
       padding-top: 8px;
       margin-bottom: 10px;
     }
@@ -262,7 +210,7 @@
       align-items: center;
       gap: 8px;
       font-size: 13px;
-      color: var(--text);
+      color: #e0e0e0;
       cursor: pointer;
       margin: 0;
     }
@@ -270,13 +218,13 @@
       display: none;
       margin-top: 8px;
       padding: 8px;
-      background: var(--bg-base);
+      background: #1a1a2e;
       border-radius: 4px;
     }
     .weldment-opts.active { display: block; }
     .weldment-opts label {
       font-size: 12px;
-      color: var(--text-muted);
+      color: #aaa;
       margin-top: 6px;
       margin-bottom: 2px;
     }
@@ -286,7 +234,7 @@
     }
     .weldment-info {
       font-size: 11px;
-      color: var(--text-dim);
+      color: #666;
       margin-top: 4px;
     }
     /* Notes panel */
@@ -299,11 +247,11 @@
     .notes-section-header span {
       font-size: 14px;
       font-weight: 600;
-      color: var(--text);
+      color: #e0e0e0;
     }
     .notes-drawing-item {
       padding: 5px 6px 7px;
-      border-bottom: 1px solid var(--border-subtle);
+      border-bottom: 1px solid #1a1a2e;
     }
     .notes-drawing-item:last-child { border-bottom: none; }
     .notes-drawing-header {
@@ -311,24 +259,26 @@
       align-items: center;
       gap: 8px;
       font-size: 13px;
-      color: var(--text);
+      color: #e0e0e0;
       cursor: pointer;
       margin-bottom: 4px;
     }
     .notes-drawing-header input[type="checkbox"] {
+      accent-color: #7ec8e3;
       width: 15px;
       height: 15px;
       flex-shrink: 0;
     }
     .notes-drawing-item input[type="text"].note-text-input {
+      width: 100%;
       height: 27px;
       font-size: 12px;
       padding: 3px 7px;
       margin-left: 23px;
       width: calc(100% - 23px);
-      background: var(--bg-base);
-      border: 1px solid var(--border-subtle);
-      color: var(--text);
+      background: #1a1a2e;
+      border: 1px solid #2a2a4a;
+      color: #e0e0e0;
       border-radius: 3px;
     }
   </style>
@@ -378,7 +328,7 @@
     <div id="partSelectPanel">
       <div class="panel-header">
         <span>Select Parts</span>
-        <label style="font-size:12px;color:var(--accent);cursor:pointer;margin:0;">
+        <label style="font-size:12px;color:#7ec8e3;cursor:pointer;margin:0;">
           <input type="checkbox" id="chkSelectAll" checked> Select All
         </label>
       </div>
@@ -406,18 +356,18 @@
     <div id="drawLog"></div>
 
     <!-- Notes panel -->
-    <div id="notesPanel" style="margin-top:14px;border-top:1px solid var(--border-subtle);padding-top:10px;">
+    <div id="notesPanel" style="margin-top:14px;border-top:1px solid #333;padding-top:10px;">
       <div class="notes-section-header">
         <span>Notes</span>
         <button id="btnLoadDrawings" class="btn-rescan" style="flex:none;padding:4px 10px;font-size:12px;font-weight:600;">Load Drawings</button>
       </div>
 
-      <div id="notesDrawingStatus" style="font-size:12px;color:var(--text-dim);margin-bottom:6px;display:none;"></div>
+      <div id="notesDrawingStatus" style="font-size:12px;color:#666;margin-bottom:6px;display:none;"></div>
 
-      <div id="notesDrawingList" style="display:none;border:1px solid var(--border-subtle);border-radius:4px;background:var(--bg-panel);margin-bottom:8px;">
-        <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-bottom:1px solid var(--border-subtle);">
-          <span style="font-size:12px;color:var(--text-muted);">Drawing</span>
-          <label style="font-size:12px;color:var(--accent);cursor:pointer;margin:0;display:flex;align-items:center;gap:5px;">
+      <div id="notesDrawingList" style="display:none;border:1px solid #333;border-radius:4px;background:#16213e;margin-bottom:8px;">
+        <div style="display:flex;justify-content:space-between;align-items:center;padding:5px 8px;border-bottom:1px solid #333;">
+          <span style="font-size:12px;color:#aaa;">Drawing</span>
+          <label style="font-size:12px;color:#7ec8e3;cursor:pointer;margin:0;display:flex;align-items:center;gap:5px;">
             <input type="checkbox" id="chkSelectAllDrawings" checked> Select All
           </label>
         </div>
@@ -425,7 +375,7 @@
       </div>
 
       <div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;">
-        <label style="font-size:12px;color:var(--text-muted);margin:0;white-space:nowrap;">Text height (mm)</label>
+        <label style="font-size:12px;color:#aaa;margin:0;white-space:nowrap;">Text height (mm)</label>
         <input type="text" id="noteTextHeight" value="4.0" style="width:60px;height:28px;font-size:13px;font-family:monospace;">
       </div>
 
@@ -433,7 +383,7 @@
         <button id="btnApplyNotes" class="btn-draw">Apply Notes</button>
       </div>
 
-      <div id="notesLog" style="margin-top:8px;max-height:160px;overflow-y:auto;font-size:13px;font-family:monospace;color:var(--text-muted);display:none;"></div>
+      <div id="notesLog" style="margin-top:8px;max-height:160px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
     </div>
   </div>
 
@@ -443,13 +393,13 @@
 
     <div class="btn-row">
       <button class="btn-rescan" id="btnRescan">Scan This Doc</button>
-      <button class="btn-draw" id="btnGenerateFolders">Generate Folders</button>
+      <button class="btn-rescan" id="btnGenerateFolders" style="background:#1b4332;color:#95d5b2;">Generate Folders</button>
     </div>
 
-    <div style="margin-top:10px;padding:8px;background:var(--bg-panel);border-radius:4px;font-size:13px;color:var(--text-dim);">
-      <div style="color:var(--text-muted);margin-bottom:4px;font-weight:600;">Required structure</div>
-      <div style="color:var(--log-ok);">Part Studios, Assemblies, Drawings, CAD Imports, Feature Studios, Variable Studios</div>
-      <div style="color:var(--text-dim);margin-top:3px;">All should be folders. Only 1 assembly in Assemblies.</div>
+    <div style="margin-top:10px;padding:8px;background:#16213e;border-radius:4px;font-size:13px;color:#888;">
+      <div style="color:#aaa;margin-bottom:4px;font-weight:600;">Required structure</div>
+      <div style="color:#95d5b2;">Part Studios, Assemblies, Drawings, CAD Imports, Feature Studios, Variable Studios</div>
+      <div style="color:#888;margin-top:3px;">All should be folders. Only 1 assembly in Assemblies.</div>
     </div>
 
     <div id="status"></div>
@@ -465,7 +415,7 @@
     <div class="btn-row">
       <button class="btn-rescan" id="btnRunInterference">Run Check</button>
     </div>
-    <div id="interferenceStatus" style="margin-top:10px;padding:6px 8px;background:var(--bg-panel);border-radius:4px;font-size:13px;color:var(--accent);display:none;"></div>
+    <div id="interferenceStatus" style="margin-top:10px;padding:6px 8px;background:#16213e;border-radius:4px;font-size:13px;color:#7ec8e3;display:none;"></div>
     <div id="interferenceResults" style="margin-top:10px;"></div>
   </div>
 
@@ -476,7 +426,7 @@
       <button class="btn-rescan" id="btnScanViolations">Scan</button>
     </div>
     <div id="violationsList"></div>
-    <div id="noViolations" style="color:var(--text-dim);font-size:13px;padding:10px 0;">
+    <div id="noViolations" style="color:#666;font-size:13px;padding:10px 0;">
       No violations detected. Open Onshape documents to check.
     </div>
   </div>
@@ -488,7 +438,7 @@
       <button class="btn-rescan" id="btnSetMergePerms">Set for This Doc</button>
     </div>
     <div id="mergePermsList"></div>
-    <div id="noMergePerms" style="color:var(--text-dim);font-size:13px;padding:10px 0;">
+    <div id="noMergePerms" style="color:#666;font-size:13px;padding:10px 0;">
       No merge permissions set. Permissions are created when a new document is opened.
     </div>
   </div>
@@ -515,18 +465,18 @@
 
     <label style="margin-top:10px;">Format</label>
     <div class="btn-row" style="margin-top:4px;">
-      <button id="btnFormatStep" class="btn-fmt btn-fmt-active">STEP</button>
-      <button id="btnFormatStl"  class="btn-fmt btn-fmt-inactive">STL</button>
+      <button id="btnFormatStep" style="background:#1b4332;color:#95d5b2;border:none;border-radius:4px;padding:7px 10px;font-size:14px;font-weight:600;cursor:pointer;flex:1;">STEP</button>
+      <button id="btnFormatStl" style="background:#1a1a40;color:#7ec8e3;border:1px solid #333;border-radius:4px;padding:7px 10px;font-size:14px;font-weight:600;cursor:pointer;flex:1;">STL</button>
     </div>
 
     <div class="btn-row" style="margin-top:10px;">
       <button class="btn-rescan" id="btnLoadExport3dParts">Load Parts</button>
     </div>
 
-    <div id="export3dPartPanel" style="display:none;margin-top:10px;border:1px solid var(--border-subtle);border-radius:6px;background:var(--bg-panel);padding:10px;">
+    <div id="export3dPartPanel" style="display:none;margin-top:10px;border:1px solid #333;border-radius:6px;background:#16213e;padding:10px;">
       <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">
-        <span style="font-size:14px;font-weight:600;color:var(--text);">Select Parts</span>
-        <label style="font-size:12px;color:var(--accent);cursor:pointer;margin:0;">
+        <span style="font-size:14px;font-weight:600;color:#e0e0e0;">Select Parts</span>
+        <label style="font-size:12px;color:#7ec8e3;cursor:pointer;margin:0;">
           <input type="checkbox" id="chkExport3dSelectAll" checked> Select All
         </label>
       </div>
@@ -536,23 +486,23 @@
       </div>
     </div>
 
-    <div id="export3dLog" style="margin-top:8px;max-height:180px;overflow-y:auto;font-size:13px;font-family:monospace;color:var(--text-muted);display:none;"></div>
+    <div id="export3dLog" style="margin-top:8px;max-height:180px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
   </div>
 
   <!-- ============ Export DXFs & Drawings ============ -->
   <div id="sectionExportBulk" class="section">
     <h3><button class="btn-back" id="btnBackFromExportBulk">Back</button> Export DXFs &amp; Drawings</h3>
-    <div id="exportStatus" style="margin-top:6px;padding:6px 8px;background:var(--bg-panel);border-radius:4px;font-size:13px;color:var(--accent);display:none;"></div>
+    <div id="exportStatus" style="margin-top:6px;padding:6px 8px;background:#16213e;border-radius:4px;font-size:13px;color:#7ec8e3;display:none;"></div>
     <div id="exportElementsPanel" style="display:none;">
-      <div style="font-size:11px;color:var(--text-dim);margin:8px 0 3px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Part Studios</div>
+      <div style="font-size:11px;color:#666;margin:8px 0 3px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Part Studios</div>
       <div id="exportPsList"></div>
-      <div style="font-size:11px;color:var(--text-dim);margin:8px 0 3px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Drawings</div>
+      <div style="font-size:11px;color:#666;margin:8px 0 3px;font-weight:600;text-transform:uppercase;letter-spacing:0.5px;">Drawings</div>
       <div id="exportDrawingsList"></div>
       <div class="btn-row" style="margin-top:10px;">
         <button class="btn-draw" id="btnBulkExport">Export Selected (ZIP)</button>
       </div>
     </div>
-    <div id="exportLog" style="margin-top:8px;max-height:180px;overflow-y:auto;font-size:13px;font-family:monospace;color:var(--text-muted);display:none;"></div>
+    <div id="exportLog" style="margin-top:8px;max-height:180px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
   </div>
 
   <script src="popup.js"></script>
