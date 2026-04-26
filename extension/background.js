@@ -166,6 +166,11 @@ if (IS_PRODUCTION_BUILD) {
     if (alarm.name === "kill-switch-refresh") refreshAndApplyKillSwitch();
   });
 } else {
+  // Dev build — clear any persisted disabled state left by a previous production run
+  chrome.action.enable();
+  chrome.action.setPopup({ popup: "popup.html" });
+  chrome.action.setBadgeText({ text: "" });
+  chrome.storage.sync.remove("killSwitchActive");
   console.log("[KillSwitch] Dev build — kill switch inactive");
 }
 
