@@ -163,6 +163,38 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Toolbar visibility — hide toolbar when active Part Studio has >= 250 features
+  // ---------------------------------------------------------------------------
+
+  let _toolbarStyleEl = null;
+
+  function setToolbarHidden(hide) {
+    if (!_toolbarStyleEl) {
+      _toolbarStyleEl = document.createElement('style');
+      _toolbarStyleEl.id = 'oxt-toolbar-hide';
+      document.head.appendChild(_toolbarStyleEl);
+    }
+    _toolbarStyleEl.textContent = hide
+      ? '.os-element-toolbar { display: none !important; }'
+      : '';
+  }
+
+  async function maybeHideToolbar() {
+    const docId = getDocIdFromUrl();
+    const wid   = getWidFromUrl();
+    const parts = location.pathname.split('/');
+    const eIdx  = parts.indexOf('e');
+    const eid   = eIdx !== -1 ? parts[eIdx + 1] : null;
+    if (!docId || !wid || !eid) { setToolbarHidden(false); return; }
+
+    const { count } = await chrome.runtime.sendMessage(
+      { type: 'get-feature-count', docId, wid, eid }
+    ).catch(() => ({ count: 0 }));
+
+    setToolbarHidden(count >= 250);
+  }
+
+  // ---------------------------------------------------------------------------
   // Auto-scan logic — runs on every Onshape doc open
   // ---------------------------------------------------------------------------
 
@@ -778,6 +810,7 @@
     }
     // Initial page load (only if not killed)
     runOnDocLoad();
+    maybeHideToolbar();
   });
 
   // SPA navigation: background.js sends "spa-navigated" when URL changes
@@ -788,6 +821,17 @@
       _notifiedDocIds.clear(); // reset notification tracking for new doc
       removeFolderOverlay();
       runOnDocLoad();
+      maybeHideToolbar();
+    } else if (msg.type === "violations-updated") {
+      const docId = getDocIdFromUrl();
+      if (!docId) return;
+      chrome.storage.local.get("tabCounts", (data) => {
+        const count = (data.tabCounts || {})[docId];
+        if (typeof count === "number") {
+          document.documentElement.dataset.oxtTabCount = String(count);
+        }
+        applyTabLimitGuard();
+      });
     }
   });
 
@@ -1861,6 +1905,34 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Insert tab limit guard — disables the insert-tab button when tabs >= 40
+  // ---------------------------------------------------------------------------
+
+  function applyTabLimitGuard() {
+    const btn = document.querySelector('[data-bs-original-title="Insert new tab"]');
+    if (!btn) return;
+    const countStr = document.documentElement.dataset.oxtTabCount;
+    const count = parseInt(countStr, 10);
+    const overLimit = !isNaN(count) && count >= 40;
+    if (overLimit) {
+      if (!btn.dataset.oxtTabLimitDisabled) {
+        btn.dataset.oxtTabLimitDisabled = "1";
+        btn.style.opacity = "0.4";
+        btn.style.pointerEvents = "none";
+        btn.style.cursor = "not-allowed";
+        console.log(`[InsertTabGuard] Button disabled — ${count} tabs (limit: 40)`);
+      }
+    } else {
+      if (btn.dataset.oxtTabLimitDisabled) {
+        delete btn.dataset.oxtTabLimitDisabled;
+        btn.style.opacity = "";
+        btn.style.pointerEvents = "";
+        btn.style.cursor = "";
+      }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Insert tab import guard — disable Import in insert-tab dropdown unless
   // the doc's top-level folder is "OTS Parts"
   // ---------------------------------------------------------------------------
@@ -1903,6 +1975,17 @@
       const btn = document.querySelector('[data-bs-original-title="Insert new tab"]');
       if (!btn || btn.dataset.oxtInsertListening) return;
       btn.dataset.oxtInsertListening = "1";
+
+      // Capture-phase blocker: stop click before Bootstrap opens the dropdown
+      btn.addEventListener("click", (e) => {
+        const count = parseInt(document.documentElement.dataset.oxtTabCount, 10);
+        if (!isNaN(count) && count >= 40) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+          console.log("[InsertTabGuard] Click blocked — tab limit reached");
+        }
+      }, true);
+
       btn.addEventListener("click", () => {
         const docId = getDocIdFromUrl();
         const wid = getWidFromUrl();
@@ -1919,11 +2002,13 @@
     const observer = new MutationObserver(() => {
       if (_killSwitchActive) return;
       applyGuard();
+      applyTabLimitGuard();
       attachInsertBtnListener();
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
     attachInsertBtnListener();
+    applyTabLimitGuard();
     console.log("[InsertTabGuard] Observer started");
   }
 

@@ -916,7 +916,6 @@ async function storeDocScanResult(result) {
 // Violation checker — runs on every doc open
 // ---------------------------------------------------------------------------
 
-const PARTS_LIMIT = 25;
 const FEATURES_LIMIT = 250;
 const TABS_LIMIT = 40;
 const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip violation checks
@@ -964,6 +963,14 @@ async function checkDocViolations(docId, docName, wid, tabId) {
         e => e.elementType !== "BILLOFMATERIALS" && !(e.name || "").startsWith("BOM :")
       );
 
+      // Store tab count for insert-tab limit guard in content.js
+      {
+        const tcData = await chrome.storage.local.get("tabCounts");
+        const tc = tcData.tabCounts || {};
+        tc[docId] = userElements.length;
+        await chrome.storage.local.set({ tabCounts: tc });
+      }
+
       // 2 & 3. Per Part Studio: parts > 25, features > 250
       const partStudios = userElements.filter(e =>
         (e.elementType || e.type || "") === "PARTSTUDIO"
@@ -972,16 +979,9 @@ async function checkDocViolations(docId, docName, wid, tabId) {
       let totalFeatures = 0;
       for (const ps of partStudios) {
         try {
-          const [partsResp, featResp] = await Promise.all([
-            onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${ps.id}`).catch(() => null),
-            onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`).catch(() => null),
-          ]);
-          const partCount = Array.isArray(partsResp) ? partsResp.length : 0;
+          const featResp = await onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`).catch(() => null);
           const featureCount = Array.isArray(featResp?.features) ? featResp.features.length : 0;
           totalFeatures += featureCount;
-          if (partCount > PARTS_LIMIT) {
-            violations.push(`"${ps.name}" has ${partCount} parts (limit: ${PARTS_LIMIT})`);
-          }
           if (featureCount > FEATURES_LIMIT) {
             violations.push(`"${ps.name}" has ${featureCount} features (limit: ${FEATURES_LIMIT})`);
           }
@@ -3708,6 +3708,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return;
+
+  } else if (msg.type === "get-feature-count") {
+    const { docId, wid, eid } = msg;
+    if (!docId || !wid || !eid) { sendResponse({ count: 0 }); return; }
+    (async () => {
+      const resp = await onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${eid}/features`).catch(() => null);
+      const count = Array.isArray(resp?.features) ? resp.features.length : 0;
+      sendResponse({ count });
+    })();
+    return true;
   }
 });
 
@@ -3723,11 +3733,12 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
   if (!changeInfo.url.includes("cad.onshape.com/documents/")) return;
   const prev = _tabUrls[tabId] || "";
   _tabUrls[tabId] = changeInfo.url;
-  // Only notify if the document ID changed (not just element/workspace switch)
   const prevDocId = prev.match(/\/documents\/([a-f0-9]+)/)?.[1];
   const newDocId = changeInfo.url.match(/\/documents\/([a-f0-9]+)/)?.[1];
-  if (newDocId && newDocId !== prevDocId) {
-    console.log("[SPA] Doc switch detected:", prevDocId, "->", newDocId);
+  const prevEid = prev.match(/\/e\/([a-f0-9]+)/)?.[1];
+  const newEid = changeInfo.url.match(/\/e\/([a-f0-9]+)/)?.[1];
+  if (newDocId && (newDocId !== prevDocId || (newEid && newEid !== prevEid))) {
+    console.log("[SPA] Navigation detected:", prevDocId, "->", newDocId, "eid:", prevEid, "->", newEid);
     chrome.tabs.sendMessage(tabId, {
       type: "spa-navigated",
       url: changeInfo.url,
@@ -3769,7 +3780,7 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 // ---------------------------------------------------------------------------
 
 async function cleanupDeletedDocs() {
-  const keys = ["docScanResults", "violations", "mergePermissions", "interferenceResults", "versionCounts"];
+  const keys = ["docScanResults", "violations", "mergePermissions", "interferenceResults", "versionCounts", "tabCounts"];
   const data = await chrome.storage.local.get(keys);
   let changed = false;
 
