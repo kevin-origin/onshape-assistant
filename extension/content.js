@@ -958,13 +958,14 @@
   exportObserver.observe(document.body, { childList: true, subtree: true });
 
   // ---------------------------------------------------------------------------
-  // Merge dialog blocker — blocks non-owners from merging branches
+  // Merge dialog blocker — blocks non-owners from merging INTO the main branch
   // ---------------------------------------------------------------------------
   // Selector confirmed via live DOM: div.modal.selective-preview-dialog.show
+  // Header: h4.selective-preview-dialog-title — "Merging changes into <span.branch-1> from <span.branch-0>"
+  // Target branch (INTO): span.branch-1[data-bs-original-title] in .modal-header
   // Merge button: button.submit-button (type=submit) — Cancel/X left enabled.
-  // Checks check-merge-allowed in background (backend → local fallback).
-  // applyMergeBlock retries until Angular renders .modal-body and button.submit-button
-  // (the permission check resolves from cache before Angular finishes rendering).
+  // Only blocks when target branch name matches the main workspace (canDelete===false).
+  // applyMergeBlock retries until Angular renders .modal-body and button.submit-button.
 
   function applyMergeBlock(modal, attempts) {
     attempts = attempts || 0;
@@ -983,13 +984,13 @@
       color: #f0c040; font-weight: 500;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     `;
-    banner.textContent = "You do not have permission to merge branches. Contact the document owner.";
+    banner.textContent = "You do not have permission to merge into the main branch. Contact the document owner.";
     modalBody.parentNode.insertBefore(banner, modalBody);
 
     mergeBtn.disabled = true;
     mergeBtn.style.opacity = "0.4";
     mergeBtn.style.cursor = "not-allowed";
-    mergeBtn.title = "Merge not allowed — contact document owner";
+    mergeBtn.title = "Merge to main not allowed — contact document owner";
     console.log(`[MergeBlock] Blocked after ${attempts} retries`);
 
     const form = modal.querySelector("form");
@@ -1000,6 +1001,36 @@
         console.log("[MergeBlock] Form submit blocked");
       }, true);
     }
+  }
+
+  // Waits for .branch-1 target element and main workspace name, then checks permissions.
+  // Retries up to 20x at 50ms intervals (Angular renders header async).
+  function checkMergeTarget(modal, docId, attempts) {
+    attempts = attempts || 0;
+    const targetEl = modal.querySelector(".modal-header .branch-1");
+    if (!targetEl) {
+      if (attempts < 20) setTimeout(() => checkMergeTarget(modal, docId, attempts + 1), 50);
+      return;
+    }
+    const targetName = targetEl.dataset.bsOriginalTitle || targetEl.textContent.trim();
+    const wid = getWidFromUrl() || "";
+
+    chrome.runtime.sendMessage({ type: "check-main-workspace", docId, wid }, (resp) => {
+      const mainName = resp && resp.mainName;
+      if (!mainName || targetName !== mainName) {
+        console.log(`[MergeBlock] Target "${targetName}" is not main ("${mainName}") — skip`);
+        return;
+      }
+      console.log(`[MergeBlock] Target is main — checking permissions`);
+      chrome.runtime.sendMessage({ type: "check-merge-allowed", docId }, (response) => {
+        if (response && response.allowed) {
+          console.log("[MergeBlock] User is allowed to merge to main");
+          return;
+        }
+        console.log("[MergeBlock] User NOT allowed — waiting for modal content then blocking");
+        applyMergeBlock(modal);
+      });
+    });
   }
 
   (function initMergeBlocker() {
@@ -1014,15 +1045,7 @@
           modal.dataset.oxtMergeGuarded = "1";
           const docId = getDocIdFromUrl();
           if (!docId) return;
-
-          chrome.runtime.sendMessage({ type: "check-merge-allowed", docId }, (response) => {
-            if (response && response.allowed) {
-              console.log("[MergeBlock] User is allowed to merge");
-              return;
-            }
-            console.log("[MergeBlock] User NOT allowed — waiting for modal content then blocking");
-            applyMergeBlock(modal);
-          });
+          checkMergeTarget(modal, docId);
         }
       } else if (!modal && _lastModal) {
         delete _lastModal.dataset.oxtMergeGuarded;

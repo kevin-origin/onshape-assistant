@@ -1084,7 +1084,7 @@ function loadViolations() {
 }
 
 // ---------------------------------------------------------------------------
-// Merge Permissions display + edit
+// Doc Permissions display + edit
 // ---------------------------------------------------------------------------
 
 function loadMergePermissions() {
