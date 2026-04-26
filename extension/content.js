@@ -967,12 +967,12 @@
   // Only blocks when target branch name matches the main workspace (canDelete===false).
   // applyMergeBlock retries until Angular renders .modal-body and button.submit-button.
 
-  function applyMergeBlock(modal, attempts) {
+  function applyMergeBlock(modal, ownerName, attempts) {
     attempts = attempts || 0;
     const modalBody = modal.querySelector(".modal-body");
     const mergeBtn = modal.querySelector("button.submit-button");
     if (!modalBody || !mergeBtn) {
-      if (attempts < 20) setTimeout(() => applyMergeBlock(modal, attempts + 1), 50);
+      if (attempts < 20) setTimeout(() => applyMergeBlock(modal, ownerName, attempts + 1), 50);
       return;
     }
 
@@ -984,7 +984,8 @@
       color: #f0c040; font-weight: 500;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     `;
-    banner.textContent = "You do not have permission to merge into the main branch. Contact the document owner.";
+    const ownerStr = ownerName ? ` Contact ${ownerName}.` : " Contact the document owner.";
+    banner.textContent = "You do not have permission to merge into the main branch." + ownerStr;
     modalBody.parentNode.insertBefore(banner, modalBody);
 
     mergeBtn.disabled = true;
@@ -1031,7 +1032,10 @@
           return;
         }
         console.log("[MergeBlock] User NOT allowed — waiting for modal content then blocking");
-        applyMergeBlock(modal);
+        chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, (creatorResp) => {
+          const ownerName = creatorResp && creatorResp.creator && creatorResp.creator.name;
+          applyMergeBlock(modal, ownerName);
+        });
       });
     });
   }
