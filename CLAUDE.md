@@ -10,13 +10,11 @@ extension/
   popup.html                  — popup markup; sections: Drawing, Scanner, Violations, Interference, Merge
   manifest.json               — MV3, permissions, host_permissions, service_worker, content_scripts
 publish.py                    — automates version bump, CRX pack, GitHub release
-build-edge.py                 — copies extension/ to build/edge/, strips update_url from manifest
 generate_admin_guide.py       — PDF guide generator (FPDF)
 onshape-assistant-sync/
   src/index.js                — Cloudflare Worker: KV-backed merge permissions API
   wrangler.toml               — Worker config
 updates.xml                   — Auto-update manifest (Chrome polls this for new .crx)
-updates-edge.xml              — Auto-update manifest (Edge polls this for new .zip)
 ```
 
 ---
