@@ -981,6 +981,9 @@
           : node.querySelector?.(".modal");
         if (!modal) continue;
 
+        // Skip workspace-permissions dialog — its body mentions "merges" but it's not a merge action
+        if (modal.classList.contains("workspace-permissions-dialog")) continue;
+
         // Check if this modal is about merging — check title element first, then full modal text
         const titleEl = modal.querySelector(".modal-title, .modal-header h4, .modal-header h3, .modal-header span");
         const titleText = (titleEl?.textContent || "").toLowerCase();
@@ -1788,8 +1791,80 @@
     console.log("[ReleaseGuard] Observer started");
   })();
 
+  // ---------------------------------------------------------------------------
+  // Workspace protection guard — only doc creator can toggle protection
+  // ---------------------------------------------------------------------------
+  // Selector confirmed via live DOM: div.modal.workspace-permissions-dialog.show
+  // Checkbox: #enable-workspace-protection
+  // Apply:    #workspace-protection-apply (input[type=button])
+  // Cancel/X: left enabled
+
+  function initProtectionGuard() {
+    let _lastModal = null;
+
+    const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
+      const modal = document.querySelector("div.modal.workspace-permissions-dialog.show");
+      if (modal && modal !== _lastModal) {
+        _lastModal = modal;
+        if (!modal.dataset.oxtProtectionGuarded) {
+          modal.dataset.oxtProtectionGuarded = "1";
+          const docId = getDocIdFromUrl();
+          if (!docId) return;
+
+          Promise.all([
+            new Promise(res => chrome.runtime.sendMessage({ type: "get-session-user" }, res)),
+            new Promise(res => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, res)),
+          ]).then(([sessionUser, creatorResp]) => {
+            const creator = creatorResp?.creator;
+            const isOwner = creator && sessionUser && creator.id === sessionUser.id;
+            if (isOwner) {
+              console.log("[ProtectionGuard] User is doc creator — access allowed");
+              return;
+            }
+
+            console.log("[ProtectionGuard] User is not doc creator — blocking protection toggle");
+
+            const footer = modal.querySelector(".modal-footer");
+            const banner = document.createElement("div");
+            banner.style.cssText = `
+              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+              padding: 10px 14px; margin: 8px 16px; font-size: 13px;
+              color: #92400e; font-weight: 500;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            `;
+            banner.textContent = "Only the document creator can change workspace protection settings.";
+            if (footer) footer.parentNode.insertBefore(banner, footer);
+
+            const checkbox = modal.querySelector("#enable-workspace-protection");
+            if (checkbox) {
+              checkbox.disabled = true;
+              checkbox.style.opacity = "0.4";
+              checkbox.style.cursor = "not-allowed";
+            }
+
+            const applyBtn = modal.querySelector("#workspace-protection-apply");
+            if (applyBtn) {
+              applyBtn.disabled = true;
+              applyBtn.style.opacity = "0.4";
+              applyBtn.style.cursor = "not-allowed";
+              applyBtn.title = "Only the document creator can change workspace protection";
+            }
+          });
+        }
+      } else if (!modal && _lastModal) {
+        delete _lastModal.dataset.oxtProtectionGuarded;
+        _lastModal = null;
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    console.log("[ProtectionGuard] Observer started");
+  }
+
   // Start interceptors
   initCreateDocInterceptor();
   initVersionDescriptionEnforcer();
+  initProtectionGuard();
 
 })();

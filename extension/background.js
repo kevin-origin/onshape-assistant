@@ -3364,6 +3364,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
 
+  } else if (msg.type === "get-doc-creator") {
+    (async () => {
+      try {
+        const doc = await onshapeFetch(`/api/v10/documents/${msg.docId}`);
+        sendResponse({ creator: doc.createdBy });
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
   } else if (msg.type === "get-team-members") {
     (async () => {
       const members = await getTeamMembers();
