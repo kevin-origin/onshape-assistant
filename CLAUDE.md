@@ -57,8 +57,6 @@ Find any section with: `// Section name`
 | `Unpack Illegal Folders` | `unpackIllegalFolders()` — CDP right-click → Unpack |
 | `Tab Sorter` | `sortStrayTabs()` — moves stray root-level tabs into folders |
 | `Interference Detection` | `checkInterference()` — CDP assembly interference check |
-| `QC Note placement` | `placeQcNotes()` — CDP: place annotation notes on drawings |
-| `QC Point recording` | `startQcRecording()` — captures click coords for QC notes |
 | `Message handler` | `chrome.runtime.onMessage` dispatch — all message types (see below) |
 | `SPA navigation detection` | Notifies content.js when Onshape URL changes without reload |
 | `Storage cleanup` | `cleanupDeletedDocs()` — purge storage for dead docs |
@@ -85,8 +83,6 @@ Find any section with: `// Section name`
 | `read-dom-changes` | Read captured mutations |
 | `observe-drawing-iframe` | Observe drawing iframe DOM |
 | `read-drawing-iframe` | Read captured iframe mutations |
-| `start-qc-recording` | Start QC coordinate capture |
-| `delete-qc-point` / `toggle-qc-point` / `clear-qc-points` | QC point management |
 | `rescan-active-tab` | Force rescan current tab |
 | `get-session-user` | Return cached session user |
 | `get-team-members` | Return cached team members |
@@ -325,6 +321,15 @@ CronCreate(
 
 ```bash
 python3 publish.py   # bump version, pack CRX, push, create GitHub release
+```
+
+**Post-release check — run after every publish.py:**
+```bash
+git show main:updates-firefox.json   # must show the new version number
+```
+If it still shows the old version, the dev→main merge was skipped (publish.py exits early if Firefox signing fails). Fix manually:
+```bash
+git checkout main && git merge dev --no-edit && git push origin main && git checkout dev
 ```
 
 ## Service worker testing (sw-relay)
