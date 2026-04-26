@@ -57,6 +57,8 @@ Find any section with: `// Section name`
 | `Unpack Illegal Folders` | `unpackIllegalFolders()` — CDP right-click → Unpack |
 | `Tab Sorter` | `sortStrayTabs()` — moves stray root-level tabs into folders |
 | `Interference Detection` | `checkInterference()` — CDP assembly interference check |
+| `QC Note placement` | `placeQcNotes()` — CDP: place annotation notes on drawings |
+| `QC Point recording` | `startQcRecording()` — captures click coords for QC notes |
 | `Message handler` | `chrome.runtime.onMessage` dispatch — all message types (see below) |
 | `SPA navigation detection` | Notifies content.js when Onshape URL changes without reload |
 | `Storage cleanup` | `cleanupDeletedDocs()` — purge storage for dead docs |
@@ -83,6 +85,8 @@ Find any section with: `// Section name`
 | `read-dom-changes` | Read captured mutations |
 | `observe-drawing-iframe` | Observe drawing iframe DOM |
 | `read-drawing-iframe` | Read captured iframe mutations |
+| `start-qc-recording` | Start QC coordinate capture |
+| `delete-qc-point` / `toggle-qc-point` / `clear-qc-points` | QC point management |
 | `rescan-active-tab` | Force rescan current tab |
 | `get-session-user` | Return cached session user |
 | `get-team-members` | Return cached team members |
@@ -171,9 +175,18 @@ KV namespace: `PERMISSIONS` — key = docId, value = JSON array of owner emails.
 | `bump_version()` | Increment patch version string |
 | `update_updates_xml()` | Patch version + URL in updates.xml |
 | `pack_crx()` | Shell out to `chrome.exe --pack-extension` |
-| `git_commit_and_push()` | Commit + push to dev |
-| `create_github_release()` | `gh release create` with .crx asset |
+| `build_and_sign_firefox()` | Build Firefox build + sign via Mozilla API |
+| `git_commit_and_push()` | Commit + push to dev, merge to main, restore `dev_build` flag on dev |
+| `create_github_release()` | `gh release create` with .crx + .xpi assets |
 | `main()` | Orchestrates full release flow |
+
+**Release flow:**
+1. Bumps version in manifest.json, **strips `dev_build: true`** (must not appear in production CRX)
+2. Packs CRX + builds/signs Firefox XPI
+3. Updates `updates.xml` and `updates-firefox.json`
+4. Commits to dev → merges to main → pushes both
+5. **Restores `dev_build: true`** to dev branch manifest and commits
+6. Creates GitHub Release with CRX + XPI attached
 
 ---
 
@@ -194,21 +207,26 @@ KV namespace: `PERMISSIONS` — key = docId, value = JSON array of owner emails.
 
 ## Kill switch (background.js — `Kill switch` section)
 
-**Never comment out the kill switch block.** Commenting only `BLOCKED_EMAILS` causes a `ReferenceError` (functions still reference it). Commenting the whole block means the functions disappear — a dev→main merge then silently removes all kill switch protection.
+Three-layer design — only active on production CRX builds (main), never on dev:
 
-Control the kill switch by changing only the **array content**:
+- **Layer 1** — `chrome.storage.sync` flag: checked instantly on every SW start, survives browser restarts, no network needed
+- **Layer 2** — `chrome.storage.local` cache: 90-minute offline fallback, populated by Layer 3
+- **Layer 3** — remote fetch from Cloudflare Worker `/api/blocked-emails`: no new build needed to block/unblock
 
-```js
-// dev branch — kill switch active but blocks nobody:
-const BLOCKED_EMAILS = [];
+**Dev vs production:** `manifest.json` on dev has `"dev_build": true`. The kill switch checks `!chrome.runtime.getManifest().dev_build` — false on dev (skipped entirely), true on production CRX (all three layers active). `publish.py` strips this flag before packing and restores it to dev after the merge.
 
-// main branch — kill switch active and blocking:
-const BLOCKED_EMAILS = ["kevin@10xconstruction.ai", "kevin@origin.tech"];
+**To block a user (no build required):**
+```bash
+curl -X PUT https://onshape-assistant-sync.artilabot.workers.dev/api/blocked-emails \
+  -H "X-API-Key: artila-onshape-sync-2026" \
+  -H "Content-Type: application/json" \
+  -d '{"blocked":["user@example.com"]}'
 ```
+Takes effect on all installed instances within 60 minutes (hourly alarm) or on next Chrome restart.
 
-- **`dev` branch**: `BLOCKED_EMAILS = []` — all functions uncommented and active
-- **`main` branch**: `BLOCKED_EMAILS = [emails...]` — all functions uncommented and active
-- `publish.py` will abort the release if `BLOCKED_EMAILS` is empty (safety guard)
+**To unblock:** run the same curl with the email removed from the array. The sync flag is cleared automatically within one alarm cycle.
+
+**`BLOCKED_EMAILS = []`** in background.js is a local fallback only — the authoritative list lives in the Cloudflare Worker KV.
 
 ---
 
@@ -247,16 +265,6 @@ Constraints:
 - Do not commit — planner handles git
 - Only communicate with the planner — never contact other agents directly
 - When you finish a task, ALWAYS run: bash ~/tell.sh planner "done: [file] — [brief summary]"
-```
-
-
-Rules for service worker testing:
-- Never guess selectors — always provide a command to observe first
-- All commands are for the Chrome service worker console at chrome://extensions → service worker → console
-- **Every generated command MUST be written to /mnt/c/Users/kevin/Desktop/OnshapeTools/observer-commands.txt** — prepend it at the top of the file (keep existing content below). Never only reply with it in chat.
-- Do not edit files other than observer-commands.txt. Do not commit.
-- Only communicate with the planner — never contact other agents directly
-- When you finish a task or have findings ready, ALWAYS run: bash ~/tell.sh planner "your findings here"
 ```
 
 ### Usage monitoring
@@ -323,23 +331,26 @@ CronCreate(
 python3 publish.py   # bump version, pack CRX, push, create GitHub release
 ```
 
-**Post-release check — run after every publish.py:**
-```bash
-git show main:updates-firefox.json   # must show the new version number
-```
-If it still shows the old version, the dev→main merge was skipped (publish.py exits early if Firefox signing fails). Fix manually:
-```bash
-git checkout main && git merge dev --no-edit && git push origin main && git checkout dev
-```
-
 ## Service worker testing (sw-relay)
 
 Run arbitrary JS in the Chrome extension service worker from WSL — no manual console needed.
 
 **Setup:**
-1. Launch Chrome: `powershell.exe -File /mnt/c/Users/kevin/Desktop/chrome-debug.ps1` — then load the unpacked extension manually
-2. `python3 ~/sw-relay.py` — connects to Chrome CDP at localhost:9223, listens on ws://localhost:9300/cmd
-3. `python3 ~/sw-exec.py "<js expression>"` — sends expression, prints result
+1. Launch Chrome:
+   ```bash
+   powershell.exe -Command "Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-Process 'C:\Program Files\Google\Chrome\Application\chrome.exe' -ArgumentList '--remote-debugging-port=9223','--user-data-dir=C:\Users\kevin\AppData\Local\Google\Chrome\Debug'"
+   ```
+2. Load the unpacked extension: `chrome://extensions` → Enable Developer mode → Load unpacked → `C:\Users\kevin\Desktop\OnshapeTools\extension\`
+3. Start sw-relay in background (log to file — do NOT use `-File chrome-debug.ps1`, it doesn't open Chrome):
+   ```bash
+   pkill -f sw-relay.py 2>/dev/null; python3 ~/sw-relay.py > /tmp/sw-relay.log 2>&1 &
+   ```
+4. Verify connected:
+   ```bash
+   sleep 4 && cat /tmp/sw-relay.log
+   # expect: [relay] CDP connected: ws://127.0.0.1:9223/devtools/page/...
+   ```
+5. `python3 ~/sw-exec.py "<js expression>"` — sends expression, prints result
 
 **Architecture:**
 ```
