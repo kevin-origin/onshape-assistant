@@ -21,17 +21,32 @@ export default {
       return json({ status: "ok" }, corsHeaders);
     }
 
-    // Auth required for all /api routes
+    // GET /api/blocked-emails — public, no auth (list is not sensitive; write is guarded)
+    if (path === "/api/blocked-emails" && request.method === "GET") {
+      const val = await env.MERGE_PERMS.get("__blocked_emails__", "json");
+      return json({ blocked: val || [] }, corsHeaders);
+    }
+
+    // Auth required for all other /api routes
     const apiKey = request.headers.get("X-API-Key");
     if (apiKey !== env.API_KEY) {
       return json({ error: "Unauthorized" }, corsHeaders, 401);
     }
 
-    // GET /api/merge-permissions — list all docs' perms
+    // PUT /api/blocked-emails — admin only, updates the kill-switch list
+    if (path === "/api/blocked-emails" && request.method === "PUT") {
+      const body = await request.json();
+      const emails = (body.blocked || []).map(e => e.toLowerCase());
+      await env.MERGE_PERMS.put("__blocked_emails__", JSON.stringify(emails));
+      return json({ ok: true, blocked: emails }, corsHeaders);
+    }
+
+    // GET /api/merge-permissions — list all docs' perms (skip internal keys)
     if (path === "/api/merge-permissions" && request.method === "GET") {
       const list = await env.MERGE_PERMS.list();
       const result = {};
       for (const key of list.keys) {
+        if (key.name.startsWith("__")) continue; // skip internal reserved keys
         const val = await env.MERGE_PERMS.get(key.name, "json");
         if (val) result[key.name] = val;
       }

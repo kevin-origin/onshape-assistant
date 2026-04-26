@@ -56,9 +56,17 @@ async function getSessionUser() {
 // ---------------------------------------------------------------------------
 // Kill switch — deactivate extension for specific user accounts
 // ---------------------------------------------------------------------------
+//
+// Three-layer design:
+//   Layer 1 — chrome.storage.sync flag: instant on SW start, survives restarts/updates
+//   Layer 2 — chrome.storage.local cache: fast offline check, valid for 90 min
+//   Layer 3 — remote fetch from Cloudflare Worker: no new build needed to block/unblock
+//
+// To block a user: PUT /api/blocked-emails on the sync Worker (see onshape-assistant-sync/).
+// Takes effect on all instances within one alarm cycle (60 min max).
+// ---------------------------------------------------------------------------
 
-const BLOCKED_EMAILS = [];
-const KILL_SWITCH_DURATION = 24 * 60 * 60 * 1000; // 24 hours
+const BLOCKED_EMAILS = []; // local fallback only — authoritative list is remote
 let _extensionDisabled = false;
 
 function applyKillSwitch(reason) {
@@ -70,43 +78,88 @@ function applyKillSwitch(reason) {
   console.log(`[KillSwitch] Extension disabled (${reason})`);
 }
 
-async function checkKillSwitchCache() {
+// Layer 1: chrome.storage.sync flag — instant, offline, survives browser restarts
+async function checkKillSwitchSync() {
   try {
-    const { killSwitchUntil } = await chrome.storage.local.get("killSwitchUntil");
-    if (killSwitchUntil && Date.now() < killSwitchUntil) {
-      applyKillSwitch("cached — expires " + new Date(killSwitchUntil).toLocaleString());
+    const { killSwitchActive } = await chrome.storage.sync.get("killSwitchActive");
+    if (killSwitchActive) {
+      applyKillSwitch("sync flag persisted");
       return true;
     }
   } catch (e) {
-    console.error("[KillSwitch] storage check failed:", e.message);
+    console.error("[KillSwitch] sync check failed:", e.message);
   }
   return false;
 }
 
-async function checkKillSwitchSession() {
+// Layer 2: local cache — fast, offline, valid for 90 minutes
+async function checkKillSwitchCache(email) {
   try {
-    const user = await getSessionUser();
-    if (user?.email && BLOCKED_EMAILS.includes(user.email.toLowerCase())) {
-      const until = Date.now() + KILL_SWITCH_DURATION;
-      await chrome.storage.local.set({ killSwitchUntil: until });
-      applyKillSwitch(`${user.email} — cached for 24h`);
-    } else {
-      console.log("[KillSwitch] Not blocked — email:", user?.email || "(unavailable)");
+    const { blockedEmailsCache, blockedEmailsFetchedAt } =
+      await chrome.storage.local.get(["blockedEmailsCache", "blockedEmailsFetchedAt"]);
+    if (!blockedEmailsCache || !blockedEmailsFetchedAt) return false;
+    if (Date.now() - blockedEmailsFetchedAt > 90 * 60 * 1000) return false; // stale
+    if (email && blockedEmailsCache.map(e => e.toLowerCase()).includes(email.toLowerCase())) {
+      await chrome.storage.sync.set({ killSwitchActive: true });
+      applyKillSwitch(`${email} — local cache`);
+      return true;
     }
   } catch (e) {
-    console.error("[KillSwitch] session check failed:", e.message);
+    console.error("[KillSwitch] cache check failed:", e.message);
+  }
+  return false;
+}
+
+// Layer 3: remote fetch — block/unblock without a new build
+async function refreshAndApplyKillSwitch() {
+  try {
+    const user = await getSessionUser();
+    if (!user?.email) return;
+    const email = user.email.toLowerCase();
+
+    let blocked = BLOCKED_EMAILS;
+    try {
+      const res = await fetch(`${SYNC_SERVER}/api/blocked-emails`,
+        { signal: AbortSignal.timeout(5000) });
+      if (res.ok) {
+        const data = await res.json();
+        blocked = data.blocked || [];
+        await chrome.storage.local.set({
+          blockedEmailsCache: blocked,
+          blockedEmailsFetchedAt: Date.now(),
+        });
+      }
+    } catch (fetchErr) {
+      console.warn("[KillSwitch] remote fetch failed, using fallback:", fetchErr.message);
+      // Fall through — use local BLOCKED_EMAILS or cached list already in blocked
+      const { blockedEmailsCache } = await chrome.storage.local.get("blockedEmailsCache");
+      if (blockedEmailsCache) blocked = blockedEmailsCache;
+    }
+
+    if (blocked.map(e => e.toLowerCase()).includes(email)) {
+      await chrome.storage.sync.set({ killSwitchActive: true });
+      applyKillSwitch(`${email} — remote list`);
+    } else {
+      // Clear sync flag so removing an email from the remote list auto-unblocks within one cycle
+      await chrome.storage.sync.remove("killSwitchActive");
+      console.log("[KillSwitch] Not blocked:", email);
+    }
+  } catch (e) {
+    console.error("[KillSwitch] remote check failed:", e.message);
   }
 }
 
-// 1) Instant check from cache on startup (no network needed)
-checkKillSwitchCache().then(cached => {
-  if (cached) return;
-  // 2) If no cache hit, wait for first Onshape tab to load, then check session
-  chrome.webNavigation.onCompleted.addListener(function onOnshapeLoad(details) {
-    if (details.frameId !== 0) return; // main frame only
-    chrome.webNavigation.onCompleted.removeListener(onOnshapeLoad);
-    checkKillSwitchSession();
-  }, { url: [{ hostSuffix: ".onshape.com" }] });
+// Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
+// Layer 2 is skipped at startup because we don't have the email yet without a network call;
+// the remote fetch populates the cache and applies in one step.
+checkKillSwitchSync().then(blocked => {
+  if (!blocked) refreshAndApplyKillSwitch();
+});
+
+// Hourly alarm: keep blocked state current without waiting for a tab load
+chrome.alarms.create("kill-switch-refresh", { periodInMinutes: 60 });
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === "kill-switch-refresh") refreshAndApplyKillSwitch();
 });
 
 // ---------------------------------------------------------------------------
@@ -3644,16 +3697,20 @@ async function cleanupDeletedDocs() {
     const docIds = Object.keys(obj);
     for (const docId of docIds) {
       try {
-        await onshapeFetch(`/api/v10/documents/${docId}`);
-      } catch (e) {
-        // 404 or 403 = doc deleted or no access
+        const resp = await fetch(`${ONSHAPE_BASE}/api/v10/documents/${docId}`, {
+          credentials: "include",
+          headers: { "Accept": "application/json" },
+        });
+        // Only remove on explicit 404 — network errors, 403, 429, etc. must NOT delete data
+        if (resp.status !== 404) continue;
         console.log(`[Cleanup] Removing ${key} entry for deleted doc ${docId}`);
         delete obj[docId];
         changed = true;
-        // Also remove from backend if this is merge permissions
         if (key === "mergePermissions") {
           syncFetch(`/api/merge-permissions/${docId}`, { method: "DELETE" });
         }
+      } catch (e) {
+        // Network error — skip, never delete on transient failures
       }
     }
   }
