@@ -8,7 +8,7 @@
   const CLICK_DELAY = 500;   // ms after clicking a folder before reading children
   const ROOT_DELAY  = 500;   // ms after clicking "All tabs" breadcrumb
   const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
-  const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip all scanning/sorting/violations
+  const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip scanning/sorting
   let _scanning = false;     // lock to prevent concurrent scans
   let _folderCreationInProgress = false; // suppress scans during folder creation
   // let _unpackInProgress = false; // suppress scans during folder unpacking
@@ -711,12 +711,10 @@
   // Small delay to let Onshape fully initialize
   // Scan lifecycle: on each new doc, wait 8s (let Onshape SPA init), then:
   //   1. autoScan() — reads tab bar DOM, triggers sort if folders exist
-  //   2. checkDocViolations — versions/parts/features/tabs limits (via background.js)
-  //   3. Poll both every 10 min to catch changes made during the session.
+  //   2. Poll every 10 min to catch changes made during the session.
   // Timers are cleared and re-created on SPA navigation (doc switch).
   let _lastDocId = null;
   let _scanTimer = null;
-  let _violationsTimer = null;
   let _pollInterval = null;
   const POLL_INTERVAL_MS = 600000; // 10 min
   let _killSwitchActive = false; // set true if background says extension is disabled
@@ -755,49 +753,33 @@
 
     // Cancel any pending timers/intervals from a previous doc
     if (_scanTimer) { clearTimeout(_scanTimer); _scanTimer = null; }
-    if (_violationsTimer) { clearTimeout(_violationsTimer); _violationsTimer = null; }
     if (_notifyTimer) { clearTimeout(_notifyTimer); _notifyTimer = null; }
     if (_pollInterval) { clearInterval(_pollInterval); _pollInterval = null; }
 
     _scanTimer = setTimeout(() => { _scanTimer = null; autoScan(); }, 8000);
 
-    // Check violations (versions, parts, features, tabs) for release tracker
-    _violationsTimer = setTimeout(() => {
-      _violationsTimer = null;
-      // Re-read from URL in case doc changed during the delay
-      const currentDocId = getDocIdFromUrl();
-      if (currentDocId !== docId) {
-        console.log("[Scanner] Doc changed during delay, skipping violations for", docId);
-        return;
-      }
+    // Fetch tab count for insert-tab limit guard (independent of violation checker)
+    const _tabCountDocId = docId;
+    setTimeout(() => {
+      if (getDocIdFromUrl() !== _tabCountDocId) return;
       const wid = getWidFromUrl();
-      const docName = getDocName();
-      if (EXCLUDED_DOC_NAMES.includes(docName)) {
-        console.log(`[Scanner] Violations skipped: "${docName}" is in EXCLUDED_DOC_NAMES`);
-        return;
-      }
-      if (docId) {
-        chrome.runtime.sendMessage({ type: "check-versions", docId, docName, wid });
-      }
-    }, 8000);
+      if (!wid) return;
+      chrome.runtime.sendMessage({ type: "get-tab-count", docId: _tabCountDocId, wid }, (resp) => {
+        if (resp && typeof resp.count === "number") {
+          document.documentElement.dataset.oxtTabCount = String(resp.count);
+          applyTabLimitGuard();
+          console.log("[InsertTabGuard] Tab count fetched:", resp.count);
+        }
+      });
+    }, 2000);
 
-    // Start continuous polling after the initial checks finish (8s + small buffer)
+    // Start continuous polling after the initial scan finishes (8s + small buffer)
     _pollInterval = setInterval(() => {
       const currentDocId = getDocIdFromUrl();
       if (currentDocId !== docId) return; // doc changed, next runOnDocLoad will reset
       if (_scanning || _folderCreationInProgress) return; // skip if busy
-
-      console.log("[Poll] Running periodic checks for", docId);
-
-      // Re-run tab scanner
+      console.log("[Poll] Running periodic scan for", docId);
       autoScan();
-
-      // Re-run violations check (skip excluded docs)
-      const wid = getWidFromUrl();
-      const docName = getDocName();
-      if (!EXCLUDED_DOC_NAMES.includes(docName)) {
-        chrome.runtime.sendMessage({ type: "check-versions", docId: currentDocId, docName, wid });
-      }
     }, POLL_INTERVAL_MS);
   }
 
@@ -822,16 +804,6 @@
       removeFolderOverlay();
       runOnDocLoad();
       maybeHideToolbar();
-    } else if (msg.type === "violations-updated") {
-      const docId = getDocIdFromUrl();
-      if (!docId) return;
-      chrome.storage.local.get("tabCounts", (data) => {
-        const count = (data.tabCounts || {})[docId];
-        if (typeof count === "number") {
-          document.documentElement.dataset.oxtTabCount = String(count);
-        }
-        applyTabLimitGuard();
-      });
     }
   });
 
@@ -847,14 +819,13 @@
   }, 2000);
 
   // ---------------------------------------------------------------------------
-  // Export Drawing detection — blocks export when violations/no releases exist
+  // Export Drawing detection — blocks export when no releases exist
   // ---------------------------------------------------------------------------
   // MutationObserver watches for Onshape's export modal (added dynamically).
   // Selectors discovered via observe-dom-changes + manual right-click → Export:
   //   Form:   form.export-dxf-or-dwg-dialog
   //   Filename: #drawing-export-filename-input
-  // On detection: checks releases (API) + cached violations (zero API calls).
-  // If blocked: disables submit button + intercepts form submit event.
+  // On detection: checks releases (API). If blocked: disables submit button.
 
   let _exportDetected = false;
 
@@ -881,22 +852,17 @@
 
         const docId = getDocIdFromUrl();
 
-        // Check releases AND violations/folder structure in parallel (zero extra API calls for violations)
         const releaseCheck = new Promise(resolve =>
           chrome.runtime.sendMessage({ type: "check-releases", docId }, resolve)
         );
-        const exportCheck = new Promise(resolve =>
-          chrome.runtime.sendMessage({ type: "check-export-allowed", docId }, resolve)
-        );
 
-        Promise.all([releaseCheck, exportCheck]).then(([releaseResp, exportResp]) => {
+        releaseCheck.then((releaseResp) => {
           const noReleases = !releaseResp || !releaseResp.hasReleases;
           const staleRevision = !noReleases && !!releaseResp?.staleRevision;
-          const hasIssues = exportResp && exportResp.blocked;
-          const shouldBlock = noReleases || staleRevision || hasIssues;
+          const shouldBlock = noReleases || staleRevision;
 
           if (!shouldBlock) {
-            console.log(`[ExportDetect] Doc has ${releaseResp?.count || 0} release(s), up to date, no issues — export allowed`);
+            console.log(`[ExportDetect] Doc has ${releaseResp?.count || 0} release(s), up to date — export allowed`);
             return;
           }
 
@@ -942,30 +908,11 @@
             }
           }
 
-          // Banner 3: Violations or folder structure issues
-          if (hasIssues) {
-            console.log("[ExportDetect] Violations/folder issues detected:", exportResp.issues);
-            const banner = document.createElement("div");
-            banner.id = "oxt-export-issues";
-            banner.style.cssText = bannerStyle;
-            banner.textContent = "Violations or incorrect folder structure detected. Please resolve before exporting.";
-            const anchor = modalContent.querySelector("#oxt-stale-revision") || modalContent.querySelector("#oxt-release-reminder");
-            if (anchor && anchor.nextSibling) {
-              anchor.parentNode.insertBefore(banner, anchor.nextSibling);
-            } else if (modalBody) {
-              modalBody.parentNode.insertBefore(banner, modalBody);
-            } else {
-              modalContent.insertBefore(banner, modalContent.children[1] || null);
-            }
-          }
-
           // Disable the Export/OK submit button
           const buttons = form.querySelectorAll("button");
           const btnTitle = noReleases
             ? "Release required before export"
-            : staleRevision
-              ? "Create a new release to cover recent changes"
-              : "Resolve violations before export";
+            : "Create a new release to cover recent changes";
           for (const btn of buttons) {
             const text = btn.textContent.trim().toLowerCase();
             if (text === "export" || text === "ok" || btn.type === "submit") {

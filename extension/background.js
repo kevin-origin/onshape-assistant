@@ -1,6 +1,6 @@
 // background.js — Onshape Doc Scanner service worker
-// Handles rescan requests, stores per-doc scan results, drawing creation,
-// and violation checks. No bulk scan — content.js auto-scans every doc on open.
+// Handles rescan requests, stores per-doc scan results, and drawing creation.
+// No bulk scan — content.js auto-scans every doc on open.
 
 const ONSHAPE_BASE = "https://cad.onshape.com";
 const COMPANY_ID   = "6810c247e7c40668c32816a6";
@@ -910,144 +910,6 @@ async function storeDocScanResult(result) {
   results[result.doc_id] = result;
   await chrome.storage.local.set({ docScanResults: results });
   console.log("[Scanner] Stored enriched result for " + result.doc_id);
-}
-
-// ---------------------------------------------------------------------------
-// Violation checker — runs on every doc open
-// ---------------------------------------------------------------------------
-
-const FEATURES_LIMIT = 250;
-const TABS_LIMIT = 40;
-const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip violation checks
-
-async function checkDocViolations(docId, docName, wid, tabId) {
-  const violations = [];
-  console.log(`[Violations] Checking ${docName} (${docId}), wid=${wid || "null"}`);
-
-  // Skip excluded docs (shared libraries — no versions/parts/features checks needed)
-  if (EXCLUDED_DOC_NAMES.includes(docName)) {
-    console.log(`[Violations] Skipped: "${docName}" is in EXCLUDED_DOC_NAMES`);
-    return;
-  }
-
-  try {
-    // Parallel fetch: versions always, elements if wid available
-    const promises = [
-      onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(e => { console.error("[Violations] versions fetch failed:", e.message); return null; }),
-    ];
-    if (wid) {
-      promises.push(
-        onshapeFetch(`/api/v10/documents/d/${docId}/w/${wid}/elements`).catch(e => { console.error("[Violations] elements fetch failed:", e.message); return null; }),
-      );
-    }
-
-    const [versions, rawElements] = await Promise.all(promises);
-
-    // Store version count for folder-creation overlay (zero extra API calls)
-    if (Array.isArray(versions)) {
-      const vcData = await chrome.storage.local.get("versionCounts");
-      const vc = vcData.versionCounts || {};
-      vc[docId] = versions.length;
-      await chrome.storage.local.set({ versionCounts: vc });
-    }
-
-    // Unwrap elements (API may return array or { items: [...] })
-    let elements = rawElements;
-    if (rawElements && !Array.isArray(rawElements)) {
-      elements = rawElements.items || rawElements.elements || [];
-    }
-
-    if (Array.isArray(elements) && elements.length > 0) {
-      // Filter out BOMs — they're auto-generated, not user-created tabs
-      const userElements = elements.filter(
-        e => e.elementType !== "BILLOFMATERIALS" && !(e.name || "").startsWith("BOM :")
-      );
-
-      // Store tab count for insert-tab limit guard in content.js
-      {
-        const tcData = await chrome.storage.local.get("tabCounts");
-        const tc = tcData.tabCounts || {};
-        tc[docId] = userElements.length;
-        await chrome.storage.local.set({ tabCounts: tc });
-      }
-
-      // 2 & 3. Per Part Studio: parts > 25, features > 250
-      const partStudios = userElements.filter(e =>
-        (e.elementType || e.type || "") === "PARTSTUDIO"
-      );
-      console.log(`[Violations] ${partStudios.length} Part Studio(s), ${userElements.length} user elements, versions=${Array.isArray(versions) ? versions.length : "null"}, tabId=${tabId || "none"}`);
-      let totalFeatures = 0;
-      for (const ps of partStudios) {
-        try {
-          const featResp = await onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`).catch(() => null);
-          const featureCount = Array.isArray(featResp?.features) ? featResp.features.length : 0;
-          totalFeatures += featureCount;
-          if (featureCount > FEATURES_LIMIT) {
-            violations.push(`"${ps.name}" has ${featureCount} features (limit: ${FEATURES_LIMIT})`);
-          }
-        } catch (_) { /* skip */ }
-      }
-
-      // Auto-create "Initial" version when: <=1 versions + >= 50 features.
-      // Uses <= 1 (not === 0) because Onshape may auto-create a first version.
-      // ORDERING IS CRITICAL: version → workspace protection → branch.
-      // Branch creation switches the Onshape UI to the new workspace, so
-      // protection must be enabled on Main BEFORE the branch is created,
-      // otherwise the CDP automation would be targeting the wrong workspace.
-      const versionCount = Array.isArray(versions) ? versions.length : -1;
-      const hasInitialVersion = Array.isArray(versions) && versions.some(v => v.name === "Initial");
-      console.log(`[NewDocSetup] versionCount=${versionCount}, totalFeatures=${totalFeatures}, threshold=25, hasInitial=${hasInitialVersion}`);
-      if (versionCount <= 1 && totalFeatures >= 25 && !hasInitialVersion) {
-        console.log(`[NewDocSetup] ${versionCount} versions + ${totalFeatures} features — creating initial version`);
-        const vResult = await createInitialVersion(docId, wid);
-        if (!vResult.error) {
-          // Enable workspace protection on Main BEFORE creating branch
-          // (branch creation switches Onshape to the new workspace)
-          if (tabId) {
-            console.log("[NewDocSetup] Enabling workspace protection on Main");
-            await enableWorkspaceProtection(tabId, tabId);
-          }
-          // Now create Development branch
-          const branchResult = await createDevelopmentBranch(docId, vResult.versionId);
-          // Navigate to the new Development workspace
-          if (branchResult.ok && branchResult.workspaceId && tabId) {
-            const devUrl = `${ONSHAPE_BASE}/documents/${docId}/w/${branchResult.workspaceId}`;
-            console.log(`[NewDocSetup] Navigating to Development branch: ${devUrl}`);
-            chrome.tabs.update(tabId, { url: devUrl });
-          }
-        }
-      }
-
-      // 4. Tabs > 5 (excluding BOMs)
-      if (userElements.length > TABS_LIMIT) {
-        violations.push(`${userElements.length} tabs (limit: ${TABS_LIMIT})`);
-      }
-    }
-  } catch (e) {
-    console.error("[Violations] Error checking doc:", e);
-    return;
-  }
-
-  // Store only current doc's violations (replaces previous doc)
-  const current = {};
-  if (violations.length > 0) {
-    current[docId] = {
-      docName: docName || docId,
-      timestamp: new Date().toLocaleTimeString("en-IN", {
-        hour: "2-digit", minute: "2-digit", timeZone: "Asia/Kolkata",
-      }),
-      items: violations,
-    };
-    chrome.notifications.create(`violations-${docId}-${Date.now()}`, {
-      type: "basic",
-      iconUrl: "icons/icon128.png",
-      title: `${docName || docId}`,
-      message: `${violations.length} violation${violations.length > 1 ? "s" : ""} detected, please take action.`,
-    });
-  }
-
-  await chrome.storage.local.set({ violations: current });
-  chrome.runtime.sendMessage({ type: "violations-updated" }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -3169,50 +3031,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
 
-  // } else if (msg.type === "check-export-allowed") {
-  //   // Check cached violations and folder structure — zero API calls
-  //   (async () => {
-  //     try {
-  //       const docId = msg.docId;
-  //       const issues = [];
-  //       const data = await chrome.storage.local.get(["violations", "docScanResults"]);
-  //
-  //       // Check cached violations (stored as { items: [...], docName, timestamp })
-  //       const docViolations = (data.violations || {})[docId];
-  //       if (docViolations && Array.isArray(docViolations.items) && docViolations.items.length > 0) {
-  //         issues.push(...docViolations.items.map(v => `Violation: ${v}`));
-  //       }
-  //
-  //       // Check folder structure from cached scan
-  //       const scan = (data.docScanResults || {})[docId];
-  //       if (scan) {
-  //         const folders = Object.keys(scan.folders || {});
-  //         const rootTabs = scan.root_tabs || [];
-  //         if (folders.length === 0) {
-  //           issues.push("No folder structure — tabs are not organized");
-  //         }
-  //         if (rootTabs.length > 0) {
-  //           issues.push(`${rootTabs.length} tab(s) outside folders`);
-  //         }
-  //         const illegalFolders = folders.filter(f => !["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"].includes(f));
-  //         if (illegalFolders.length > 0) {
-  //           issues.push(`Non-standard folder(s): ${illegalFolders.join(", ")}`);
-  //         }
-  //         // Check for multiple assemblies (totalAssemblies or folder count)
-  //         const asmCount = scan.totalAssemblies || (scan.folders?.["Assemblies"]?.assemblies ?? 0);
-  //         if (asmCount > 1) {
-  //           issues.push(`${asmCount} assemblies detected (limit: 1 per document)`);
-  //         }
-  //       }
-  //
-  //       sendResponse({ blocked: issues.length > 0, issues });
-  //     } catch (e) {
-  //       console.log(`[ExportCheck] Error: ${e.message}`);
-  //       sendResponse({ blocked: false, issues: [], error: e.message });
-  //     }
-  //   })();
-  //   return true;
-
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -3221,11 +3039,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       sendResponse(result);
     });
     return true;
-
-  } else if (msg.type === "check-versions") {
-    const { docId, docName, wid } = msg;
-    const tabId = sender.tab?.id;
-    checkDocViolations(docId, docName, wid, tabId);
 
   } else if (msg.type === "create-folders") {
     // Folder creation via CDP — triggered from content.js overlay
@@ -3427,6 +3240,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const elements = await onshapeFetch(`/api/v10/documents/d/${msg.docId}/w/${msg.wid}/elements`);
         const items = elements.items || elements || [];
         const count = items.filter(e => e.elementType === "ASSEMBLY").length;
+        sendResponse({ count });
+      } catch (e) {
+        sendResponse({ error: e.message, count: 0 });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "get-tab-count") {
+    (async () => {
+      try {
+        const elements = await onshapeFetch(`/api/v10/documents/d/${msg.docId}/w/${msg.wid}/elements`);
+        const items = Array.isArray(elements) ? elements : (elements.items || elements.elements || []);
+        const count = items.filter(
+          e => e.elementType !== "BILLOFMATERIALS" && !(e.name || "").startsWith("BOM :")
+        ).length;
         sendResponse({ count });
       } catch (e) {
         sendResponse({ error: e.message, count: 0 });
@@ -3760,7 +3588,7 @@ chrome.notifications.onClicked.addListener((notificationId) => {
   let section = "";
   if (notificationId.startsWith("folder-scan-")) {
     section = "scanner";
-  } else if (notificationId.startsWith("violations-") || notificationId.startsWith("interference-")) {
+  } else if (notificationId.startsWith("interference-")) {
     section = "violations";
   }
   if (section) {
@@ -3780,7 +3608,7 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 // ---------------------------------------------------------------------------
 
 async function cleanupDeletedDocs() {
-  const keys = ["docScanResults", "violations", "mergePermissions", "interferenceResults", "versionCounts", "tabCounts"];
+  const keys = ["docScanResults", "mergePermissions", "interferenceResults", "tabCounts"];
   const data = await chrome.storage.local.get(keys);
   let changed = false;
 
