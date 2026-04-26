@@ -1003,11 +1003,14 @@
     }
   }
 
-  // Waits for .branch-1 target element and main workspace name, then checks permissions.
+  // Waits for first span.workspace-name in h4 (always the "into"/target branch) and
+  // main workspace name, then checks permissions.
+  // branch-0/branch-1 classes reflect workspace identity, not merge direction —
+  // the first span.workspace-name in the h4 is always the INTO/target branch.
   // Retries up to 20x at 50ms intervals (Angular renders header async).
   function checkMergeTarget(modal, docId, attempts) {
     attempts = attempts || 0;
-    const targetEl = modal.querySelector(".modal-header .branch-1");
+    const targetEl = modal.querySelector(".modal-header h4 span.workspace-name");
     if (!targetEl) {
       if (attempts < 20) setTimeout(() => checkMergeTarget(modal, docId, attempts + 1), 50);
       return;
