@@ -1,4 +1,61 @@
-Features — Planned / Requested
-===============================
+## Onshape Assistant
 
-(none currently tracked)
+**Automate, enforce, and organize your Onshape workspace.**
+
+---
+
+### Drawing & Export
+
+**Automated Drawing Creator**
+Generate drawing tabs for every part in a Part Studio in one click. Automatically computes scale from bounding box, inserts a title block, and adds overall horizontal and vertical dimensions.
+
+**Drawing Notes**
+Batch-apply custom annotation text to multiple drawings at configurable text heights — no manual clicking required.
+
+**Bulk Export (DXF + PDF ZIP)**
+Export all flat-pattern DXFs and drawing PDFs from a document as a single ZIP file. Hierarchical part/drawing selector lets you choose exactly what to include.
+
+**3D Export (STEP / STL)**
+Export individual parts from any Part Studio as STEP or STL files. Toggle format, pick parts, download.
+
+---
+
+### Document Organization
+
+**Auto Folder Generator**
+Detects documents with no folder structure and offers to create the standard set (Part Studios, Assemblies, Drawings, CAD Imports, Feature Studios, Variable Studios) automatically.
+
+**Tab Sorter**
+Finds root-level tabs that belong in folders and moves them there using Chrome DevTools automation — no drag-and-drop needed.
+
+**Doc Scanner**
+Validates your document's tab/folder structure against organization rules on every page load. See a live summary of what's correct and what isn't, with a manual rescan button in the popup.
+
+**Create Document Interceptor**
+Replaces the default "New Document" dialog with a guided flow that asks whether the document is robot-related and routes it to the correct company folder — so documents never land in the wrong place.
+
+---
+
+### Quality Guardrails
+
+**Violations Checker**
+Automatically scans every document for version count, part count, and feature count violations. Results surface in the popup with timestamps.
+
+**Version Description Enforcer**
+Blocks version creation until a description is filled in. The Create button stays disabled and shows a red warning until text is entered.
+
+**Export Drawings/DXFs Blocker**
+Intercepts drawing export dialogs and disables the Export button if the document has no releases or has outstanding structural violations.
+
+**Interference Detection**
+Runs an interference check across all assemblies in a document and reports which part pairs are colliding.
+
+---
+
+### Collaboration & Access Control
+
+**Merge Permissions**
+Assign one or more "merge owners" per document. Anyone not on the list who attempts to merge a branch sees their merge dialog disabled with an explanatory warning — enforced automatically via MutationObserver.
+
+**Workspace Protection**
+On first open, automatically creates an initial version and a development branch so the main workspace is always protected from direct edits.

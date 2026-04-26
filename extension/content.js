@@ -529,18 +529,17 @@
       const docId = getDocIdFromUrl();
       if (docId) {
         (async () => {
-          const [userResp, teamResp, permsData, creatorResp] = await Promise.all([
+          const [userResp, teamResp, permsResp] = await Promise.all([
             new Promise(resolve => chrome.runtime.sendMessage({ type: "get-session-user" }, resolve)),
             new Promise(resolve => chrome.runtime.sendMessage({ type: "get-team-members" }, resolve)),
-            chrome.storage.local.get("mergePermissions"),
-            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-doc-creator", docId }, resolve)),
+            new Promise(resolve => chrome.runtime.sendMessage({ type: "get-merge-perms", docId }, resolve)),
           ]);
           if (!userResp || userResp.error) { sendResponse({ error: "No session user" }); return; }
           const members = teamResp?.members || [];
           if (members.length === 0) { sendResponse({ error: "No team members" }); return; }
 
           // If owners already set for this doc, only existing owners can edit
-          const perms = (permsData.mergePermissions || {})[docId];
+          const perms = (permsResp && permsResp.exists) ? permsResp.data : null;
           if (perms && Array.isArray(perms.owners) && perms.owners.length > 0) {
             const isOwner = perms.owners.some(o => o.id === userResp.id || o.email === userResp.email);
             if (!isOwner) {
@@ -554,28 +553,10 @@
           const docName = getDocName();
           let currentOwners = (perms && Array.isArray(perms.owners)) ? perms.owners : [];
 
-          // Auto-suggest 2 owners when none are set:
-          // If doc creator is a real person (not company), pre-select creator + session user.
-          // If doc creator is the company account, pre-select session user + first other member.
-          if (currentOwners.length === 0 && members.length >= 2) {
-            const creator = creatorResp && !creatorResp.error && !creatorResp.isCompany ? creatorResp : null;
-            const suggestions = [];
-            // Add doc creator if they're a real team member
-            if (creator) {
-              const creatorMember = members.find(m => m.id === creator.id || m.email === creator.email);
-              if (creatorMember) suggestions.push(creatorMember);
-            }
-            // Add session user if not already added
-            if (suggestions.length < 2) {
-              const self = members.find(m => m.id === userResp.id || m.email === userResp.email);
-              if (self && !suggestions.some(s => s.id === self.id)) suggestions.push(self);
-            }
-            // Fill remaining slot with the first other member
-            if (suggestions.length < 2) {
-              const other = members.find(m => !suggestions.some(s => s.id === m.id));
-              if (other) suggestions.push(other);
-            }
-            currentOwners = suggestions;
+          // Auto-suggest: pre-select the session user when no owner is set yet.
+          if (currentOwners.length === 0) {
+            const self = members.find(m => m.id === userResp.id || m.email === userResp.email);
+            if (self) currentOwners = [self];
           }
 
           showMergeOwnerOverlay(docId, docName, userResp, members, currentOwners);
@@ -866,11 +847,12 @@
 
         Promise.all([releaseCheck, exportCheck]).then(([releaseResp, exportResp]) => {
           const noReleases = !releaseResp || !releaseResp.hasReleases;
+          const staleRevision = !noReleases && !!releaseResp?.staleRevision;
           const hasIssues = exportResp && exportResp.blocked;
-          const shouldBlock = noReleases || hasIssues;
+          const shouldBlock = noReleases || staleRevision || hasIssues;
 
           if (!shouldBlock) {
-            console.log(`[ExportDetect] Doc has ${releaseResp?.count || 0} release(s), no issues — export allowed`);
+            console.log(`[ExportDetect] Doc has ${releaseResp?.count || 0} release(s), up to date, no issues — export allowed`);
             return;
           }
 
@@ -878,17 +860,19 @@
           if (!modalContent) return;
           const modalBody = modalContent.querySelector(".modal-body, .me-4");
 
+          const bannerStyle = `
+            background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+            padding: 10px 14px; margin: 0 16px 12px 16px; font-size: 13px;
+            color: #92400e; font-weight: 500;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+          `;
+
           // Banner 1: No releases
           if (noReleases) {
             console.log("[ExportDetect] No releases found, showing release banner");
             const banner = document.createElement("div");
             banner.id = "oxt-release-reminder";
-            banner.style.cssText = `
-              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
-              padding: 10px 14px; margin: 0 16px 12px 16px; font-size: 13px;
-              color: #92400e; font-weight: 500;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            `;
+            banner.style.cssText = bannerStyle;
             banner.textContent = "Please create a release before sending for manufacturing.";
             if (modalBody) {
               modalBody.parentNode.insertBefore(banner, modalBody);
@@ -897,36 +881,52 @@
             }
           }
 
-          // Banner 2: Violations or folder structure issues
+          // Banner 2: Changes since last release
+          if (staleRevision) {
+            console.log("[ExportDetect] Doc modified after last release — showing stale banner");
+            const banner = document.createElement("div");
+            banner.id = "oxt-stale-revision";
+            banner.style.cssText = bannerStyle;
+            banner.textContent = "Changes have been made since the last release. Please create a new release before exporting.";
+            const anchor = modalContent.querySelector("#oxt-release-reminder");
+            if (anchor && anchor.nextSibling) {
+              anchor.parentNode.insertBefore(banner, anchor.nextSibling);
+            } else if (modalBody) {
+              modalBody.parentNode.insertBefore(banner, modalBody);
+            } else {
+              modalContent.insertBefore(banner, modalContent.children[1] || null);
+            }
+          }
+
+          // Banner 3: Violations or folder structure issues
           if (hasIssues) {
             console.log("[ExportDetect] Violations/folder issues detected:", exportResp.issues);
-            const banner2 = document.createElement("div");
-            banner2.id = "oxt-export-issues";
-            banner2.style.cssText = `
-              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
-              padding: 10px 14px; margin: 0 16px 12px 16px; font-size: 13px;
-              color: #92400e; font-weight: 500;
-              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-            `;
-            banner2.textContent = "Violations or incorrect folder structure detected. Please resolve before exporting.";
-            // Insert after the first banner (or before modal body if no release banner)
-            const existingBanner = modalContent.querySelector("#oxt-release-reminder");
-            if (existingBanner && existingBanner.nextSibling) {
-              existingBanner.parentNode.insertBefore(banner2, existingBanner.nextSibling);
+            const banner = document.createElement("div");
+            banner.id = "oxt-export-issues";
+            banner.style.cssText = bannerStyle;
+            banner.textContent = "Violations or incorrect folder structure detected. Please resolve before exporting.";
+            const anchor = modalContent.querySelector("#oxt-stale-revision") || modalContent.querySelector("#oxt-release-reminder");
+            if (anchor && anchor.nextSibling) {
+              anchor.parentNode.insertBefore(banner, anchor.nextSibling);
             } else if (modalBody) {
-              modalBody.parentNode.insertBefore(banner2, modalBody);
+              modalBody.parentNode.insertBefore(banner, modalBody);
             } else {
-              modalContent.insertBefore(banner2, modalContent.children[1] || null);
+              modalContent.insertBefore(banner, modalContent.children[1] || null);
             }
           }
 
           // Disable the Export/OK submit button
           const buttons = form.querySelectorAll("button");
+          const btnTitle = noReleases
+            ? "Release required before export"
+            : staleRevision
+              ? "Create a new release to cover recent changes"
+              : "Resolve violations before export";
           for (const btn of buttons) {
             const text = btn.textContent.trim().toLowerCase();
             if (text === "export" || text === "ok" || btn.type === "submit") {
               btn.disabled = true;
-              btn.title = noReleases ? "Release required before export" : "Resolve violations before export";
+              btn.title = btnTitle;
               btn.style.opacity = "0.4";
               btn.style.cursor = "not-allowed";
               console.log(`[ExportDetect] Disabled button: "${btn.textContent.trim()}"`);
@@ -1095,7 +1095,7 @@
     card.appendChild(title);
 
     const subtitle = document.createElement("div");
-    subtitle.textContent = `Select exactly 2 merge owners for "${docName}"`;
+    subtitle.textContent = `Select exactly 1 merge owner for "${docName}"`;
     subtitle.style.cssText = "font-size: 12px; color: #888; margin-bottom: 16px;";
     card.appendChild(subtitle);
 
@@ -1115,11 +1115,14 @@
       cb.dataset.email = member.email;
       cb.dataset.name = member.name;
       cb.dataset.userId = member.id;
-      // Enforce max 2 selected
+      // Enforce max 1 selected
       cb.addEventListener("change", () => {
+        if (cb.checked) {
+          // Uncheck all others — only 1 allowed
+          checkboxes.forEach(c => { if (c !== cb) c.checked = false; });
+        }
         const checkedCount = checkboxes.filter(c => c.checked).length;
-        if (checkedCount > 2) { cb.checked = false; }
-        subtitle.style.color = checkedCount === 2 ? "#95d5b2" : "#888";
+        subtitle.style.color = checkedCount === 1 ? "#95d5b2" : "#888";
       });
       row.appendChild(cb);
       const nameSpan = document.createElement("span");
@@ -1147,8 +1150,8 @@
     `;
     saveBtn.addEventListener("click", () => {
       const selected = checkboxes.filter(cb => cb.checked);
-      if (selected.length !== 2) {
-        subtitle.textContent = "Please select exactly 2 owners.";
+      if (selected.length !== 1) {
+        subtitle.textContent = "Please select exactly 1 owner.";
         subtitle.style.color = "#ff6b6b";
         return;
       }
