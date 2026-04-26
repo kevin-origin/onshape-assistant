@@ -3115,6 +3115,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
 
+  } else if (msg.type === "check-main-workspace") {
+    // Returns { isMain: bool } — true if current wid is the doc's default workspace
+    (async () => {
+      try {
+        const doc = await onshapeFetch(`/api/v10/documents/${msg.docId}`);
+        const isMain = !!(doc.defaultWorkspace && doc.defaultWorkspace.id === msg.wid);
+        console.log(`[ReleaseGuard] Doc ${msg.docId}: defaultWorkspace=${doc.defaultWorkspace?.id}, current=${msg.wid}, isMain=${isMain}`);
+        sendResponse({ isMain });
+      } catch (e) {
+        console.log(`[ReleaseGuard] Workspace check failed: ${e.message}`);
+        sendResponse({ isMain: true }); // fail open — don't block if check errors
+      }
+    })();
+    return true;
+
   // } else if (msg.type === "check-export-allowed") {
   //   // Check cached violations and folder structure — zero API calls
   //   (async () => {

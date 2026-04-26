@@ -97,6 +97,7 @@ Find any section with: `// Section name`
 | `list-subfolders` | List subfolders of a folder |
 | `create-doc-in-folder` | Create new doc inside a folder |
 | `get-doc-creator` | Fetch doc creator info |
+| `check-main-workspace` | Returns `{ isMain }` — true if `wid` matches doc's `defaultWorkspace.id` |
 
 ---
 
@@ -118,6 +119,7 @@ Find any section with: `// Section name`
 | `Create Document Interceptor` | `initCreateDocInterceptor()`, `showCreateDocOverlay()`, `showFolderPicker()` — force folder selection |
 | `Version Description Enforcer` | `initVersionDescriptionEnforcer()`, `attachVersionDescriptionGuard()` — block empty version submits |
 | `Workspace protection guard` | `initProtectionGuard()` — enforce owner-only access to protection toggle |
+| `Release branch guard` | MutationObserver blocks "Create Release Candidate" dialog when not on main workspace |
 
 ### content.js message types received
 

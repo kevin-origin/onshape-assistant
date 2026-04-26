@@ -1714,6 +1714,80 @@
     console.log("[VersionDesc] Guard attached to Create Version dialog");
   }
 
+  // ---------------------------------------------------------------------------
+  // Release branch guard — blocks release creation from non-main workspaces
+  // ---------------------------------------------------------------------------
+  // Selector confirmed via live DOM inspection: div.modal.release-dialog.show
+  // Title confirmed: "Create Release candidate"
+  // Action buttons: Save draft (.save-draft-btn), Apply/Submit (.btn-primary),
+  //                 Release (.btn-success) — Close (.button-cancel) left enabled.
+  // Banner inserted before .modal-footer (inside the release-dialog element).
+
+  (function initReleaseBranchGuard() {
+    let _lastModal = null;
+
+    const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
+      const modal = document.querySelector("div.modal.release-dialog.show");
+      if (modal && modal !== _lastModal) {
+        _lastModal = modal;
+        if (!modal.dataset.oxtReleaseGuarded) {
+          modal.dataset.oxtReleaseGuarded = "1";
+          const docId = getDocIdFromUrl();
+          const wid = getWidFromUrl();
+          if (!docId || !wid) return;
+
+          chrome.runtime.sendMessage({ type: "check-main-workspace", docId, wid }, (resp) => {
+            if (resp && resp.isMain) {
+              console.log("[ReleaseGuard] On main workspace — release allowed");
+              return;
+            }
+
+            console.log("[ReleaseGuard] Not on main workspace — blocking release");
+
+            // Banner inserted just before the footer row
+            const footer = modal.querySelector(".modal-footer");
+            if (!footer) return;
+
+            const banner = document.createElement("div");
+            banner.id = "oxt-release-branch-banner";
+            banner.style.cssText = `
+              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+              padding: 10px 14px; margin: 8px 16px; font-size: 13px;
+              color: #92400e; font-weight: 500;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            `;
+            banner.textContent = "Releases can only be created from the main branch. Switch to the main workspace and try again.";
+            footer.parentNode.insertBefore(banner, footer);
+
+            // Disable action buttons — leave Close (.button-cancel) enabled
+            for (const btn of modal.querySelectorAll("button")) {
+              const cls = btn.className;
+              if (
+                cls.includes("save-draft-btn") ||
+                cls.includes("btn-primary") ||
+                cls.includes("btn-success")
+              ) {
+                btn.disabled = true;
+                btn.style.opacity = "0.4";
+                btn.style.cursor = "not-allowed";
+                btn.title = "Switch to main workspace to create a release";
+                console.log(`[ReleaseGuard] Disabled: "${btn.textContent.trim()}"`);
+              }
+            }
+          });
+        }
+      } else if (!modal && _lastModal) {
+        delete _lastModal.dataset.oxtReleaseGuarded;
+        _lastModal = null;
+        console.log("[ReleaseGuard] Release dialog closed");
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    console.log("[ReleaseGuard] Observer started");
+  })();
+
   // Start interceptors
   initCreateDocInterceptor();
   initVersionDescriptionEnforcer();
