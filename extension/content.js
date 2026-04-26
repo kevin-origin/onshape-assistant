@@ -960,112 +960,75 @@
   // ---------------------------------------------------------------------------
   // Merge dialog blocker — blocks non-owners from merging branches
   // ---------------------------------------------------------------------------
-  // MutationObserver watches for any modal with "merge" in title/text.
-  // On detection: asks background.js if session user is in the doc's merge
-  // owners list (backend → local fallback, zero extra API calls).
-  // If not allowed: inserts warning banner, disables submit button,
-  // intercepts form submit. Resets when modal is removed from DOM.
+  // Selector confirmed via live DOM: div.modal.selective-preview-dialog.show
+  // Merge button: button.submit-button (type=submit) — Cancel/X left enabled.
+  // Checks check-merge-allowed in background (backend → local fallback).
 
-  let _mergeDetected = false;
+  (function initMergeBlocker() {
+    let _lastModal = null;
 
-  const mergeObserver = new MutationObserver((mutations) => {
-    if (_mergeDetected || _killSwitchActive) return;
-    for (const m of mutations) {
-      for (const node of m.addedNodes) {
-        if (node.nodeType !== 1) continue;
-        if (!node.querySelector) continue;
+    const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
+      const modal = document.querySelector("div.modal.selective-preview-dialog.show");
+      if (modal && modal !== _lastModal) {
+        _lastModal = modal;
+        if (!modal.dataset.oxtMergeGuarded) {
+          modal.dataset.oxtMergeGuarded = "1";
+          const docId = getDocIdFromUrl();
+          if (!docId) return;
 
-        // Look for modal with merge-related content
-        const modal = node.classList?.contains("modal")
-          ? node
-          : node.querySelector?.(".modal");
-        if (!modal) continue;
-
-        // Skip workspace-permissions dialog — its body mentions "merges" but it's not a merge action
-        if (modal.classList.contains("workspace-permissions-dialog")) continue;
-
-        // Check if this modal is about merging — check title element first, then full modal text
-        const titleEl = modal.querySelector(".modal-title, .modal-header h4, .modal-header h3, .modal-header span");
-        const titleText = (titleEl?.textContent || "").toLowerCase();
-        const allText = (modal.textContent || "").toLowerCase();
-        if (!titleText.includes("merge") && !allText.includes("merge")) continue;
-
-        _mergeDetected = true;
-        console.log("[MergeBlock] Merge dialog detected");
-
-        const docId = getDocIdFromUrl();
-        if (!docId) { _mergeDetected = false; continue; }
-
-        // Ask background if current user is allowed
-        chrome.runtime.sendMessage({
-          type: "check-merge-allowed",
-          docId: docId,
-        }, (response) => {
-          if (response && response.allowed) {
-            console.log("[MergeBlock] User is allowed to merge");
-            return;
-          }
-
-          console.log("[MergeBlock] User NOT allowed, blocking merge");
-          const modalContent = modal.querySelector(".modal-content") || modal;
-
-          // Show warning banner
-          const banner = document.createElement("div");
-          banner.id = "oxt-merge-blocker";
-          banner.style.cssText = `
-            background: #533a0f; border: 1px solid #f59e0b; border-radius: 4px;
-            padding: 10px 14px; margin: 10px 16px; font-size: 13px;
-            color: #f0c040; font-weight: 500;
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-          `;
-          banner.textContent = "You do not have permission to merge branches. Contact the document owner.";
-
-          const modalBody = modalContent.querySelector(".modal-body");
-          if (modalBody) {
-            modalBody.parentNode.insertBefore(banner, modalBody);
-          } else {
-            modalContent.insertBefore(banner, modalContent.children[1] || null);
-          }
-
-          // Disable all submit/action buttons in the modal
-          const buttons = modal.querySelectorAll("button");
-          for (const btn of buttons) {
-            const text = btn.textContent.trim().toLowerCase();
-            if (text === "merge" || text === "ok" || text === "apply" || btn.type === "submit") {
-              btn.disabled = true;
-              btn.title = "Merge not allowed — contact document owner";
-              btn.style.opacity = "0.4";
-              btn.style.cursor = "not-allowed";
-              console.log(`[MergeBlock] Disabled button: "${btn.textContent.trim()}"`);
+          chrome.runtime.sendMessage({ type: "check-merge-allowed", docId }, (response) => {
+            if (response && response.allowed) {
+              console.log("[MergeBlock] User is allowed to merge");
+              return;
             }
-          }
 
-          // Block form submission
-          const form = modal.querySelector("form");
-          if (form) {
-            form.addEventListener("submit", function blockMerge(e) {
-              e.preventDefault();
-              e.stopImmediatePropagation();
-              console.log("[MergeBlock] Form submit blocked");
-            }, true);
-          }
-        });
+            console.log("[MergeBlock] User NOT allowed — blocking merge");
 
-        // Reset flag when modal is removed
-        const removeObserver = new MutationObserver(() => {
-          if (!document.querySelector("#oxt-merge-blocker")) {
-            _mergeDetected = false;
-            removeObserver.disconnect();
-            console.log("[MergeBlock] Merge dialog closed");
-          }
-        });
-        removeObserver.observe(document.body, { childList: true, subtree: true });
-        return;
+            // Banner inserted before .modal-body
+            const modalBody = modal.querySelector(".modal-body");
+            const banner = document.createElement("div");
+            banner.id = "oxt-merge-blocker";
+            banner.style.cssText = `
+              background: #533a0f; border: 1px solid #f59e0b; border-radius: 4px;
+              padding: 10px 14px; margin: 10px 16px; font-size: 13px;
+              color: #f0c040; font-weight: 500;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            `;
+            banner.textContent = "You do not have permission to merge branches. Contact the document owner.";
+            if (modalBody) modalBody.parentNode.insertBefore(banner, modalBody);
+
+            // Disable Merge button — Cancel (.button-cancel) and X (.btn-close) stay enabled
+            const mergeBtn = modal.querySelector("button.submit-button");
+            if (mergeBtn) {
+              mergeBtn.disabled = true;
+              mergeBtn.style.opacity = "0.4";
+              mergeBtn.style.cursor = "not-allowed";
+              mergeBtn.title = "Merge not allowed — contact document owner";
+              console.log("[MergeBlock] Disabled Merge button");
+            }
+
+            // Block form submit as secondary safety (Angular ng-submit)
+            const form = modal.querySelector("form");
+            if (form) {
+              form.addEventListener("submit", (e) => {
+                e.preventDefault();
+                e.stopImmediatePropagation();
+                console.log("[MergeBlock] Form submit blocked");
+              }, true);
+            }
+          });
+        }
+      } else if (!modal && _lastModal) {
+        delete _lastModal.dataset.oxtMergeGuarded;
+        _lastModal = null;
+        console.log("[MergeBlock] Merge dialog closed");
       }
-    }
-  });
+    });
 
-  mergeObserver.observe(document.body, { childList: true, subtree: true });
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    console.log("[MergeBlock] Observer started");
+  })();
 
   // ---------------------------------------------------------------------------
   // Merge owner selection overlay — triggered via popup "Set for This Doc" button
