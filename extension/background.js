@@ -3116,13 +3116,17 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async sendResponse
 
   } else if (msg.type === "check-main-workspace") {
-    // Returns { isMain: bool } — true if current wid is the doc's default workspace
+    // Returns { isMain: bool } — true if current wid is the main (non-deletable) workspace.
+    // The main workspace is the only one with canDelete:false in the workspaces list.
+    // NOTE: doc.defaultWorkspace is unreliable — it returns the current workspace, not main.
     (async () => {
       try {
-        const doc = await onshapeFetch(`/api/v10/documents/${msg.docId}`);
-        const isMain = !!(doc.defaultWorkspace && doc.defaultWorkspace.id === msg.wid);
-        console.log(`[ReleaseGuard] Doc ${msg.docId}: defaultWorkspace=${doc.defaultWorkspace?.id}, current=${msg.wid}, isMain=${isMain}`);
-        sendResponse({ isMain });
+        const ws = await onshapeFetch(`/api/v10/documents/${msg.docId}/workspaces`);
+        const items = ws.items || ws || [];
+        const mainWs = items.find(w => w.canDelete === false);
+        const isMain = !!(mainWs && mainWs.id === msg.wid);
+        console.log(`[ReleaseGuard] Doc ${msg.docId}: main=${mainWs?.name}(${mainWs?.id}), current=${msg.wid}, isMain=${isMain}`);
+        sendResponse({ isMain, mainName: mainWs?.name });
       } catch (e) {
         console.log(`[ReleaseGuard] Workspace check failed: ${e.message}`);
         sendResponse({ isMain: true }); // fail open — don't block if check errors
