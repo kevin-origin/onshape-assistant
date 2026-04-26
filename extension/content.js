@@ -110,6 +110,49 @@
   }
 
   // ---------------------------------------------------------------------------
+  // Theme helpers — return color tokens matching Onshape's current theme
+  // ---------------------------------------------------------------------------
+
+  function getThemeColors() {
+    const isDark = document.body.dataset.osTheme !== "light";
+    return isDark ? {
+      bgBase:    "#333",
+      bgPanel:   "#2c2c2c",
+      bgInput:   "#2c2c2c",
+      text:      "#fff",
+      textMuted: "#ccc",
+      textDim:   "#888",
+      accent:    "#3e94ff",
+      border:    "#495057",
+      borderDim: "#3a3a3a",
+      hover:     "#404040",
+      successBg: "#0b450b",
+      success:   "#75b798",
+      warnBg:    "#6a4f06",
+      warn:      "#ffda6a",
+      errBg:     "#683232",
+      err:       "#ea868f",
+    } : {
+      bgBase:    "#f5f5f5",
+      bgPanel:   "#fff",
+      bgInput:   "#fff",
+      text:      "#333",
+      textMuted: "#555",
+      textDim:   "#888",
+      accent:    "#1651b0",
+      border:    "#d7d7d7",
+      borderDim: "#e0e0e0",
+      hover:     "#eaeaea",
+      successBg: "#ddf6cc",
+      success:   "#009400",
+      warnBg:    "#fff8e6",
+      warn:      "#825f00",
+      errBg:     "#f9ebec",
+      err:       "#bd3039",
+    };
+  }
+
+  // ---------------------------------------------------------------------------
   // Main scan
   // ---------------------------------------------------------------------------
 
@@ -332,16 +375,18 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     `;
 
+    const tc = getThemeColors();
+
     const card = document.createElement("div");
     card.style.cssText = `
-      background: #1a1a2e; border-radius: 8px; padding: 24px 28px;
+      background: ${tc.bgPanel}; border-radius: 8px; padding: 24px 28px;
       min-width: 340px; max-width: 420px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      border: 1px solid #333;
+      border: 1px solid ${tc.borderDim};
     `;
 
     const title = document.createElement("h3");
     title.textContent = "Set up folder structure";
-    title.style.cssText = "margin: 0 0 16px 0; font-size: 16px; color: #e0e0e0;";
+    title.style.cssText = `margin: 0 0 16px 0; font-size: 16px; color: ${tc.text};`;
     card.appendChild(title);
 
     // If all folders already exist, show a message and Close button only
@@ -349,14 +394,14 @@
     if (allExist) {
       const msg = document.createElement("div");
       msg.textContent = "All folders already exist.";
-      msg.style.cssText = "font-size: 14px; color: #95d5b2; margin: 16px 0;";
+      msg.style.cssText = `font-size: 14px; color: ${tc.success}; margin: 16px 0;`;
       card.appendChild(msg);
 
       const closeBtn = document.createElement("button");
       closeBtn.textContent = "Close";
       closeBtn.style.cssText = `
-        padding: 8px 18px; border: 1px solid #444; border-radius: 4px;
-        background: #16213e; color: #aaa; font-size: 14px; cursor: pointer;
+        padding: 8px 18px; border: 1px solid ${tc.border}; border-radius: 4px;
+        background: ${tc.bgBase}; color: ${tc.textMuted}; font-size: 14px; cursor: pointer;
         margin-top: 8px;
       `;
       closeBtn.addEventListener("click", () => overlay.remove());
@@ -370,12 +415,12 @@
     for (const name of FOLDER_NAMES) {
       const alreadyExists = existingFolders.includes(name);
       const label = document.createElement("label");
-      label.style.cssText = `display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; color: ${alreadyExists ? "#666" : "#e0e0e0"}; cursor: ${alreadyExists ? "default" : "pointer"};`;
+      label.style.cssText = `display: flex; align-items: center; gap: 8px; margin: 8px 0; font-size: 14px; color: ${alreadyExists ? tc.textDim : tc.text}; cursor: ${alreadyExists ? "default" : "pointer"};`;
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = true;
       cb.value = name;
-      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
+      cb.style.cssText = `width: 16px; height: 16px; cursor: pointer; accent-color: ${tc.accent};`;
       if (alreadyExists) {
         cb.disabled = true;
         cb.style.cursor = "default";
@@ -388,7 +433,7 @@
 
     const progressText = document.createElement("div");
     progressText.id = "oxt-folder-progress";
-    progressText.style.cssText = "margin: 12px 0; font-size: 13px; color: #888; min-height: 20px;";
+    progressText.style.cssText = `margin: 12px 0; font-size: 13px; color: ${tc.textDim}; min-height: 20px;`;
     card.appendChild(progressText);
 
     const btnRow = document.createElement("div");
@@ -397,8 +442,8 @@
     const skipBtn = document.createElement("button");
     skipBtn.textContent = "Skip";
     skipBtn.style.cssText = `
-      padding: 8px 18px; border: 1px solid #444; border-radius: 4px;
-      background: #16213e; color: #aaa; font-size: 14px; cursor: pointer;
+      padding: 8px 18px; border: 1px solid ${tc.border}; border-radius: 4px;
+      background: ${tc.bgBase}; color: ${tc.textMuted}; font-size: 14px; cursor: pointer;
     `;
     skipBtn.addEventListener("click", () => {
       overlay.remove();
@@ -408,7 +453,7 @@
     createBtn.textContent = "Create Folders";
     createBtn.style.cssText = `
       padding: 8px 18px; border: none; border-radius: 4px;
-      background: #1b4332; color: #95d5b2; font-size: 14px; cursor: pointer;
+      background: ${tc.successBg}; color: ${tc.success}; font-size: 14px; cursor: pointer;
       font-weight: 500;
     `;
     createBtn.addEventListener("click", () => {
@@ -440,10 +485,12 @@
     if (!toast) {
       toast = document.createElement("div");
       toast.id = "oxt-folder-toast";
+      const tc = getThemeColors();
       toast.style.cssText = `
         position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%);
-        background: #1e293b; color: #fff; padding: 10px 20px; border-radius: 6px;
+        background: ${tc.bgPanel}; color: ${tc.text}; padding: 10px 20px; border-radius: 6px;
         font-size: 13px; z-index: 999999; box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        border: 1px solid ${tc.borderDim};
         font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
         pointer-events: none;
       `;
@@ -481,16 +528,18 @@
       display: flex; align-items: center; justify-content: center;
       pointer-events: auto;
     `;
+    const tc = getThemeColors();
     const card = document.createElement("div");
     card.style.cssText = `
-      background: #1e293b; color: #fff; padding: 20px 32px;
+      background: ${tc.bgPanel}; color: ${tc.text}; padding: 20px 32px;
       border-radius: 10px; text-align: center;
       box-shadow: 0 8px 32px rgba(0,0,0,0.4);
+      border: 1px solid ${tc.borderDim};
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     `;
     card.innerHTML = `
       <div style="font-size:16px;font-weight:600;margin-bottom:8px;">Onshape Assistant is running</div>
-      <div style="font-size:13px;color:#94a3b8;">Please do not use the mouse or keyboard.</div>
+      <div style="font-size:13px;color:${tc.textMuted};">Please do not use the mouse or keyboard.</div>
     `;
     overlay.appendChild(card);
     document.body.appendChild(overlay);
@@ -506,7 +555,11 @@
   // ---------------------------------------------------------------------------
 
   chrome.runtime.onMessage.addListener((msg, _sender, sendResponse) => {
-    if (msg.type === "scan-tab-folders") {
+    if (msg.type === "get-theme") {
+      sendResponse({ theme: document.body.dataset.osTheme || "dark" });
+      return false;
+
+    } else if (msg.type === "scan-tab-folders") {
       // If auto-scan is running, wait for it to finish then scan fresh
       const waitThenScan = async () => {
         for (let i = 0; i < 60 && _scanning; i++) await sleep(500); // up to 30s
@@ -860,10 +913,11 @@
           if (!modalContent) return;
           const modalBody = modalContent.querySelector(".modal-body, .me-4");
 
+          const _tc = getThemeColors();
           const bannerStyle = `
-            background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+            background: ${_tc.warnBg}; border: 1px solid ${_tc.warn}; border-radius: 4px;
             padding: 10px 14px; margin: 0 16px 12px 16px; font-size: 13px;
-            color: #92400e; font-weight: 500;
+            color: ${_tc.warn}; font-weight: 500;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
           `;
 
@@ -1009,10 +1063,11 @@
           // Show warning banner
           const banner = document.createElement("div");
           banner.id = "oxt-merge-blocker";
+          const _tc = getThemeColors();
           banner.style.cssText = `
-            background: #533a0f; border: 1px solid #f59e0b; border-radius: 4px;
+            background: ${_tc.warnBg}; border: 1px solid ${_tc.warn}; border-radius: 4px;
             padding: 10px 14px; margin: 10px 16px; font-size: 13px;
-            color: #f0c040; font-weight: 500;
+            color: ${_tc.warn}; font-weight: 500;
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
           `;
           banner.textContent = "You do not have permission to merge branches. Contact the document owner.";
@@ -1082,21 +1137,23 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
     `;
 
+    const tc = getThemeColors();
+
     const card = document.createElement("div");
     card.style.cssText = `
-      background: #1a1a2e; border-radius: 8px; padding: 24px 28px;
+      background: ${tc.bgPanel}; border-radius: 8px; padding: 24px 28px;
       min-width: 360px; max-width: 440px; box-shadow: 0 8px 32px rgba(0,0,0,0.5);
-      border: 1px solid #333;
+      border: 1px solid ${tc.borderDim};
     `;
 
     const title = document.createElement("h3");
     title.textContent = "Select Merge Owners";
-    title.style.cssText = "margin: 0 0 6px 0; font-size: 16px; color: #e0e0e0;";
+    title.style.cssText = `margin: 0 0 6px 0; font-size: 16px; color: ${tc.text};`;
     card.appendChild(title);
 
     const subtitle = document.createElement("div");
     subtitle.textContent = `Select exactly 1 merge owner for "${docName}"`;
-    subtitle.style.cssText = "font-size: 12px; color: #888; margin-bottom: 16px;";
+    subtitle.style.cssText = `font-size: 12px; color: ${tc.textDim}; margin-bottom: 16px;`;
     card.appendChild(subtitle);
 
     // All team members as checkboxes — pre-check current owners
@@ -1106,12 +1163,12 @@
       const isChecked = ownerIds.includes(member.id) || ownerIds.includes(member.email);
       const row = document.createElement("label");
       row.style.cssText = "display: flex; align-items: center; gap: 8px; margin: 4px 0; padding: 6px 8px; cursor: pointer; border-radius: 4px;";
-      row.addEventListener("mouseenter", () => row.style.background = "#16213e");
+      row.addEventListener("mouseenter", () => row.style.background = tc.hover);
       row.addEventListener("mouseleave", () => row.style.background = "transparent");
       const cb = document.createElement("input");
       cb.type = "checkbox";
       cb.checked = isChecked;
-      cb.style.cssText = "width: 16px; height: 16px; cursor: pointer; accent-color: #7ec8e3;";
+      cb.style.cssText = `width: 16px; height: 16px; cursor: pointer; accent-color: ${tc.accent};`;
       cb.dataset.email = member.email;
       cb.dataset.name = member.name;
       cb.dataset.userId = member.id;
@@ -1122,16 +1179,16 @@
           checkboxes.forEach(c => { if (c !== cb) c.checked = false; });
         }
         const checkedCount = checkboxes.filter(c => c.checked).length;
-        subtitle.style.color = checkedCount === 1 ? "#95d5b2" : "#888";
+        subtitle.style.color = checkedCount === 1 ? tc.success : tc.textDim;
       });
       row.appendChild(cb);
       const nameSpan = document.createElement("span");
       nameSpan.textContent = member.name + (member.id === currentUser.id ? " (you)" : "");
-      nameSpan.style.cssText = "font-size: 14px; color: #e0e0e0;";
+      nameSpan.style.cssText = `font-size: 14px; color: ${tc.text};`;
       row.appendChild(nameSpan);
       const emailSpan = document.createElement("span");
       emailSpan.textContent = member.email;
-      emailSpan.style.cssText = "font-size: 11px; color: #666; margin-left: auto;";
+      emailSpan.style.cssText = `font-size: 11px; color: ${tc.textDim}; margin-left: auto;`;
       row.appendChild(emailSpan);
       card.appendChild(row);
       checkboxes.push(cb);
@@ -1145,14 +1202,14 @@
     saveBtn.textContent = "Save";
     saveBtn.style.cssText = `
       padding: 8px 18px; border: none; border-radius: 4px;
-      background: #1b4332; color: #95d5b2; font-size: 14px; cursor: pointer;
+      background: ${tc.successBg}; color: ${tc.success}; font-size: 14px; cursor: pointer;
       font-weight: 500;
     `;
     saveBtn.addEventListener("click", () => {
       const selected = checkboxes.filter(cb => cb.checked);
       if (selected.length !== 1) {
         subtitle.textContent = "Please select exactly 1 owner.";
-        subtitle.style.color = "#ff6b6b";
+        subtitle.style.color = tc.err;
         return;
       }
       const owners = selected.map(cb => ({
@@ -1173,8 +1230,8 @@
     const cancelBtn = document.createElement("button");
     cancelBtn.textContent = "Cancel";
     cancelBtn.style.cssText = `
-      padding: 8px 18px; border: none; border-radius: 4px;
-      background: #333; color: #aaa; font-size: 14px; cursor: pointer;
+      padding: 8px 18px; border: 1px solid ${tc.border}; border-radius: 4px;
+      background: ${tc.bgBase}; color: ${tc.textMuted}; font-size: 14px; cursor: pointer;
       font-weight: 500;
     `;
     cancelBtn.addEventListener("click", () => overlay.remove());
@@ -1268,11 +1325,12 @@
       font-family: system-ui, -apple-system, sans-serif;
     `;
 
+    const tc = getThemeColors();
     const card = document.createElement("div");
     card.style.cssText = `
-      background: #1a1a2e; border-radius: 12px; padding: 28px 32px;
-      min-width: 420px; max-width: 520px; color: #e0e0e0;
-      box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+      background: ${tc.bgPanel}; border-radius: 12px; padding: 28px 32px;
+      min-width: 420px; max-width: 520px; color: ${tc.text};
+      box-shadow: 0 8px 32px rgba(0,0,0,0.5); border: 1px solid ${tc.borderDim};
     `;
 
     // Close on backdrop click
@@ -1290,27 +1348,28 @@
   function showRobotQuestion(card, overlay) {
     card.innerHTML = "";
 
+    const tc = getThemeColors();
     const title = document.createElement("h2");
     title.textContent = "Create New Document";
-    title.style.cssText = "margin: 0 0 6px; font-size: 20px; color: #fff;";
+    title.style.cssText = `margin: 0 0 6px; font-size: 20px; color: ${tc.text};`;
     card.appendChild(title);
 
     const subtitle = document.createElement("p");
     subtitle.textContent = "Is this document robot-related?";
-    subtitle.style.cssText = "margin: 0 0 4px; font-size: 15px; color: #ccc;";
+    subtitle.style.cssText = `margin: 0 0 4px; font-size: 15px; color: ${tc.textMuted};`;
     card.appendChild(subtitle);
 
     const hint = document.createElement("p");
     hint.textContent = "Includes POCs, experiments, and anything robot-adjacent.";
-    hint.style.cssText = "margin: 0 0 20px; font-size: 12px; color: #888;";
+    hint.style.cssText = `margin: 0 0 20px; font-size: 12px; color: ${tc.textDim};`;
     card.appendChild(hint);
 
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display: flex; gap: 12px; justify-content: center;";
 
-    const yesBtn = makeButton("Yes", "#4a6cf7");
-    const noBtn = makeButton("No", "#555");
-    const cancelBtn = makeButton("Cancel", "#333", "#aaa");
+    const yesBtn = makeButton("Yes", tc.accent);
+    const noBtn = makeButton("No", tc.hover, tc.textMuted);
+    const cancelBtn = makeButton("Cancel", tc.bgBase, tc.textMuted);
 
     yesBtn.addEventListener("click", () => {
       showFolderPicker(card, overlay, true);
@@ -1329,33 +1388,34 @@
   function showFolderPicker(card, overlay, isRobot) {
     card.innerHTML = "";
 
+    const tc = getThemeColors();
     const title = document.createElement("h2");
     title.textContent = "Create New Document";
-    title.style.cssText = "margin: 0 0 16px; font-size: 20px; color: #fff;";
+    title.style.cssText = `margin: 0 0 16px; font-size: 20px; color: ${tc.text};`;
     card.appendChild(title);
 
     // Document name input
     const nameLabel = document.createElement("label");
     nameLabel.textContent = "Document name";
-    nameLabel.style.cssText = "font-size: 13px; color: #aaa; display: block; margin-bottom: 4px;";
+    nameLabel.style.cssText = `font-size: 13px; color: ${tc.textMuted}; display: block; margin-bottom: 4px;`;
     card.appendChild(nameLabel);
 
     const nameInput = document.createElement("input");
     nameInput.type = "text";
     nameInput.placeholder = "Enter document name...";
     nameInput.style.cssText = `
-      width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid #444;
-      background: #111; color: #fff; font-size: 14px; margin-bottom: 14px;
+      width: 100%; padding: 8px 10px; border-radius: 6px; border: 1px solid ${tc.border};
+      background: ${tc.bgInput}; color: ${tc.text}; font-size: 14px; margin-bottom: 14px;
       box-sizing: border-box; outline: none;
     `;
-    nameInput.addEventListener("focus", () => { nameInput.style.borderColor = "#4a6cf7"; });
-    nameInput.addEventListener("blur", () => { nameInput.style.borderColor = "#444"; });
+    nameInput.addEventListener("focus", () => { nameInput.style.borderColor = tc.accent; });
+    nameInput.addEventListener("blur", () => { nameInput.style.borderColor = tc.border; });
     card.appendChild(nameInput);
 
     // Breadcrumb
     const breadcrumb = document.createElement("div");
     breadcrumb.style.cssText = `
-      font-size: 12px; color: #888; margin-bottom: 8px;
+      font-size: 12px; color: ${tc.textDim}; margin-bottom: 8px;
       display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
     `;
     card.appendChild(breadcrumb);
@@ -1363,27 +1423,27 @@
     // Folder list container
     const listContainer = document.createElement("div");
     listContainer.style.cssText = `
-      max-height: 260px; overflow-y: auto; border: 1px solid #333;
-      border-radius: 6px; background: #111; margin-bottom: 14px;
+      max-height: 260px; overflow-y: auto; border: 1px solid ${tc.borderDim};
+      border-radius: 6px; background: ${tc.bgBase}; margin-bottom: 14px;
     `;
     card.appendChild(listContainer);
 
     // Status
     const status = document.createElement("div");
-    status.style.cssText = "font-size: 12px; color: #888; margin-bottom: 14px; min-height: 16px;";
+    status.style.cssText = `font-size: 12px; color: ${tc.textDim}; margin-bottom: 14px; min-height: 16px;`;
     card.appendChild(status);
 
     // Buttons
     const btnRow = document.createElement("div");
     btnRow.style.cssText = "display: flex; gap: 10px; justify-content: flex-end;";
 
-    const cancelBtn = makeButton("Cancel", "#333", "#aaa");
+    const cancelBtn = makeButton("Cancel", tc.bgBase, tc.textMuted);
     cancelBtn.addEventListener("click", () => overlay.remove());
 
-    const backBtn = makeButton("Back", "#333", "#aaa");
+    const backBtn = makeButton("Back", tc.bgBase, tc.textMuted);
     backBtn.addEventListener("click", () => showRobotQuestion(card, overlay));
 
-    const createBtn = makeButton("Create here", "#4a6cf7");
+    const createBtn = makeButton("Create here", tc.accent);
     createBtn.style.display = "none"; // hidden until folder selected
 
     btnRow.appendChild(backBtn);
@@ -1399,7 +1459,7 @@
       breadcrumb.innerHTML = "";
       const root = document.createElement("span");
       root.textContent = isRobot ? "Robots" : "Company";
-      root.style.cssText = "cursor: pointer; color: #4a6cf7; text-decoration: underline;";
+      root.style.cssText = `cursor: pointer; color: ${tc.accent}; text-decoration: underline;`;
       root.addEventListener("click", () => {
         pathStack.length = 0;
         currentFolderId = null;
@@ -1410,13 +1470,13 @@
       for (let i = 0; i < pathStack.length; i++) {
         const sep = document.createElement("span");
         sep.textContent = " > ";
-        sep.style.color = "#555";
+        sep.style.color = tc.textDim;
         breadcrumb.appendChild(sep);
 
         const crumb = document.createElement("span");
         crumb.textContent = pathStack[i].name;
         if (i < pathStack.length - 1) {
-          crumb.style.cssText = "cursor: pointer; color: #4a6cf7; text-decoration: underline;";
+          crumb.style.cssText = `cursor: pointer; color: ${tc.accent}; text-decoration: underline;`;
           const idx = i;
           crumb.addEventListener("click", () => {
             currentFolderId = pathStack[idx].id;
@@ -1424,7 +1484,7 @@
             loadFolders();
           });
         } else {
-          crumb.style.color = "#ccc";
+          crumb.style.color = tc.textMuted;
         }
         breadcrumb.appendChild(crumb);
       }
@@ -1467,7 +1527,7 @@
         if (folders.length === 0) {
           const empty = document.createElement("div");
           empty.textContent = "No subfolders found";
-          empty.style.cssText = "padding: 20px; text-align: center; color: #666;";
+          empty.style.cssText = `padding: 20px; text-align: center; color: ${tc.textDim};`;
           listContainer.appendChild(empty);
           return;
         }
@@ -1476,10 +1536,10 @@
           const row = document.createElement("div");
           row.style.cssText = `
             display: flex; align-items: center; padding: 8px 12px;
-            cursor: pointer; border-bottom: 1px solid #222;
+            cursor: pointer; border-bottom: 1px solid ${tc.borderDim};
             transition: background 0.15s;
           `;
-          row.addEventListener("mouseenter", () => { row.style.background = "#222"; });
+          row.addEventListener("mouseenter", () => { row.style.background = tc.hover; });
           row.addEventListener("mouseleave", () => { row.style.background = "transparent"; });
 
           const icon = document.createElement("span");
@@ -1488,11 +1548,11 @@
 
           const name = document.createElement("span");
           name.textContent = folder.name;
-          name.style.cssText = "flex: 1; font-size: 14px; color: #ddd;";
+          name.style.cssText = `flex: 1; font-size: 14px; color: ${tc.text};`;
 
           const arrow = document.createElement("span");
           arrow.textContent = "\u25B6";
-          arrow.style.cssText = "color: #666; font-size: 10px; margin-left: 8px;";
+          arrow.style.cssText = `color: ${tc.textDim}; font-size: 10px; margin-left: 8px;`;
 
           row.appendChild(icon);
           row.appendChild(name);
@@ -1669,7 +1729,7 @@
       warningEl.textContent =
         "Please fill in the description with all changes made since the previous version.";
       warningEl.style.cssText =
-        "color: #e74c3c; font-size: 13px; margin-top: 6px; font-weight: 500;";
+        `color: ${getThemeColors().err}; font-size: 13px; margin-top: 6px; font-weight: 500;`;
       descField.parentElement.appendChild(warningEl);
     }
 

@@ -1,6 +1,18 @@
 // popup.js — Onshape Assistant popup logic
 
 // ---------------------------------------------------------------------------
+// Theme detection — apply Onshape's current theme (dark / light) to popup
+// ---------------------------------------------------------------------------
+
+chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+  if (!tabs.length) return;
+  chrome.tabs.sendMessage(tabs[0].id, { type: "get-theme" }, (resp) => {
+    if (chrome.runtime.lastError || !resp) return;
+    document.documentElement.dataset.theme = resp.theme === "light" ? "light" : "dark";
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Section navigation
 // ---------------------------------------------------------------------------
 
@@ -468,12 +480,8 @@ const $btnFormatStl   = document.getElementById("btnFormatStl");
 
 function setExport3dFormat(fmt) {
   _export3dFormat = fmt;
-  $btnFormatStep.style.background = fmt === "STEP" ? "#1b4332" : "#1a1a40";
-  $btnFormatStep.style.color      = fmt === "STEP" ? "#95d5b2" : "#7ec8e3";
-  $btnFormatStep.style.border     = fmt === "STEP" ? "none" : "1px solid #333";
-  $btnFormatStl.style.background  = fmt === "STL"  ? "#1b4332" : "#1a1a40";
-  $btnFormatStl.style.color       = fmt === "STL"  ? "#95d5b2" : "#7ec8e3";
-  $btnFormatStl.style.border      = fmt === "STL"  ? "none" : "1px solid #333";
+  $btnFormatStep.className = "btn-fmt " + (fmt === "STEP" ? "btn-fmt-active" : "btn-fmt-inactive");
+  $btnFormatStl.className  = "btn-fmt " + (fmt === "STL"  ? "btn-fmt-active" : "btn-fmt-inactive");
 }
 
 $btnFormatStep.addEventListener("click", () => setExport3dFormat("STEP"));
