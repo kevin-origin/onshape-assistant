@@ -2944,36 +2944,61 @@ async function generateUrdf(did, wid, eid) {
   bcast("Fetching assembly features...");
   const featResp = await onshapeFetch(`/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}/features`);
 
-  const topInstances = asmDef.rootAssembly?.instances || [];
-  const occurrences  = asmDef.rootAssembly?.occurrences || [];
-  const features     = featResp.features || [];
-  const partInsts    = topInstances.filter(i => i.type === "Part");
+  const features = featResp.features || [];
 
-  bcast(`${partInsts.length} top-level part instance(s), ${features.length} feature(s)`);
+  // ---------------------------------------------------------------------------
+  // Build full instance + occurrence maps covering all sub-assembly depths
+  // ---------------------------------------------------------------------------
 
-  const instById = Object.fromEntries(topInstances.map(i => [i.id, i]));
-
-  // Top-level occurrence map: instanceId → occurrence (path.length === 1)
-  const occByInstId = {};
-  for (const occ of occurrences) {
-    if (occ.path.length === 1) occByInstId[occ.path[0]] = occ;
+  // Index sub-assemblies by "documentId:elementId" for recursive lookup
+  const subAsmByElemKey = {};
+  for (const sa of asmDef.subAssemblies || []) {
+    subAsmByElemKey[`${sa.documentId || did}:${sa.elementId}`] = sa;
   }
 
-  // Assign unique link names upfront — deduplicate collisions with _2, _3, ...
+  // Recursively index ALL instances (root + every sub-assembly depth) by instance ID
+  const allInstById = {};
+  function indexInstances(instances) {
+    for (const inst of instances) {
+      allInstById[inst.id] = inst;
+      if (inst.type === "Assembly") {
+        const sa = subAsmByElemKey[`${inst.documentId || did}:${inst.elementId}`];
+        if (sa) indexInstances(sa.instances || []);
+      }
+    }
+  }
+  indexInstances(asmDef.rootAssembly?.instances || []);
+
+  // Build occurrence map keyed on full path string; collect all leaf Part occurrences.
+  // rootAssembly.occurrences already contains ALL occurrences at every nesting depth
+  // with world-frame transforms pre-computed by Onshape.
+  const occByKey = {};    // path string → occurrence
+  const allPartOccs = []; // { occ, inst, key } for every part occurrence
+  for (const occ of asmDef.rootAssembly?.occurrences || []) {
+    const key      = occ.path.join("/");
+    occByKey[key]  = occ;
+    const leafInst = allInstById[occ.path[occ.path.length - 1]];
+    if (leafInst?.type === "Part") allPartOccs.push({ occ, inst: leafInst, key });
+  }
+
+  bcast(`${allPartOccs.length} part occurrence(s), ${features.length} feature(s)`);
+
+  // Assign unique link names — keyed on occurrence key (not instance id) so that
+  // the same part geometry placed multiple times gets distinct link names
   const usedLinkNames = new Set();
-  const instLinkName  = new Map(); // instanceId → unique link name
-  for (const inst of partInsts) {
+  const occLinkName   = new Map(); // occKey → unique link name
+  for (const { inst, key } of allPartOccs) {
     let base = urdfSafeName(inst.name || inst.id) || "link";
     let name = base, suffix = 2;
     while (usedLinkNames.has(name)) name = `${base}_${suffix++}`;
     usedLinkNames.add(name);
-    instLinkName.set(inst.id, name);
+    occLinkName.set(key, name);
   }
 
-  // Deduplicate parts by partKey for STL export
+  // Deduplicate parts by geometry key for STL export (one mesh file per unique geometry)
   const partKeyOf = inst => `${inst.partId}|${inst.elementId}|${inst.documentId || did}`;
   const uniquePartMap = {};
-  for (const inst of partInsts) {
+  for (const { inst } of allPartOccs) {
     const k = partKeyOf(inst);
     if (!uniquePartMap[k]) uniquePartMap[k] = inst;
   }
@@ -2983,126 +3008,163 @@ async function generateUrdf(did, wid, eid) {
   const STL_WARN = 40;
   const keyToMesh = {};
   const stlFiles  = [];
+  const wvidCache = {}; // docId → workspace id for external docs (shared with mass props)
 
   if (uniqueKeys.length > STL_WARN) {
     bcast(`NOTE: ${uniqueKeys.length} unique parts — export may take several minutes.`, "log-warn");
   }
   bcast(`Exporting ${uniqueKeys.length} STL mesh(es)...`);
-  const wvidCache = {}; // docId → workspace/version id for external docs
   for (const key of uniqueKeys) {
-      const inst      = uniquePartMap[key];
-      const safe      = urdfSafeName(inst.name || inst.partId || "part");
-      const fname     = `meshes/${safe}.stl`;
-      bcast(`  ${inst.name || inst.partId}...`);
-      try {
-        const exportDid = inst.documentId || did;
-        let wvm;
-        if (exportDid === did) {
-          wvm = `w/${wid}`;
-        } else if (inst.documentVersion) {
-          wvm = `v/${inst.documentVersion}`;
-        } else {
-          // External doc with no pinned version — resolve its default workspace (cached)
-          if (!wvidCache[exportDid]) {
-            const docInfo = await onshapeFetch(`/api/v10/documents/${exportDid}`);
-            const exWid = docInfo?.defaultWorkspace?.id;
-            if (!exWid) throw new Error(`no workspace found for external doc ${exportDid}`);
-            wvidCache[exportDid] = exWid;
-          }
-          wvm = `w/${wvidCache[exportDid]}`;
+    const inst  = uniquePartMap[key];
+    const safe  = urdfSafeName(inst.name || inst.partId || "part");
+    const fname = `meshes/${safe}.stl`;
+    bcast(`  ${inst.name || inst.partId}...`);
+    try {
+      const exportDid = inst.documentId || did;
+      let wvm;
+      if (exportDid === did) {
+        wvm = `w/${wid}`;
+      } else if (inst.documentVersion) {
+        wvm = `v/${inst.documentVersion}`;
+      } else {
+        if (!wvidCache[exportDid]) {
+          const docInfo = await onshapeFetch(`/api/v10/documents/${exportDid}`);
+          const exWid = docInfo?.defaultWorkspace?.id;
+          if (!exWid) throw new Error(`no workspace found for external doc ${exportDid}`);
+          wvidCache[exportDid] = exWid;
         }
-        const job = await onshapePost(
-          `/api/v6/partstudios/d/${exportDid}/${wvm}/e/${inst.elementId}/translations`,
-          { formatName: "STL", storeInDocument: false, partIds: inst.partId, units: "meter" }
-        );
-        // Onshape translations API returns either 'id' or 'jobId' depending on endpoint version
-        const jobId = job.id || job.jobId;
-        if (!jobId) throw new Error("no job ID in translation response");
-        let t;
-        for (let i = 0; i < 30; i++) {
-          await new Promise(r => setTimeout(r, 2000));
-          t = await onshapeFetch(`/api/v6/translations/${jobId}`);
-          if (t.requestState !== "ACTIVE") break;
-        }
-        if (!t || t.requestState !== "DONE" || !t.resultExternalDataIds?.length) {
-          bcast(`  SKIP: ${inst.name} (${t?.requestState || "no result"})`);
-          keyToMesh[key] = null; continue;
-        }
-        const resp = await fetch(
-          `${ONSHAPE_BASE}/api/v6/documents/d/${t.documentId || exportDid}/externaldata/${t.resultExternalDataIds[0]}`,
-          { credentials: "include" }
-        );
-        if (!resp.ok) throw new Error(`blob ${resp.status}`);
-        const data = new Uint8Array(await resp.arrayBuffer());
-        stlFiles.push({ name: fname, data });
-        keyToMesh[key] = fname;
-        bcast(`  OK: ${safe}.stl`, "log-ok");
-      } catch (e) {
-        bcast(`  ERROR: ${inst.name}: ${e.message}`, "log-err");
-        keyToMesh[key] = null;
+        wvm = `w/${wvidCache[exportDid]}`;
       }
+      const job = await onshapePost(
+        `/api/v6/partstudios/d/${exportDid}/${wvm}/e/${inst.elementId}/translations`,
+        { formatName: "STL", storeInDocument: false, partIds: inst.partId, units: "meter" }
+      );
+      const jobId = job.id || job.jobId;
+      if (!jobId) throw new Error("no job ID in translation response");
+      let t;
+      for (let i = 0; i < 30; i++) {
+        await new Promise(r => setTimeout(r, 2000));
+        t = await onshapeFetch(`/api/v6/translations/${jobId}`);
+        if (t.requestState !== "ACTIVE") break;
+      }
+      if (!t || t.requestState !== "DONE" || !t.resultExternalDataIds?.length) {
+        bcast(`  SKIP: ${inst.name} (${t?.requestState || "no result"})`);
+        keyToMesh[key] = null; continue;
+      }
+      const resp = await fetch(
+        `${ONSHAPE_BASE}/api/v6/documents/d/${t.documentId || exportDid}/externaldata/${t.resultExternalDataIds[0]}`,
+        { credentials: "include" }
+      );
+      if (!resp.ok) throw new Error(`blob ${resp.status}`);
+      const data = new Uint8Array(await resp.arrayBuffer());
+      stlFiles.push({ name: fname, data });
+      keyToMesh[key] = fname;
+      bcast(`  OK: ${safe}.stl`, "log-ok");
+    } catch (e) {
+      bcast(`  ERROR: ${inst.name}: ${e.message}`, "log-err");
+      keyToMesh[key] = null;
     }
+  }
 
+  // ---------------------------------------------------------------------------
+  // Mass properties — one fetch per unique part geometry; transform to link frame
+  // ---------------------------------------------------------------------------
+  bcast("Fetching mass properties...");
+  const massPropsMap = {}; // partKey → { mass, centroid, inertia }
+
+  // 3×3 inertia change-of-basis: I_local = R^T * I_world * R
+  // Onshape may return inertia as 9 or 12 elements (12 = 3×4 with zero padding per row)
+  function transformInertia(iw, linkTr) {
+    const stride = iw.length >= 12 ? 4 : 3;
+    const I  = [[iw[0], iw[1], iw[2]],
+                [iw[stride], iw[stride+1], iw[stride+2]],
+                [iw[2*stride], iw[2*stride+1], iw[2*stride+2]]];
+    const R  = [[linkTr[0],linkTr[1],linkTr[2]],
+                [linkTr[4],linkTr[5],linkTr[6]],
+                [linkTr[8],linkTr[9],linkTr[10]]];
+    const RT = [[R[0][0],R[1][0],R[2][0]],[R[0][1],R[1][1],R[2][1]],[R[0][2],R[1][2],R[2][2]]];
+    const mul = (A, B) => A.map((_, i) => [0,1,2].map(j => [0,1,2].reduce((s,k) => s+A[i][k]*B[k][j], 0)));
+    const il = mul(mul(RT, I), R);
+    return { ixx:il[0][0], ixy:il[0][1], ixz:il[0][2], iyy:il[1][1], iyz:il[1][2], izz:il[2][2] };
+  }
+
+  for (const pkey of uniqueKeys) {
+    const inst      = uniquePartMap[pkey];
+    const exportDid = inst.documentId || did;
+    const wvm       = exportDid === did          ? `w/${wid}` :
+                      inst.documentVersion       ? `v/${inst.documentVersion}` :
+                      wvidCache[exportDid]       ? `w/${wvidCache[exportDid]}` : `w/${wid}`;
+    try {
+      const mp   = await onshapeFetch(
+        `/api/v6/partstudios/d/${exportDid}/${wvm}/e/${inst.elementId}/massproperties?partIds=${inst.partId}`
+      );
+      const body = mp.bodies?.[inst.partId];
+      if (body) {
+        massPropsMap[pkey] = {
+          mass:     body.mass?.[0]    ?? 1.0,
+          centroid: body.centroid     ?? [0, 0, 0],
+          inertia:  body.inertia      ?? Array(12).fill(0),
+        };
+      }
+    } catch (e) {
+      bcast(`  Mass props failed: ${inst.name}: ${e.message}`, "log-warn");
+    }
+  }
+
+  // ---------------------------------------------------------------------------
   // Parse mates → joints
+  // matedOccurrence is a full path array; join("/") gives the occByKey lookup key
+  // ---------------------------------------------------------------------------
   bcast("Building joints from mates...");
-  const joints   = [];
-  const childIds = new Set();
+  const joints    = [];
+  const childKeys = new Set(); // occurrence keys that are children of a mate joint
 
   for (const feat of features) {
     const m = feat.message || {};
     if (m.featureType !== "mate") continue;
     const ents = m.matedEntities || [];
     if (ents.length < 2) continue;
-    const pid = ents[0].matedOccurrence?.[0];
-    const cid = ents[1].matedOccurrence?.[0];
-    if (!pid || !cid || pid === cid) continue;
-    if (!instById[pid] || !instById[cid]) continue;
-    if (instById[pid].type !== "Part" || instById[cid].type !== "Part") continue;
+    const pKey = ents[0].matedOccurrence?.join("/");
+    const cKey = ents[1].matedOccurrence?.join("/");
+    if (!pKey || !cKey || pKey === cKey) continue;
+    const pOcc  = occByKey[pKey];
+    const cOcc  = occByKey[cKey];
+    if (!pOcc || !cOcc) continue;
+    const pInst = allInstById[pOcc.path[pOcc.path.length - 1]];
+    const cInst = allInstById[cOcc.path[cOcc.path.length - 1]];
+    if (!pInst || !cInst) continue;
+    if (pInst.type !== "Part" || cInst.type !== "Part") continue;
 
-    const mateType = m.mateType || "FASTENED";
-    const mcs      = ents[0].matedCS || {};
+    const mateType    = m.mateType || "FASTENED";
+    const mcs         = ents[0].matedCS || {};
     const worldOrigin = mcs.origin || [0, 0, 0];
 
     let jointType, axis;
     switch (mateType) {
       case "REVOLUTE":
-        jointType = "revolute";
-        axis = mcs.zAxis || [0, 0, 1];
-        break;
+        jointType = "revolute"; axis = mcs.zAxis || [0,0,1]; break;
       case "SLIDER":
-        jointType = "prismatic";
-        axis = mcs.zAxis || [0, 0, 1];
-        break;
+        jointType = "prismatic"; axis = mcs.zAxis || [0,0,1]; break;
       case "CYLINDRICAL":
-        jointType = "continuous";
-        axis = mcs.zAxis || [0, 0, 1];
-        bcast(`  WARNING: CYLINDRICAL mate "${m.name || pid}" mapped to 'continuous' — prismatic DOF dropped`, "log-warn");
+        jointType = "continuous"; axis = mcs.zAxis || [0,0,1];
+        bcast(`  WARNING: CYLINDRICAL mate "${m.name || pKey}" mapped to 'continuous' — prismatic DOF dropped`, "log-warn");
         break;
       case "BALL":
-        jointType = "revolute";
-        axis = [0, 0, 1];
-        bcast(`  WARNING: BALL mate "${m.name || pid}" approximated as revolute (axis 0 0 1) — full ball-joint DOFs not represented`, "log-warn");
+        jointType = "revolute"; axis = [0,0,1];
+        bcast(`  WARNING: BALL mate "${m.name || pKey}" approximated as revolute — full 3-DOF not represented`, "log-warn");
         break;
       case "PLANAR":
-        jointType = "floating";
-        axis = [0, 0, 1];
-        break;
+        jointType = "floating"; axis = [0,0,1]; break;
       default:
-        jointType = "fixed";
-        axis = [0, 0, 1];
-        break;
+        jointType = "fixed"; axis = [0,0,1]; break;
     }
 
-    // Joint origin in parent-link frame: inv(parent_transform) * world_origin
-    const parentTr    = occByInstId[pid]?.transform;
-    const localOrigin = parentTr ? urdfWorldToParent(worldOrigin, parentTr) : worldOrigin;
-
-    // Rotate world-frame axis into parent-link frame; normalize to guard float drift
+    const parentTr     = pOcc.transform;
+    const localOrigin  = parentTr ? urdfWorldToParent(worldOrigin, parentTr) : worldOrigin;
     const rawLocalAxis = parentTr ? urdfWorldDirToParent(axis, parentTr) : axis;
-    const axLen = Math.hypot(...rawLocalAxis);
-    const localAxis = axLen > 1e-9 ? rawLocalAxis.map(v => v / axLen) : [0, 0, 1];
+    const axLen        = Math.hypot(...rawLocalAxis);
+    const localAxis    = axLen > 1e-9 ? rawLocalAxis.map(v => v / axLen) : [0, 0, 1];
 
-    // Extract joint limits from Onshape mate parameters; fall back to safe defaults
     const mparams   = extractMateParams(m);
     const hasLimits = mparams["hasLimits"] === true || mparams["hasLimits"] === "true";
     let limitLower, limitUpper;
@@ -3123,25 +3185,38 @@ async function generateUrdf(did, wid, eid) {
 
     joints.push({
       name: urdfSafeName(m.name || `joint_${joints.length}`),
-      type: jointType,
-      parent: pid, child: cid,
+      type: jointType, pKey, cKey,
       origin: localOrigin, axis: localAxis,
       limitLower, limitUpper,
     });
-    childIds.add(cid);
+    childKeys.add(cKey);
   }
 
+  // ---------------------------------------------------------------------------
   // Build URDF XML
+  // ---------------------------------------------------------------------------
   bcast("Writing URDF...");
   let xml = `<?xml version="1.0"?>\n<robot name="${urdfEscXml(robotName)}">\n\n`;
   xml += `  <!-- Generated by Onshape Assistant URDF Export -->\n\n`;
   xml += `  <link name="base_link"/>\n\n`;
 
-  // One link per top-level part instance — STL exported in meters, matches URDF coordinate frame
-  for (const inst of partInsts) {
-    const lname = instLinkName.get(inst.id);
+  // One link per part occurrence — STL in meters, no scale tag needed
+  for (const { inst, occ, key } of allPartOccs) {
+    const lname = occLinkName.get(key);
     const mesh  = keyToMesh[partKeyOf(inst)];
     xml += `  <link name="${urdfEscXml(lname)}">\n`;
+    const mp = massPropsMap[partKeyOf(inst)];
+    if (mp && mp.mass > 0) {
+      const tr   = occ?.transform;
+      const cl   = tr ? urdfWorldToParent(mp.centroid, tr) : mp.centroid;
+      const iner = tr ? transformInertia(mp.inertia, tr)
+                      : { ixx:0, ixy:0, ixz:0, iyy:0, iyz:0, izz:0 };
+      xml += `    <inertial>\n`;
+      xml += `      <origin xyz="${cl[0].toFixed(6)} ${cl[1].toFixed(6)} ${cl[2].toFixed(6)}" rpy="0 0 0"/>\n`;
+      xml += `      <mass value="${mp.mass.toFixed(6)}"/>\n`;
+      xml += `      <inertia ixx="${iner.ixx.toFixed(9)}" ixy="${iner.ixy.toFixed(9)}" ixz="${iner.ixz.toFixed(9)}" iyy="${iner.iyy.toFixed(9)}" iyz="${iner.iyz.toFixed(9)}" izz="${iner.izz.toFixed(9)}"/>\n`;
+      xml += `    </inertial>\n`;
+    }
     if (mesh) {
       const pkg = `package://${urdfEscXml(robotName)}/${urdfEscXml(mesh)}`;
       xml += `    <visual><geometry><mesh filename="${pkg}"/></geometry></visual>\n`;
@@ -3150,10 +3225,10 @@ async function generateUrdf(did, wid, eid) {
     xml += `  </link>\n\n`;
   }
 
-  // Joints from mates (origin already in parent-link frame)
+  // Joints from mates (origins already in parent-link frame)
   for (const j of joints) {
-    const pname = instLinkName.get(j.parent) || urdfSafeName(instById[j.parent]?.name || j.parent);
-    const cname = instLinkName.get(j.child)  || urdfSafeName(instById[j.child]?.name  || j.child);
+    const pname = occLinkName.get(j.pKey) || j.pKey;
+    const cname = occLinkName.get(j.cKey) || j.cKey;
     const [ox, oy, oz] = j.origin;
     const [ax, ay, az] = j.axis;
     xml += `  <joint name="${urdfEscXml(j.name)}" type="${j.type}">\n`;
@@ -3168,15 +3243,13 @@ async function generateUrdf(did, wid, eid) {
     } else if (j.type === "prismatic") {
       xml += `    <limit lower="${j.limitLower.toFixed(6)}" upper="${j.limitUpper.toFixed(6)}" effort="100" velocity="0.1"/>\n`;
     }
-    // continuous and floating have no <limit>
     xml += `  </joint>\n\n`;
   }
 
-  // Parts not a child of any mate → fixed to base_link using world-frame occurrence transform
-  for (const inst of partInsts) {
-    if (childIds.has(inst.id)) continue;
-    const lname = instLinkName.get(inst.id);
-    const occ   = occByInstId[inst.id];
+  // Occurrences not assigned as children of any mate → fixed to base_link at world pose
+  for (const { inst, occ, key } of allPartOccs) {
+    if (childKeys.has(key)) continue;
+    const lname = occLinkName.get(key);
     let xyz = "0 0 0", rpy = "0 0 0";
     if (occ?.transform) {
       const tr = occ.transform;
