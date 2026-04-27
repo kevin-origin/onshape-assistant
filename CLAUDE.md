@@ -282,7 +282,7 @@ Identify active agents by reading each pane's `/status` output — do not assume
 
 Once the monitor is open, run this automatically — no prompting needed:
 
-1. **Map panes to agents** — send `/status` to each pane, parse the `Email:` line, build a pane-index→agent-name table
+1. **Map panes to agents** — use `bash ~/tell.sh` (no args) to list active agents and their pane indices. Only fall back to sending `/status` to individual panes if tell.sh cannot identify them (e.g. Claude hasn't started yet in that pane).
 2. Select the agents with lowest usage for tasks
 
 Constraints:
@@ -292,6 +292,7 @@ Constraints:
 - DOM selectors: never guess — observe first
 - Do not commit — planner handles git
 - Only communicate with the planner — never contact other agents directly
+- **On every session start, check your own identity immediately**: run `/status` and read the `Email:` line. If your email is `kevin@origin.tech` you are the planner — follow the planner workflow above. If your email is anything else, you are a worker agent — do not assign tasks to other agents, do not manage panes, do not act as a coordinator. Your only job is to execute the task you were given and report back via tell.sh.
 - When you finish a task, ALWAYS run: bash ~/tell.sh planner "done: [file] — [brief summary]"
 ```
 
