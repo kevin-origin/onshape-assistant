@@ -2933,14 +2933,42 @@ function urdfMatedCSToMat4(cs) {
   ];
 }
 
+// Evaluate a simple Onshape expression or pre-evaluated numeric to a float in SI units.
+// Handles plain numbers (SI: rad for angles, m for lengths), "N deg"/"N°" → rad,
+// "N mm" → m, "N cm" → m, "N in" → m.  Returns NaN for unrecognised strings.
+function evalLimitExpr(v) {
+  if (v === null || v === undefined) return NaN;
+  if (typeof v === "number") return v;
+  if (typeof v === "boolean") return NaN;
+  const s = String(v).trim();
+  const m = s.match(/^([+-]?\d*\.?\d+(?:[eE][+-]?\d+)?)\s*(deg|°|rad|mm|cm|in|m)?$/i);
+  if (!m) return NaN;
+  const n = parseFloat(m[1]);
+  switch ((m[2] || "").toLowerCase()) {
+    case "deg": case "°": return n * Math.PI / 180;
+    case "mm":            return n / 1000;
+    case "cm":            return n / 100;
+    case "in":            return n * 0.0254;
+    default:              return n;   // rad, m, or bare number — already SI
+  }
+}
+
 // Extract mate feature parameters into a flat { parameterId: value } map.
-// Boolean params have value at p.message.value; quantity/expression params at p.message.message.expression.
+// - BTMParameterBoolean:          p.message.value (JS boolean)
+// - BTMParameterNullableQuantity: p.message.value (pre-evaluated SI float) || p.message.expression
+// - BTMParameterConfigured:       best-effort — expression/value from first values[] entry
+//   (not configuration-aware; evalLimitExpr returns NaN for unresolvable exprs → default applied)
 function extractMateParams(featureMessage) {
   const params = {};
   for (const p of featureMessage.parameters || []) {
     const pid = p.message?.parameterId;
     if (!pid) continue;
-    const val = p.message?.value ?? p.message?.message?.expression;
+    let val = p.message?.value ?? p.message?.expression;
+    if (val === undefined && p.message?.values?.length) {
+      // BTMParameterConfigured — use the first configured value's expression as a best-effort default.
+      val = p.message.values[0]?.message?.value?.message?.expression
+         ?? p.message.values[0]?.message?.value?.message?.value;
+    }
     if (val !== undefined) params[pid] = val;
   }
   return params;
@@ -2968,6 +2996,25 @@ async function generateUrdf(did, wid, eid) {
     : `/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}/features`;
   const featResp = await onshapeFetch(featEndpoint);
   const features = featResp.features || [];
+
+  // Fetch current mate positions (offsets) so limit values can be adjusted to be
+  // relative to the assembly's rest position (URDF convention: 0 = rest).
+  // This endpoint only works against a workspace, not a microversion.
+  bcast("Fetching mate values...");
+  const mateValuesMap = {}; // mateName → { rotationZ?, translationZ? }
+  try {
+    const mv = await onshapeFetch(
+      `/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}/matevalues`
+    );
+    // Onshape returns either "mateValues" or "matedValues" depending on API version.
+    const entries = mv?.mateValues ?? mv?.matedValues ?? [];
+    for (const entry of entries) {
+      if (entry.mateName) mateValuesMap[entry.mateName] = entry;
+    }
+    bcast(`  ${Object.keys(mateValuesMap).length} mate value(s) loaded.`);
+  } catch (e) {
+    bcast(`  NOTE: mate values unavailable — limits not offset-adjusted (${e.message})`, "log-warn");
+  }
 
   // ---------------------------------------------------------------------------
   // Build full instance + occurrence maps covering all sub-assembly depths
@@ -3187,18 +3234,39 @@ async function generateUrdf(did, wid, eid) {
     const limitsEnabled = mparams["limitsEnabled"] === true || mparams["limitsEnabled"] === "true";
     let limitLower, limitUpper;
     if (limitsEnabled && jointType === "revolute") {
-      limitLower = parseFloat(mparams["limitAxialZMin"] ?? "-3.14159");
-      limitUpper = parseFloat(mparams["limitAxialZMax"] ??  "3.14159");
+      limitLower = evalLimitExpr(mparams["limitAxialZMin"]);
+      limitUpper = evalLimitExpr(mparams["limitAxialZMax"]);
       if (isNaN(limitLower)) limitLower = -3.14159;
       if (isNaN(limitUpper)) limitUpper =  3.14159;
     } else if (limitsEnabled && jointType === "prismatic") {
-      limitLower = parseFloat(mparams["limitZMin"] ?? "-0.1");
-      limitUpper = parseFloat(mparams["limitZMax"] ??  "0.1");
+      limitLower = evalLimitExpr(mparams["limitZMin"]);
+      limitUpper = evalLimitExpr(mparams["limitZMax"]);
       if (isNaN(limitLower)) limitLower = -0.1;
       if (isNaN(limitUpper)) limitUpper =  0.1;
     } else {
       limitLower = jointType === "revolute" ? -3.14159 : -0.1;
       limitUpper = jointType === "revolute" ?  3.14159 :  0.1;
+    }
+
+    // Adjust limits by the mate's current rest position so that URDF position 0
+    // corresponds to the assembly's default configuration (matches onshape-to-robot behaviour).
+    const mateEntry = mateValuesMap[m.name || ""];
+    if (mateEntry && limitsEnabled) {
+      if (jointType === "revolute" && mateEntry.rotationZ != null) {
+        limitLower -= mateEntry.rotationZ;
+        limitUpper -= mateEntry.rotationZ;
+      } else if (jointType === "prismatic" && mateEntry.translationZ != null) {
+        limitLower -= mateEntry.translationZ;
+        limitUpper -= mateEntry.translationZ;
+      }
+    }
+
+    // URDF requires each link to have exactly one parent joint.  If this occurrence
+    // was already claimed as a child by an earlier mate, skip this joint to avoid
+    // producing an invalid URDF forest.
+    if (childKeys.has(cKey)) {
+      bcast(`  WARNING: "${m.name || cKey}" skipped — occurrence already parented by an earlier mate (URDF requires a single parent per link)`, "log-warn");
+      continue;
     }
 
     joints.push({
