@@ -2897,38 +2897,51 @@ function urdfRotToRpy(t) {
   return [roll, pitch, yaw];
 }
 
-// Transform a world-frame point into a link's local frame using its occurrence transform.
-// parentTr is the row-major 4×4 transform: tx=t[3], ty=t[7], tz=t[11].
-// Uses R^T * (p_world - t) since R is orthonormal.
-// R^T[i,j] = R[j,i] = t[j*4+i], so R^T row k = [t[k], t[4+k], t[8+k]].
-function urdfWorldToParent(worldPt, parentTr) {
-  const dx = worldPt[0] - parentTr[3];
-  const dy = worldPt[1] - parentTr[7];
-  const dz = worldPt[2] - parentTr[11];
-  return [
-    parentTr[0]*dx + parentTr[4]*dy + parentTr[8]*dz,
-    parentTr[1]*dx + parentTr[5]*dy + parentTr[9]*dz,
-    parentTr[2]*dx + parentTr[6]*dy + parentTr[10]*dz,
-  ];
+// Row-major 4×4 matrix multiply: C = A * B
+function urdfMat4Mul(A, B) {
+  const C = new Array(16).fill(0);
+  for (let i = 0; i < 4; i++)
+    for (let j = 0; j < 4; j++)
+      for (let k = 0; k < 4; k++)
+        C[i*4+j] += A[i*4+k] * B[k*4+j];
+  return C;
 }
 
-// Rotate a world-frame direction into a link's local frame (no translation).
-// Uses R^T * dir — same index layout as urdfWorldToParent, translation step skipped.
-function urdfWorldDirToParent(dir, parentTr) {
+// Invert a rigid-body 4×4 transform (row-major): R^T for rotation, -R^T*t for translation.
+function urdfMat4RigidInv(T) {
+  const inv = new Array(16).fill(0);
+  for (let i = 0; i < 3; i++)
+    for (let j = 0; j < 3; j++)
+      inv[i*4+j] = T[j*4+i];
+  inv[3]  = -(inv[0]*T[3] + inv[1]*T[7]  + inv[2]*T[11]);
+  inv[7]  = -(inv[4]*T[3] + inv[5]*T[7]  + inv[6]*T[11]);
+  inv[11] = -(inv[8]*T[3] + inv[9]*T[7]  + inv[10]*T[11]);
+  inv[15] = 1;
+  return inv;
+}
+
+// Build a row-major 4×4 rigid transform from matedCS { xAxis, yAxis, zAxis, origin }.
+// matedCS defines a frame in the part's local space; columns of R = [xAxis | yAxis | zAxis].
+function urdfMatedCSToMat4(cs) {
+  const x = cs.xAxis || [1,0,0], y = cs.yAxis || [0,1,0], z = cs.zAxis || [0,0,1];
+  const o = cs.origin || [0,0,0];
   return [
-    parentTr[0]*dir[0] + parentTr[4]*dir[1] + parentTr[8]*dir[2],
-    parentTr[1]*dir[0] + parentTr[5]*dir[1] + parentTr[9]*dir[2],
-    parentTr[2]*dir[0] + parentTr[6]*dir[1] + parentTr[10]*dir[2],
+    x[0], y[0], z[0], o[0],
+    x[1], y[1], z[1], o[1],
+    x[2], y[2], z[2], o[2],
+    0,    0,    0,    1,
   ];
 }
 
 // Extract mate feature parameters into a flat { parameterId: value } map.
+// Boolean params have value at p.message.value; quantity/expression params at p.message.message.expression.
 function extractMateParams(featureMessage) {
   const params = {};
   for (const p of featureMessage.parameters || []) {
     const pid = p.message?.parameterId;
-    const val = p.message?.message?.value ?? p.message?.message?.expression;
-    if (pid && val !== undefined) params[pid] = val;
+    if (!pid) continue;
+    const val = p.message?.value ?? p.message?.message?.expression;
+    if (val !== undefined) params[pid] = val;
   }
   return params;
 }
@@ -2938,12 +2951,22 @@ async function generateUrdf(did, wid, eid) {
     chrome.runtime.sendMessage({ type: "urdf-progress", message: msg, cls }).catch(() => {});
 
   bcast("Fetching assembly definition...");
-  const asmDef = await onshapeFetch(`/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}`);
+  // includeMateFeatures/includeMateConnectors ensure rootAssembly.features is populated;
+  // includeNonSolids captures surface bodies that may appear in mates.
+  const asmDef = await onshapeFetch(
+    `/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}` +
+    `?includeMateFeatures=true&includeMateConnectors=true&includeNonSolids=true`
+  );
   const robotName = urdfSafeName(asmDef.name || "robot");
 
+  // Pin to the assembly's microversion so the features fetch is consistent with
+  // the occurrences snapshot even if the document is edited during export.
+  const microVid = asmDef.rootAssembly?.documentMicroversion;
   bcast("Fetching assembly features...");
-  const featResp = await onshapeFetch(`/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}/features`);
-
+  const featEndpoint = microVid
+    ? `/api/v9/assemblies/d/${did}/m/${microVid}/e/${eid}/features`
+    : `/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}/features`;
+  const featResp = await onshapeFetch(featEndpoint);
   const features = featResp.features || [];
 
   // ---------------------------------------------------------------------------
@@ -3004,7 +3027,9 @@ async function generateUrdf(did, wid, eid) {
   }
   const uniqueKeys = Object.keys(uniquePartMap);
 
-  // STL export — soft warning above 40 parts, no hard cap
+  // ---------------------------------------------------------------------------
+  // STL export — direct /parts/.../stl endpoint (no translation job polling)
+  // ---------------------------------------------------------------------------
   const STL_WARN = 40;
   const keyToMesh = {};
   const stlFiles  = [];
@@ -3035,27 +3060,12 @@ async function generateUrdf(did, wid, eid) {
         }
         wvm = `w/${wvidCache[exportDid]}`;
       }
-      const job = await onshapePost(
-        `/api/v6/partstudios/d/${exportDid}/${wvm}/e/${inst.elementId}/translations`,
-        { formatName: "STL", storeInDocument: false, partIds: inst.partId, units: "meter" }
-      );
-      const jobId = job.id || job.jobId;
-      if (!jobId) throw new Error("no job ID in translation response");
-      let t;
-      for (let i = 0; i < 30; i++) {
-        await new Promise(r => setTimeout(r, 2000));
-        t = await onshapeFetch(`/api/v6/translations/${jobId}`);
-        if (t.requestState !== "ACTIVE") break;
-      }
-      if (!t || t.requestState !== "DONE" || !t.resultExternalDataIds?.length) {
-        bcast(`  SKIP: ${inst.name} (${t?.requestState || "no result"})`);
-        keyToMesh[key] = null; continue;
-      }
       const resp = await fetch(
-        `${ONSHAPE_BASE}/api/v6/documents/d/${t.documentId || exportDid}/externaldata/${t.resultExternalDataIds[0]}`,
+        `${ONSHAPE_BASE}/api/v6/parts/d/${exportDid}/${wvm}/e/${inst.elementId}` +
+        `/partid/${encodeURIComponent(inst.partId)}/stl?mode=binary&units=meter`,
         { credentials: "include" }
       );
-      if (!resp.ok) throw new Error(`blob ${resp.status}`);
+      if (!resp.ok) throw new Error(`STL ${resp.status}`);
       const data = new Uint8Array(await resp.arrayBuffer());
       stlFiles.push({ name: fname, data });
       keyToMesh[key] = fname;
@@ -3067,7 +3077,7 @@ async function generateUrdf(did, wid, eid) {
   }
 
   // ---------------------------------------------------------------------------
-  // Mass properties — one fetch per unique part geometry; transform to link frame
+  // Mass properties — per-part /parts/.../massproperties with useMassPropertyOverrides
   // ---------------------------------------------------------------------------
   bcast("Fetching mass properties...");
   const massPropsMap = {}; // partKey → { mass, centroid, inertia }
@@ -3095,15 +3105,16 @@ async function generateUrdf(did, wid, eid) {
                       inst.documentVersion       ? `v/${inst.documentVersion}` :
                       wvidCache[exportDid]       ? `w/${wvidCache[exportDid]}` : `w/${wid}`;
     try {
-      const mp   = await onshapeFetch(
-        `/api/v6/partstudios/d/${exportDid}/${wvm}/e/${inst.elementId}/massproperties?partIds=${inst.partId}`
+      const mp = await onshapeFetch(
+        `/api/v6/parts/d/${exportDid}/${wvm}/e/${inst.elementId}` +
+        `/partid/${encodeURIComponent(inst.partId)}/massproperties?useMassPropertyOverrides=true`
       );
-      const body = mp.bodies?.[inst.partId];
-      if (body) {
+      // Per-part endpoint returns properties at top level (not nested under .bodies)
+      if (mp) {
         massPropsMap[pkey] = {
-          mass:     body.mass?.[0]    ?? 1.0,
-          centroid: body.centroid     ?? [0, 0, 0],
-          inertia:  body.inertia      ?? Array(12).fill(0),
+          mass:     mp.mass?.[0]    ?? 1.0,
+          centroid: mp.centroid     ?? [0, 0, 0],
+          inertia:  mp.inertia      ?? Array(12).fill(0),
         };
       }
     } catch (e) {
@@ -3113,7 +3124,9 @@ async function generateUrdf(did, wid, eid) {
 
   // ---------------------------------------------------------------------------
   // Parse mates → joints
-  // matedOccurrence is a full path array; join("/") gives the occByKey lookup key
+  // matedCS is in the part's local frame. Compose T_world_part @ T_part_mate to
+  // get the joint frame in world space, then invert the parent transform to get
+  // it in the parent-link frame for the URDF <origin> tag.
   // ---------------------------------------------------------------------------
   bcast("Building joints from mates...");
   const joints    = [];
@@ -3121,7 +3134,7 @@ async function generateUrdf(did, wid, eid) {
 
   for (const feat of features) {
     const m = feat.message || {};
-    if (m.featureType !== "mate") continue;
+    if (m.featureType !== "mate" || m.suppressed) continue;
     const ents = m.matedEntities || [];
     if (ents.length < 2) continue;
     const pKey = ents[0].matedOccurrence?.join("/");
@@ -3135,45 +3148,50 @@ async function generateUrdf(did, wid, eid) {
     if (!pInst || !cInst) continue;
     if (pInst.type !== "Part" || cInst.type !== "Part") continue;
 
-    const mateType    = m.mateType || "FASTENED";
-    const mcs         = ents[0].matedCS || {};
-    const worldOrigin = mcs.origin || [0, 0, 0];
+    const mateType = m.mateType || "FASTENED";
 
-    let jointType, axis;
+    let jointType;
     switch (mateType) {
-      case "REVOLUTE":
-        jointType = "revolute"; axis = mcs.zAxis || [0,0,1]; break;
-      case "SLIDER":
-        jointType = "prismatic"; axis = mcs.zAxis || [0,0,1]; break;
-      case "CYLINDRICAL":
-        jointType = "continuous"; axis = mcs.zAxis || [0,0,1];
-        bcast(`  WARNING: CYLINDRICAL mate "${m.name || pKey}" mapped to 'continuous' — prismatic DOF dropped`, "log-warn");
+      case "REVOLUTE":    jointType = "revolute";  break;
+      case "SLIDER":      jointType = "prismatic"; break;
+      case "CYLINDRICAL": jointType = "revolute";
+        bcast(`  WARNING: CYLINDRICAL mate "${m.name || pKey}" exported as revolute — prismatic DOF dropped`, "log-warn");
         break;
-      case "BALL":
-        jointType = "revolute"; axis = [0,0,1];
+      case "BALL":        jointType = "revolute";
         bcast(`  WARNING: BALL mate "${m.name || pKey}" approximated as revolute — full 3-DOF not represented`, "log-warn");
         break;
-      case "PLANAR":
-        jointType = "floating"; axis = [0,0,1]; break;
-      default:
-        jointType = "fixed"; axis = [0,0,1]; break;
+      case "PLANAR":      jointType = "floating";  break;
+      default:            jointType = "fixed";     break;
     }
 
-    const parentTr     = pOcc.transform;
-    const localOrigin  = parentTr ? urdfWorldToParent(worldOrigin, parentTr) : worldOrigin;
-    const rawLocalAxis = parentTr ? urdfWorldDirToParent(axis, parentTr) : axis;
-    const axLen        = Math.hypot(...rawLocalAxis);
-    const localAxis    = axLen > 1e-9 ? rawLocalAxis.map(v => v / axLen) : [0, 0, 1];
+    // Build the joint frame from matedCS (part-local) composed with world transform.
+    // T_world_mate = T_world_part @ T_part_mate
+    // T_parent_joint = inv(T_world_parent) @ T_world_mate
+    const mcs          = ents[0].matedCS || {};
+    const T_part_mate  = urdfMatedCSToMat4(mcs);
+    const T_world_mate = pOcc.transform
+      ? urdfMat4Mul(pOcc.transform, T_part_mate)
+      : T_part_mate;
+    const T_parent_joint = pOcc.transform
+      ? urdfMat4Mul(urdfMat4RigidInv(pOcc.transform), T_world_mate)
+      : T_world_mate;
 
-    const mparams   = extractMateParams(m);
-    const hasLimits = mparams["hasLimits"] === true || mparams["hasLimits"] === "true";
+    const localOrigin = [T_parent_joint[3], T_parent_joint[7], T_parent_joint[11]];
+    const localRpy    = urdfRotToRpy(T_parent_joint);
+    // Axis is the joint frame's z-axis (col 2 of the rotation block), already in parent frame.
+    // Because <origin rpy> encodes the full frame rotation, we simply emit [0,0,1] here —
+    // the simulator applies origin first, so the z-axis of the rotated frame is the actual axis.
+    const localAxis   = [0, 0, 1];
+
+    const mparams    = extractMateParams(m);
+    const limitsEnabled = mparams["limitsEnabled"] === true || mparams["limitsEnabled"] === "true";
     let limitLower, limitUpper;
-    if (hasLimits && jointType === "revolute") {
+    if (limitsEnabled && jointType === "revolute") {
       limitLower = parseFloat(mparams["limitAxialZMin"] ?? "-3.14159");
       limitUpper = parseFloat(mparams["limitAxialZMax"] ??  "3.14159");
       if (isNaN(limitLower)) limitLower = -3.14159;
       if (isNaN(limitUpper)) limitUpper =  3.14159;
-    } else if (hasLimits && jointType === "prismatic") {
+    } else if (limitsEnabled && jointType === "prismatic") {
       limitLower = parseFloat(mparams["limitZMin"] ?? "-0.1");
       limitUpper = parseFloat(mparams["limitZMax"] ??  "0.1");
       if (isNaN(limitLower)) limitLower = -0.1;
@@ -3186,7 +3204,7 @@ async function generateUrdf(did, wid, eid) {
     joints.push({
       name: urdfSafeName(m.name || `joint_${joints.length}`),
       type: jointType, pKey, cKey,
-      origin: localOrigin, axis: localAxis,
+      origin: localOrigin, rpy: localRpy, axis: localAxis,
       limitLower, limitUpper,
     });
     childKeys.add(cKey);
@@ -3208,7 +3226,13 @@ async function generateUrdf(did, wid, eid) {
     const mp = massPropsMap[partKeyOf(inst)];
     if (mp && mp.mass > 0) {
       const tr   = occ?.transform;
-      const cl   = tr ? urdfWorldToParent(mp.centroid, tr) : mp.centroid;
+      // Centroid is returned in world frame; express it in link-local frame via R^T*(c-t).
+      const dx = mp.centroid[0] - (tr?.[3]  ?? 0);
+      const dy = mp.centroid[1] - (tr?.[7]  ?? 0);
+      const dz = mp.centroid[2] - (tr?.[11] ?? 0);
+      const cl  = tr
+        ? [tr[0]*dx+tr[4]*dy+tr[8]*dz, tr[1]*dx+tr[5]*dy+tr[9]*dz, tr[2]*dx+tr[6]*dy+tr[10]*dz]
+        : mp.centroid;
       const iner = tr ? transformInertia(mp.inertia, tr)
                       : { ixx:0, ixy:0, ixz:0, iyy:0, iyz:0, izz:0 };
       xml += `    <inertial>\n`;
@@ -3225,16 +3249,17 @@ async function generateUrdf(did, wid, eid) {
     xml += `  </link>\n\n`;
   }
 
-  // Joints from mates (origins already in parent-link frame)
+  // Joints from mates — origin encodes both position and orientation of the joint frame
   for (const j of joints) {
     const pname = occLinkName.get(j.pKey) || j.pKey;
     const cname = occLinkName.get(j.cKey) || j.cKey;
-    const [ox, oy, oz] = j.origin;
-    const [ax, ay, az] = j.axis;
+    const [ox, oy, oz]   = j.origin;
+    const [ro, rp, ry]   = j.rpy;
+    const [ax, ay, az]   = j.axis;
     xml += `  <joint name="${urdfEscXml(j.name)}" type="${j.type}">\n`;
     xml += `    <parent link="${urdfEscXml(pname)}"/>\n`;
     xml += `    <child link="${urdfEscXml(cname)}"/>\n`;
-    xml += `    <origin xyz="${ox.toFixed(6)} ${oy.toFixed(6)} ${oz.toFixed(6)}" rpy="0 0 0"/>\n`;
+    xml += `    <origin xyz="${ox.toFixed(6)} ${oy.toFixed(6)} ${oz.toFixed(6)}" rpy="${ro.toFixed(6)} ${rp.toFixed(6)} ${ry.toFixed(6)}"/>\n`;
     if (j.type !== "fixed" && j.type !== "floating") {
       xml += `    <axis xyz="${ax.toFixed(4)} ${ay.toFixed(4)} ${az.toFixed(4)}"/>\n`;
     }
