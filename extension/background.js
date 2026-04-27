@@ -2912,6 +2912,27 @@ function urdfWorldToParent(worldPt, parentTr) {
   ];
 }
 
+// Rotate a world-frame direction into a link's local frame (no translation).
+// Uses R^T * dir — same index layout as urdfWorldToParent, translation step skipped.
+function urdfWorldDirToParent(dir, parentTr) {
+  return [
+    parentTr[0]*dir[0] + parentTr[4]*dir[1] + parentTr[8]*dir[2],
+    parentTr[1]*dir[0] + parentTr[5]*dir[1] + parentTr[9]*dir[2],
+    parentTr[2]*dir[0] + parentTr[6]*dir[1] + parentTr[10]*dir[2],
+  ];
+}
+
+// Extract mate feature parameters into a flat { parameterId: value } map.
+function extractMateParams(featureMessage) {
+  const params = {};
+  for (const p of featureMessage.parameters || []) {
+    const pid = p.message?.parameterId;
+    const val = p.message?.message?.value ?? p.message?.message?.expression;
+    if (pid && val !== undefined) params[pid] = val;
+  }
+  return params;
+}
+
 async function generateUrdf(did, wid, eid) {
   const bcast = (msg, cls) =>
     chrome.runtime.sendMessage({ type: "urdf-progress", message: msg, cls }).catch(() => {});
@@ -2958,15 +2979,17 @@ async function generateUrdf(did, wid, eid) {
   }
   const uniqueKeys = Object.keys(uniquePartMap);
 
-  // STL export (capped at 40 unique parts)
-  const STL_CAP = 40;
+  // STL export — soft warning above 40 parts, no hard cap
+  const STL_WARN = 40;
   const keyToMesh = {};
   const stlFiles  = [];
 
-  if (uniqueKeys.length <= STL_CAP) {
-    bcast(`Exporting ${uniqueKeys.length} STL mesh(es)...`);
-    const wvidCache = {}; // docId → workspace/version id for external docs
-    for (const key of uniqueKeys) {
+  if (uniqueKeys.length > STL_WARN) {
+    bcast(`NOTE: ${uniqueKeys.length} unique parts — export may take several minutes.`, "log-warn");
+  }
+  bcast(`Exporting ${uniqueKeys.length} STL mesh(es)...`);
+  const wvidCache = {}; // docId → workspace/version id for external docs
+  for (const key of uniqueKeys) {
       const inst      = uniquePartMap[key];
       const safe      = urdfSafeName(inst.name || inst.partId || "part");
       const fname     = `meshes/${safe}.stl`;
@@ -2990,7 +3013,7 @@ async function generateUrdf(did, wid, eid) {
         }
         const job = await onshapePost(
           `/api/v6/partstudios/d/${exportDid}/${wvm}/e/${inst.elementId}/translations`,
-          { formatName: "STL", storeInDocument: false, partIds: inst.partId, units: "millimeter" }
+          { formatName: "STL", storeInDocument: false, partIds: inst.partId, units: "meter" }
         );
         // Onshape translations API returns either 'id' or 'jobId' depending on endpoint version
         const jobId = job.id || job.jobId;
@@ -3019,10 +3042,6 @@ async function generateUrdf(did, wid, eid) {
         keyToMesh[key] = null;
       }
     }
-  } else {
-    bcast(`WARNING: ${uniqueKeys.length} unique parts exceeds the ${STL_CAP}-part cap — all meshes omitted. Affected links will have no geometry in the URDF. Reduce the assembly scope or raise STL_CAP to include meshes.`, "log-warn");
-    for (const k of uniqueKeys) keyToMesh[k] = null;
-  }
 
   // Parse mates → joints
   bcast("Building joints from mates...");
@@ -3078,11 +3097,36 @@ async function generateUrdf(did, wid, eid) {
     const parentTr    = occByInstId[pid]?.transform;
     const localOrigin = parentTr ? urdfWorldToParent(worldOrigin, parentTr) : worldOrigin;
 
+    // Rotate world-frame axis into parent-link frame; normalize to guard float drift
+    const rawLocalAxis = parentTr ? urdfWorldDirToParent(axis, parentTr) : axis;
+    const axLen = Math.hypot(...rawLocalAxis);
+    const localAxis = axLen > 1e-9 ? rawLocalAxis.map(v => v / axLen) : [0, 0, 1];
+
+    // Extract joint limits from Onshape mate parameters; fall back to safe defaults
+    const mparams   = extractMateParams(m);
+    const hasLimits = mparams["hasLimits"] === true || mparams["hasLimits"] === "true";
+    let limitLower, limitUpper;
+    if (hasLimits && jointType === "revolute") {
+      limitLower = parseFloat(mparams["limitAxialZMin"] ?? "-3.14159");
+      limitUpper = parseFloat(mparams["limitAxialZMax"] ??  "3.14159");
+      if (isNaN(limitLower)) limitLower = -3.14159;
+      if (isNaN(limitUpper)) limitUpper =  3.14159;
+    } else if (hasLimits && jointType === "prismatic") {
+      limitLower = parseFloat(mparams["limitZMin"] ?? "-0.1");
+      limitUpper = parseFloat(mparams["limitZMax"] ??  "0.1");
+      if (isNaN(limitLower)) limitLower = -0.1;
+      if (isNaN(limitUpper)) limitUpper =  0.1;
+    } else {
+      limitLower = jointType === "revolute" ? -3.14159 : -0.1;
+      limitUpper = jointType === "revolute" ?  3.14159 :  0.1;
+    }
+
     joints.push({
       name: urdfSafeName(m.name || `joint_${joints.length}`),
       type: jointType,
       parent: pid, child: cid,
-      origin: localOrigin, axis,
+      origin: localOrigin, axis: localAxis,
+      limitLower, limitUpper,
     });
     childIds.add(cid);
   }
@@ -3093,15 +3137,15 @@ async function generateUrdf(did, wid, eid) {
   xml += `  <!-- Generated by Onshape Assistant URDF Export -->\n\n`;
   xml += `  <link name="base_link"/>\n\n`;
 
-  // One link per top-level part instance — meshes tagged with scale="0.001" (STL in mm, URDF in m)
+  // One link per top-level part instance — STL exported in meters, matches URDF coordinate frame
   for (const inst of partInsts) {
     const lname = instLinkName.get(inst.id);
     const mesh  = keyToMesh[partKeyOf(inst)];
     xml += `  <link name="${urdfEscXml(lname)}">\n`;
     if (mesh) {
       const pkg = `package://${urdfEscXml(robotName)}/${urdfEscXml(mesh)}`;
-      xml += `    <visual><geometry><mesh filename="${pkg}" scale="0.001 0.001 0.001"/></geometry></visual>\n`;
-      xml += `    <collision><geometry><mesh filename="${pkg}" scale="0.001 0.001 0.001"/></geometry></collision>\n`;
+      xml += `    <visual><geometry><mesh filename="${pkg}"/></geometry></visual>\n`;
+      xml += `    <collision><geometry><mesh filename="${pkg}"/></geometry></collision>\n`;
     }
     xml += `  </link>\n\n`;
   }
@@ -3120,9 +3164,9 @@ async function generateUrdf(did, wid, eid) {
       xml += `    <axis xyz="${ax.toFixed(4)} ${ay.toFixed(4)} ${az.toFixed(4)}"/>\n`;
     }
     if (j.type === "revolute") {
-      xml += `    <limit lower="-3.14159" upper="3.14159" effort="100" velocity="1"/>\n`;
+      xml += `    <limit lower="${j.limitLower.toFixed(6)}" upper="${j.limitUpper.toFixed(6)}" effort="100" velocity="1"/>\n`;
     } else if (j.type === "prismatic") {
-      xml += `    <limit lower="-0.1" upper="0.1" effort="100" velocity="0.1"/>\n`;
+      xml += `    <limit lower="${j.limitLower.toFixed(6)}" upper="${j.limitUpper.toFixed(6)}" effort="100" velocity="0.1"/>\n`;
     }
     // continuous and floating have no <limit>
     xml += `  </joint>\n\n`;
