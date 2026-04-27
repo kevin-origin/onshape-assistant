@@ -307,6 +307,10 @@
       Export
       <div class="menu-desc">Bulk export flat pattern DXFs and drawing PDFs as a ZIP</div>
     </button>
+    <button class="btn-menu" id="btnGoUrdf">
+      URDF Export
+      <div class="menu-desc">Export assembly as URDF robot description + STL meshes</div>
+    </button>
   </div>
 
   <!-- ============ Drawing Creator ============ -->
@@ -487,6 +491,20 @@
       </div>
     </div>
     <div id="exportLog" style="margin-top:8px;max-height:180px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
+  </div>
+
+  <!-- ============ URDF Export ============ -->
+  <div id="sectionUrdf" class="section">
+    <h3><button class="btn-back" id="btnBackFromUrdf">Back</button> URDF Export</h3>
+
+    <label>Assembly URL</label>
+    <input type="text" id="urdfAsmUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
+
+    <div class="btn-row" style="margin-top:10px;">
+      <button class="btn-draw" id="btnGenerateUrdf">Generate URDF</button>
+    </div>
+
+    <div id="urdfLog" style="margin-top:8px;max-height:220px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
   </div>
 
   <script src="popup.js"></script>

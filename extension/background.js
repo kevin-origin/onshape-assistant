@@ -2873,6 +2873,291 @@ function toBase64(bytes) {
 }
 
 // ---------------------------------------------------------------------------
+// URDF Export
+// ---------------------------------------------------------------------------
+
+function urdfSafeName(s) {
+  return String(s || "link").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_\-]/g, "");
+}
+function urdfEscXml(s) {
+  return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+
+// Row-major 4×4 occurrence transform → [roll, pitch, yaw] (radians)
+// Onshape layout: [r00,r01,r02,tx, r10,r11,r12,ty, r20,r21,r22,tz, 0,0,0,1]
+// R[i,j] = t[i*4+j]
+function urdfRotToRpy(t) {
+  const R00=t[0], R10=t[4], R20=t[8];
+  const R01=t[1], R11=t[5], R21=t[9];
+  const R22=t[10];
+  const pitch = Math.atan2(-R20, Math.sqrt(R00*R00 + R10*R10));
+  const cp = Math.cos(pitch);
+  const yaw  = Math.abs(cp) < 1e-6 ? Math.atan2(-R01, R11) : Math.atan2(R10 / cp, R00 / cp);
+  const roll = Math.abs(cp) < 1e-6 ? 0 : Math.atan2(R21 / cp, R22 / cp);
+  return [roll, pitch, yaw];
+}
+
+// Transform a world-frame point into a link's local frame using its occurrence transform.
+// parentTr is the row-major 4×4 transform: tx=t[3], ty=t[7], tz=t[11].
+// Uses R^T * (p_world - t) since R is orthonormal.
+// R^T[i,j] = R[j,i] = t[j*4+i], so R^T row k = [t[k], t[4+k], t[8+k]].
+function urdfWorldToParent(worldPt, parentTr) {
+  const dx = worldPt[0] - parentTr[3];
+  const dy = worldPt[1] - parentTr[7];
+  const dz = worldPt[2] - parentTr[11];
+  return [
+    parentTr[0]*dx + parentTr[4]*dy + parentTr[8]*dz,
+    parentTr[1]*dx + parentTr[5]*dy + parentTr[9]*dz,
+    parentTr[2]*dx + parentTr[6]*dy + parentTr[10]*dz,
+  ];
+}
+
+async function generateUrdf(did, wid, eid) {
+  const bcast = (msg, cls) =>
+    chrome.runtime.sendMessage({ type: "urdf-progress", message: msg, cls }).catch(() => {});
+
+  bcast("Fetching assembly definition...");
+  const asmDef = await onshapeFetch(`/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}`);
+  const robotName = urdfSafeName(asmDef.name || "robot");
+
+  bcast("Fetching assembly features...");
+  const featResp = await onshapeFetch(`/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}/features`);
+
+  const topInstances = asmDef.rootAssembly?.instances || [];
+  const occurrences  = asmDef.rootAssembly?.occurrences || [];
+  const features     = featResp.features || [];
+  const partInsts    = topInstances.filter(i => i.type === "Part");
+
+  bcast(`${partInsts.length} top-level part instance(s), ${features.length} feature(s)`);
+
+  const instById = Object.fromEntries(topInstances.map(i => [i.id, i]));
+
+  // Top-level occurrence map: instanceId → occurrence (path.length === 1)
+  const occByInstId = {};
+  for (const occ of occurrences) {
+    if (occ.path.length === 1) occByInstId[occ.path[0]] = occ;
+  }
+
+  // Assign unique link names upfront — deduplicate collisions with _2, _3, ...
+  const usedLinkNames = new Set();
+  const instLinkName  = new Map(); // instanceId → unique link name
+  for (const inst of partInsts) {
+    let base = urdfSafeName(inst.name || inst.id) || "link";
+    let name = base, suffix = 2;
+    while (usedLinkNames.has(name)) name = `${base}_${suffix++}`;
+    usedLinkNames.add(name);
+    instLinkName.set(inst.id, name);
+  }
+
+  // Deduplicate parts by partKey for STL export
+  const partKeyOf = inst => `${inst.partId}|${inst.elementId}|${inst.documentId || did}`;
+  const uniquePartMap = {};
+  for (const inst of partInsts) {
+    const k = partKeyOf(inst);
+    if (!uniquePartMap[k]) uniquePartMap[k] = inst;
+  }
+  const uniqueKeys = Object.keys(uniquePartMap);
+
+  // STL export (capped at 40 unique parts)
+  const STL_CAP = 40;
+  const keyToMesh = {};
+  const stlFiles  = [];
+
+  if (uniqueKeys.length <= STL_CAP) {
+    bcast(`Exporting ${uniqueKeys.length} STL mesh(es)...`);
+    const wvidCache = {}; // docId → workspace/version id for external docs
+    for (const key of uniqueKeys) {
+      const inst      = uniquePartMap[key];
+      const safe      = urdfSafeName(inst.name || inst.partId || "part");
+      const fname     = `meshes/${safe}.stl`;
+      bcast(`  ${inst.name || inst.partId}...`);
+      try {
+        const exportDid = inst.documentId || did;
+        let wvm;
+        if (exportDid === did) {
+          wvm = `w/${wid}`;
+        } else if (inst.documentVersion) {
+          wvm = `v/${inst.documentVersion}`;
+        } else {
+          // External doc with no pinned version — resolve its default workspace (cached)
+          if (!wvidCache[exportDid]) {
+            const docInfo = await onshapeFetch(`/api/v10/documents/${exportDid}`);
+            const exWid = docInfo?.defaultWorkspace?.id;
+            if (!exWid) throw new Error(`no workspace found for external doc ${exportDid}`);
+            wvidCache[exportDid] = exWid;
+          }
+          wvm = `w/${wvidCache[exportDid]}`;
+        }
+        const job = await onshapePost(
+          `/api/v6/partstudios/d/${exportDid}/${wvm}/e/${inst.elementId}/translations`,
+          { formatName: "STL", storeInDocument: false, partIds: inst.partId, units: "millimeter" }
+        );
+        // Onshape translations API returns either 'id' or 'jobId' depending on endpoint version
+        const jobId = job.id || job.jobId;
+        if (!jobId) throw new Error("no job ID in translation response");
+        let t;
+        for (let i = 0; i < 30; i++) {
+          await new Promise(r => setTimeout(r, 2000));
+          t = await onshapeFetch(`/api/v6/translations/${jobId}`);
+          if (t.requestState !== "ACTIVE") break;
+        }
+        if (!t || t.requestState !== "DONE" || !t.resultExternalDataIds?.length) {
+          bcast(`  SKIP: ${inst.name} (${t?.requestState || "no result"})`);
+          keyToMesh[key] = null; continue;
+        }
+        const resp = await fetch(
+          `${ONSHAPE_BASE}/api/v6/documents/d/${t.documentId || exportDid}/externaldata/${t.resultExternalDataIds[0]}`,
+          { credentials: "include" }
+        );
+        if (!resp.ok) throw new Error(`blob ${resp.status}`);
+        const data = new Uint8Array(await resp.arrayBuffer());
+        stlFiles.push({ name: fname, data });
+        keyToMesh[key] = fname;
+        bcast(`  OK: ${safe}.stl`, "log-ok");
+      } catch (e) {
+        bcast(`  ERROR: ${inst.name}: ${e.message}`, "log-err");
+        keyToMesh[key] = null;
+      }
+    }
+  } else {
+    bcast(`WARNING: ${uniqueKeys.length} unique parts exceeds the ${STL_CAP}-part cap — all meshes omitted. Affected links will have no geometry in the URDF. Reduce the assembly scope or raise STL_CAP to include meshes.`, "log-warn");
+    for (const k of uniqueKeys) keyToMesh[k] = null;
+  }
+
+  // Parse mates → joints
+  bcast("Building joints from mates...");
+  const joints   = [];
+  const childIds = new Set();
+
+  for (const feat of features) {
+    const m = feat.message || {};
+    if (m.featureType !== "mate") continue;
+    const ents = m.matedEntities || [];
+    if (ents.length < 2) continue;
+    const pid = ents[0].matedOccurrence?.[0];
+    const cid = ents[1].matedOccurrence?.[0];
+    if (!pid || !cid || pid === cid) continue;
+    if (!instById[pid] || !instById[cid]) continue;
+    if (instById[pid].type !== "Part" || instById[cid].type !== "Part") continue;
+
+    const mateType = m.mateType || "FASTENED";
+    const mcs      = ents[0].matedCS || {};
+    const worldOrigin = mcs.origin || [0, 0, 0];
+
+    let jointType, axis;
+    switch (mateType) {
+      case "REVOLUTE":
+        jointType = "revolute";
+        axis = mcs.zAxis || [0, 0, 1];
+        break;
+      case "SLIDER":
+        jointType = "prismatic";
+        axis = mcs.zAxis || [0, 0, 1];
+        break;
+      case "CYLINDRICAL":
+        jointType = "continuous";
+        axis = mcs.zAxis || [0, 0, 1];
+        bcast(`  WARNING: CYLINDRICAL mate "${m.name || pid}" mapped to 'continuous' — prismatic DOF dropped`, "log-warn");
+        break;
+      case "BALL":
+        jointType = "revolute";
+        axis = [0, 0, 1];
+        bcast(`  WARNING: BALL mate "${m.name || pid}" approximated as revolute (axis 0 0 1) — full ball-joint DOFs not represented`, "log-warn");
+        break;
+      case "PLANAR":
+        jointType = "floating";
+        axis = [0, 0, 1];
+        break;
+      default:
+        jointType = "fixed";
+        axis = [0, 0, 1];
+        break;
+    }
+
+    // Joint origin in parent-link frame: inv(parent_transform) * world_origin
+    const parentTr    = occByInstId[pid]?.transform;
+    const localOrigin = parentTr ? urdfWorldToParent(worldOrigin, parentTr) : worldOrigin;
+
+    joints.push({
+      name: urdfSafeName(m.name || `joint_${joints.length}`),
+      type: jointType,
+      parent: pid, child: cid,
+      origin: localOrigin, axis,
+    });
+    childIds.add(cid);
+  }
+
+  // Build URDF XML
+  bcast("Writing URDF...");
+  let xml = `<?xml version="1.0"?>\n<robot name="${urdfEscXml(robotName)}">\n\n`;
+  xml += `  <!-- Generated by Onshape Assistant URDF Export -->\n\n`;
+  xml += `  <link name="base_link"/>\n\n`;
+
+  // One link per top-level part instance — meshes tagged with scale="0.001" (STL in mm, URDF in m)
+  for (const inst of partInsts) {
+    const lname = instLinkName.get(inst.id);
+    const mesh  = keyToMesh[partKeyOf(inst)];
+    xml += `  <link name="${urdfEscXml(lname)}">\n`;
+    if (mesh) {
+      const pkg = `package://${urdfEscXml(robotName)}/${urdfEscXml(mesh)}`;
+      xml += `    <visual><geometry><mesh filename="${pkg}" scale="0.001 0.001 0.001"/></geometry></visual>\n`;
+      xml += `    <collision><geometry><mesh filename="${pkg}" scale="0.001 0.001 0.001"/></geometry></collision>\n`;
+    }
+    xml += `  </link>\n\n`;
+  }
+
+  // Joints from mates (origin already in parent-link frame)
+  for (const j of joints) {
+    const pname = instLinkName.get(j.parent) || urdfSafeName(instById[j.parent]?.name || j.parent);
+    const cname = instLinkName.get(j.child)  || urdfSafeName(instById[j.child]?.name  || j.child);
+    const [ox, oy, oz] = j.origin;
+    const [ax, ay, az] = j.axis;
+    xml += `  <joint name="${urdfEscXml(j.name)}" type="${j.type}">\n`;
+    xml += `    <parent link="${urdfEscXml(pname)}"/>\n`;
+    xml += `    <child link="${urdfEscXml(cname)}"/>\n`;
+    xml += `    <origin xyz="${ox.toFixed(6)} ${oy.toFixed(6)} ${oz.toFixed(6)}" rpy="0 0 0"/>\n`;
+    if (j.type !== "fixed" && j.type !== "floating") {
+      xml += `    <axis xyz="${ax.toFixed(4)} ${ay.toFixed(4)} ${az.toFixed(4)}"/>\n`;
+    }
+    if (j.type === "revolute") {
+      xml += `    <limit lower="-3.14159" upper="3.14159" effort="100" velocity="1"/>\n`;
+    } else if (j.type === "prismatic") {
+      xml += `    <limit lower="-0.1" upper="0.1" effort="100" velocity="0.1"/>\n`;
+    }
+    // continuous and floating have no <limit>
+    xml += `  </joint>\n\n`;
+  }
+
+  // Parts not a child of any mate → fixed to base_link using world-frame occurrence transform
+  for (const inst of partInsts) {
+    if (childIds.has(inst.id)) continue;
+    const lname = instLinkName.get(inst.id);
+    const occ   = occByInstId[inst.id];
+    let xyz = "0 0 0", rpy = "0 0 0";
+    if (occ?.transform) {
+      const tr = occ.transform;
+      xyz = `${tr[3].toFixed(6)} ${tr[7].toFixed(6)} ${tr[11].toFixed(6)}`;
+      rpy = urdfRotToRpy(tr).map(n => n.toFixed(6)).join(" ");
+    }
+    xml += `  <joint name="base_to_${urdfEscXml(lname)}" type="fixed">\n`;
+    xml += `    <parent link="base_link"/>\n`;
+    xml += `    <child link="${urdfEscXml(lname)}"/>\n`;
+    xml += `    <origin xyz="${xyz}" rpy="${rpy}"/>\n`;
+    xml += `  </joint>\n\n`;
+  }
+
+  xml += `</robot>\n`;
+
+  bcast("Packaging ZIP...");
+  const enc = new TextEncoder();
+  const zip = makeZip([{ name: "robot.urdf", data: enc.encode(xml) }, ...stlFiles]);
+  const zipBase64 = toBase64(zip);
+  const zipName   = `${robotName}_urdf.zip`;
+  bcast(`Done — ${stlFiles.length} STL(s) + robot.urdf`, "log-ok");
+  chrome.runtime.sendMessage({ type: "urdf-done", zipBase64, zipName }).catch(() => {});
+}
+
+// ---------------------------------------------------------------------------
 // SW keepalive — accept persistent ports from content.js to prevent idle termination
 // ---------------------------------------------------------------------------
 chrome.runtime.onConnect.addListener(port => {
@@ -3569,9 +3854,27 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
 
         if (!files.length) throw new Error("No files exported");
-        chrome.runtime.sendMessage({ type: "export-3d-done", files: files.map(f => ({ name: f.name, base64: toBase64(f.data) })) }).catch(() => {});
+        for (const file of files) {
+          chrome.downloads.download({ url: "data:application/octet-stream;base64," + toBase64(file.data), filename: file.name, saveAs: false });
+        }
+        chrome.runtime.sendMessage({ type: "export-3d-done", count: files.length }).catch(() => {});
       } catch (e) {
         chrome.runtime.sendMessage({ type: "export-3d-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
+  } else if (msg.type === "export-urdf") {
+    const { url } = msg;
+    if (!url) { sendResponse({ ok: true }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const parsed = parsePartStudioUrl(url);
+        if (!parsed) throw new Error("Invalid assembly URL — must contain /documents/{did}/w/{wid}/e/{eid}");
+        await generateUrdf(parsed.docId, parsed.wid, parsed.eid);
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "urdf-done", error: e.message }).catch(() => {});
       }
     })();
     return;

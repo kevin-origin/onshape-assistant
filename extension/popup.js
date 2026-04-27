@@ -28,6 +28,18 @@ document.getElementById("btnGoMergePerms").addEventListener("click", () => {
 document.getElementById("btnBackFromMergePerms").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnGoExport").addEventListener("click", () => showSection("sectionExport"));
 document.getElementById("btnBackFromExport").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnGoUrdf").addEventListener("click", () => {
+  showSection("sectionUrdf");
+  // Auto-fill URL from active tab if it's an Onshape assembly
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    if (url.includes("cad.onshape.com/documents/") && url.includes("/e/")) {
+      document.getElementById("urdfAsmUrl").value = url.split("?")[0];
+    }
+  });
+});
+document.getElementById("btnBackFromUrdf").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnGoExport3D").addEventListener("click", () => showSection("sectionExport3D"));
 document.getElementById("btnBackFromExport3D").addEventListener("click", () => showSection("sectionExport"));
 document.getElementById("btnGoExportBulk").addEventListener("click", () => {
@@ -118,8 +130,22 @@ function loadExportElements() {
       $status.textContent = "Not an Onshape workspace";
       return;
     }
-    _exportData = { did: docMatch[1], wid: widMatch[1] };
-    chrome.runtime.sendMessage({ type: "fetch-export-elements", did: docMatch[1], wid: widMatch[1] });
+    const did = docMatch[1];
+    const wid = widMatch[1];
+    _exportData = { did, wid };
+
+    chrome.runtime.sendMessage({ type: "check-releases", docId: did }, (releaseResp) => {
+      const noReleases = !releaseResp || !releaseResp.hasReleases;
+      const staleRevision = !noReleases && !!releaseResp?.staleRevision;
+      if (noReleases || staleRevision) {
+        $status.style.color = "#f59e0b";
+        $status.textContent = noReleases
+          ? "Please create a release before exporting."
+          : "Changes have been made since the last release. Please create a new release before exporting.";
+        return;
+      }
+      chrome.runtime.sendMessage({ type: "fetch-export-elements", did, wid });
+    });
   });
 }
 
@@ -508,6 +534,38 @@ document.getElementById("btnRunExport3d").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
+// URDF Export
+// ---------------------------------------------------------------------------
+
+function appendUrdfLog(text, cls) {
+  const $log = document.getElementById("urdfLog");
+  $log.style.display = "block";
+  const line = document.createElement("div");
+  line.className = "log-line" + (cls ? " " + cls : "");
+  line.textContent = text;
+  $log.appendChild(line);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+document.getElementById("btnGenerateUrdf").addEventListener("click", () => {
+  const url = document.getElementById("urdfAsmUrl").value.trim();
+  if (!url || !url.includes("cad.onshape.com/documents/")) {
+    appendUrdfLog("Enter a valid Assembly URL", "log-err");
+    return;
+  }
+  const btn = document.getElementById("btnGenerateUrdf");
+  btn.disabled = true;
+  document.getElementById("urdfLog").innerHTML = "";
+  appendUrdfLog("Starting URDF export...");
+  chrome.runtime.sendMessage({ type: "export-urdf", url }, (response) => {
+    if (!response) {
+      appendUrdfLog("No response from background — try reloading extension", "log-err");
+      btn.disabled = false;
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Drawing Creator elements
 const $partStudioUrl   = document.getElementById("partStudioUrl");
 const $btnCreateDraw   = document.getElementById("btnCreateDrawings");
@@ -849,19 +907,26 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (msg.error) {
       append3dLog("Error: " + msg.error, "log-err");
     } else {
-      (msg.files || []).forEach(f => {
-        const a = document.createElement("a");
-        a.href = "data:application/octet-stream;base64," + f.base64;
-        a.download = f.name;
-        a.click();
-      });
-      append3dLog(`Done — ${(msg.files || []).length} file(s) downloaded`, "log-ok");
+      append3dLog(`Done — ${msg.count || 0} file(s) downloading`, "log-ok");
     }
   } else if (msg.type === "notes-progress") {
     appendNotesLog(msg.message, msg.cls);
   } else if (msg.type === "notes-done") {
     document.getElementById("btnApplyNotes").disabled = false;
     appendNotesLog("Done", "log-ok");
+  } else if (msg.type === "urdf-progress") {
+    appendUrdfLog(msg.message, msg.cls);
+  } else if (msg.type === "urdf-done") {
+    document.getElementById("btnGenerateUrdf").disabled = false;
+    if (msg.error) {
+      appendUrdfLog("Error: " + msg.error, "log-err");
+    } else {
+      const a = document.createElement("a");
+      a.href = "data:application/zip;base64," + msg.zipBase64;
+      a.download = msg.zipName || "robot_urdf.zip";
+      a.click();
+      appendUrdfLog("Downloaded: " + (msg.zipName || "robot_urdf.zip"), "log-ok");
+    }
   } else if (msg.type === "bulk-export-done") {
     const btn = document.getElementById("btnBulkExport");
     const $status = document.getElementById("exportStatus");

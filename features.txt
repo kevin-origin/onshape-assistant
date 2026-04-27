@@ -50,6 +50,12 @@ Intercepts drawing export dialogs and disables the Export button if the document
 **Import Restriction**
 Disables the "Import…" option in the insert-tab dropdown unless the document lives inside the OTS Parts top-level company folder. The folder check walks the parentId chain and caches the result per document for one hour.
 
+**Parts Materials Guard**
+Blocks release creation if any parts in the active Part Studio have a default "Part N" name or are missing a material assignment. The release dialog is disabled with a warning listing every offending part — release proceeds only after all parts are properly named and have materials set.
+
+**Auto Doc Setup**
+Automatically creates an initial version (V1) and a development branch (B1) for any new document, triggered the first time the doc accumulates 25 or more features or 5 or more assembly instances. Runs silently in the background and suppresses the manual folder-creation overlay for docs that were just set up.
+
 **Interference Detection**
 Runs an interference check across all assemblies in a document and reports which part pairs are colliding.
 

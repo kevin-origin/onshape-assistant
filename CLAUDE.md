@@ -31,8 +31,10 @@ updates.xml                      — Auto-update manifest (Chrome polls this for
 Run the monitor: bash ~/claude-monitor.sh
 ```
 After the user confirms the monitor is open, immediately:
-1. Start the planner inbox monitor: `Monitor(command="tail -f /tmp/planner_inbox.txt", persistent=true)` — this delivers agent `tell.sh` notifications directly to the chat
-2. Run the full agent setup sequence in "Multi-agent workflow" below — no further prompting needed
+1. **Ensure inbox file exists** before starting the monitor: `touch /tmp/planner_inbox.txt` — the Monitor tool will fail with exit 1 if the file doesn't exist yet.
+2. Start the planner inbox monitor: `Monitor(command="tail -f /tmp/planner_inbox.txt", persistent=true)` — this delivers agent `tell.sh` notifications directly to the chat
+3. **Verify Claude is running in all panes** before sending `/status` — capture each pane and check for the Claude TUI prompt. If any pane shows a bare bash shell (`$` prompt), Claude has crashed. Rerun the monitor: `tmux kill-session -t claude-monitor 2>/dev/null; bash ~/claude-monitor.sh &`. After rerunning, wait ~5 seconds for Claude to load before proceeding.
+4. Run the full agent setup sequence in "Multi-agent workflow" below — no further prompting needed
 
 ---
 
@@ -272,6 +274,8 @@ Takes effect on all installed instances within 60 minutes (hourly alarm) or on n
 Local Claude accounts in the claude-monitor tmux session:
 - claude_vishal, claude_kaustubh, claude_rohith, claude_hriday, claude_harini (and others)
 
+**Before sending any agent their first task**, verify their working directory is `/mnt/c/Users/kevin/Desktop/OnshapeTools`. If it is not, send `cd /mnt/c/Users/kevin/Desktop/OnshapeTools` to their pane before the briefing. All file edits, git commands, and tasks must be run from this path.
+
 Identify active agents by reading each pane's `/status` output — do not assume which panes are occupied.
 
 ### Role assignment sequence
@@ -346,6 +350,7 @@ CronCreate(
   tmux send-keys -t PANE Enter
   ```
   Combining them causes Enter to fire before the TUI registers the text, leaving messages unsubmitted.
+- **Workflow improvements**: after debugging and fixing any workflow error (monitor setup, agent briefing, usage checks, etc.), ask Kevin: "Should I update this workflow in CLAUDE.md?" — do not silently apply the fix without offering to document it.
 
 ---
 
