@@ -31,6 +31,11 @@
     return m ? m[1] : null;
   }
 
+  function getEidFromUrl() {
+    const m = window.location.pathname.match(/\/e\/([a-f0-9]+)/);
+    return m ? m[1] : null;
+  }
+
   function getDocName() {
     // Onshape sets document name in the page title: "DocName | Onshape"
     const title = document.title || "";
@@ -194,6 +199,16 @@
     setToolbarHidden(count >= 250);
   }
 
+  const _setupTriggeredDocs = new Set();
+
+  async function maybeSetupDoc() {
+    const docId = getDocIdFromUrl();
+    const wid   = getWidFromUrl();
+    if (!docId || !wid) return;
+    const resp = await chrome.runtime.sendMessage({ type: 'check-and-setup-doc', docId, wid }).catch(() => null);
+    if (resp?.triggered) _setupTriggeredDocs.add(docId);
+  }
+
   // ---------------------------------------------------------------------------
   // Auto-scan logic — runs on every Onshape doc open
   // ---------------------------------------------------------------------------
@@ -343,6 +358,9 @@
     console.log(`[FolderSetup] docId=${docId}, folders=${folders.length}`);
 
     if (folders.length > 0) { console.log("[FolderSetup] Skipped: has folders"); return false; }
+
+    // Don't show overlay if auto-setup was triggered this session
+    if (_setupTriggeredDocs.has(docId)) { console.log("[FolderSetup] Skipped: auto-setup triggered"); return false; }
 
     console.log("[FolderSetup] Showing overlay!");
     showFolderOverlay(docId);
@@ -784,24 +802,26 @@
   }
 
   // Check kill switch before doing anything — if background says disabled, bail out entirely
-  chrome.runtime.sendMessage({ type: "check-kill-switch" }, (resp) => {
+  chrome.runtime.sendMessage({ type: "check-kill-switch" }, async (resp) => {
     if (resp?.disabled) {
       _killSwitchActive = true;
       console.log("[Scanner] Kill switch active — content script disabled");
       return;
     }
-    // Initial page load (only if not killed)
+    // Wait for setup check before scanning — prevents folder overlay from showing on new docs
+    await maybeSetupDoc();
     runOnDocLoad();
     maybeHideToolbar();
   });
 
   // SPA navigation: background.js sends "spa-navigated" when URL changes
-  chrome.runtime.onMessage.addListener((msg) => {
+  chrome.runtime.onMessage.addListener(async (msg) => {
     if (_killSwitchActive) return;
     if (msg.type === "spa-navigated") {
       console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
       _notifiedDocIds.clear(); // reset notification tracking for new doc
       removeFolderOverlay();
+      await maybeSetupDoc();
       runOnDocLoad();
       maybeHideToolbar();
     }
@@ -1490,12 +1510,7 @@
           row.appendChild(name);
           row.appendChild(arrow);
 
-          // Double-click or arrow click to navigate into
-          row.addEventListener("dblclick", () => navigateInto(folder));
-          arrow.addEventListener("click", (e) => {
-            e.stopPropagation();
-            navigateInto(folder);
-          });
+          row.addEventListener("click", () => navigateInto(folder));
 
           listContainer.appendChild(row);
         }
@@ -1781,6 +1796,80 @@
   })();
 
   // ---------------------------------------------------------------------------
+  // Parts materials guard — blocks release if any parts are missing materials
+  // or still have a default "Part N" name.
+  // ---------------------------------------------------------------------------
+  // Runs alongside initReleaseBranchGuard on the same div.modal.release-dialog.show.
+  // Uses dataset.oxtPartsGuarded to avoid double-running.
+  // Fails open: if the API errors or returns no parts (e.g. Assembly tab), no block.
+
+  (function initPartsMaterialsGuard() {
+    let _lastModal = null;
+
+    const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
+      const modal = document.querySelector("div.modal.release-dialog.show");
+      if (modal && modal !== _lastModal) {
+        _lastModal = modal;
+        if (!modal.dataset.oxtPartsGuarded) {
+          modal.dataset.oxtPartsGuarded = "1";
+          const docId = getDocIdFromUrl();
+          const wid   = getWidFromUrl();
+          const eid   = getEidFromUrl();
+          if (!docId || !wid || !eid) return;
+
+          chrome.runtime.sendMessage({ type: "check-parts-materials", docId, wid, eid }, (resp) => {
+            if (!resp || !resp.issues || resp.issues.length === 0) {
+              console.log("[PartsGuard] All parts OK — release allowed");
+              return;
+            }
+
+            console.log("[PartsGuard] Parts issues found — blocking release:", resp.issues);
+
+            const footer = modal.querySelector(".modal-footer");
+            if (!footer) return;
+
+            const banner = document.createElement("div");
+            banner.id = "oxt-parts-banner";
+            banner.style.cssText = `
+              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
+              padding: 10px 14px; margin: 8px 16px; font-size: 13px;
+              color: #92400e; font-weight: 500;
+              font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+            `;
+            const list = resp.issues.map(i => `• ${i}`).join("\n");
+            banner.textContent = `Fix the following before releasing:\n${list}`;
+            banner.style.whiteSpace = "pre-line";
+            footer.parentNode.insertBefore(banner, footer);
+
+            for (const btn of modal.querySelectorAll("button")) {
+              const cls = btn.className;
+              if (
+                cls.includes("save-draft-btn") ||
+                cls.includes("btn-primary") ||
+                cls.includes("btn-success")
+              ) {
+                btn.disabled = true;
+                btn.style.opacity = "0.4";
+                btn.style.cursor = "not-allowed";
+                btn.title = "Assign materials and rename all parts before releasing";
+                console.log(`[PartsGuard] Disabled: "${btn.textContent.trim()}"`);
+              }
+            }
+          });
+        }
+      } else if (!modal && _lastModal) {
+        delete _lastModal.dataset.oxtPartsGuarded;
+        _lastModal = null;
+        console.log("[PartsGuard] Release dialog closed");
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    console.log("[PartsGuard] Observer started");
+  })();
+
+  // ---------------------------------------------------------------------------
   // Workspace protection guard — only doc creator can toggle protection
   // ---------------------------------------------------------------------------
   // Selector confirmed via live DOM: div.modal.workspace-permissions-dialog.show
@@ -1964,5 +2053,15 @@
   initVersionDescriptionEnforcer();
   initProtectionGuard();
   initInsertTabGuard();
+
+  // ---------------------------------------------------------------------------
+  // SW keepalive — persistent port keeps the service worker from going idle
+  // while an Onshape tab is open. Reconnects automatically if the SW restarts.
+  // ---------------------------------------------------------------------------
+  function connectKeepalive() {
+    const port = chrome.runtime.connect({ name: "keepalive" });
+    port.onDisconnect.addListener(connectKeepalive);
+  }
+  connectKeepalive();
 
 })();

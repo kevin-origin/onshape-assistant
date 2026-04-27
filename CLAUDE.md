@@ -4,18 +4,23 @@
 
 ```
 extension/
-  background.js   ~3930 lines — service worker, all Onshape API calls, CDP automation
-  content.js      ~1750 lines — injected into cad.onshape.com, DOM scanning, overlays
-  popup.js         ~700 lines — popup UI logic, section navigation, display helpers
-  popup.html                  — popup markup; sections: Drawing, Scanner, Violations, Interference, Merge
-  manifest.json               — MV3, permissions, host_permissions, service_worker, content_scripts
-publish.py                    — automates version bump, CRX pack, GitHub release
-generate_admin_guide.py       — PDF guide generator (FPDF)
+  background.js     ~3930 lines — service worker, all Onshape API calls, CDP automation
+  content.js        ~1750 lines — injected into cad.onshape.com, ISOLATED world: DOM scanning, overlays, guards
+  content-main.js     ~100 lines — injected into cad.onshape.com, MAIN world: fetch intercept + assembly button guard
+  popup.js            ~700 lines — popup UI logic, section navigation, display helpers
+  popup.html                     — popup markup; sections: Drawing, Scanner, Violations, Interference, Merge
+  manifest.json                  — MV3, permissions, host_permissions, service_worker, content_scripts
+publish.py                       — automates version bump, CRX pack, GitHub release
+generate_admin_guide.py          — PDF guide generator (FPDF)
 onshape-assistant-sync/
-  src/index.js                — Cloudflare Worker: KV-backed merge permissions API
-  wrangler.toml               — Worker config
-updates.xml                   — Auto-update manifest (Chrome polls this for new .crx)
+  src/index.js                   — Cloudflare Worker: KV-backed merge permissions API
+  wrangler.toml                  — Worker config
+updates.xml                      — Auto-update manifest (Chrome polls this for new .crx)
 ```
+
+### Why two content scripts?
+
+`content.js` runs in the ISOLATED world (extension sandbox) — it can use `chrome.*` APIs but cannot touch `window.fetch` or Angular-managed properties on the page's `window`. `content-main.js` runs in the MAIN world (same JS context as the page) — it can intercept `window.fetch` and read Angular DOM state, but cannot use `chrome.*` APIs. The two scripts communicate via `document.documentElement.dataset` attributes (`data-oxt-*`), which are visible across both worlds.
 
 ---
 
@@ -96,6 +101,7 @@ Find any section with: `// Section name`
 | `create-doc-in-folder` | Create new doc inside a folder |
 | `get-doc-creator` | Fetch doc creator info |
 | `check-main-workspace` | Returns `{ isMain }` — true if `wid` matches doc's `defaultWorkspace.id` |
+| `check-parts-materials` | Returns `{ issues }` — parts missing materials or with default "Part N" names |
 
 ---
 
@@ -133,6 +139,24 @@ Find any section with: `// Section name`
 | `generate-folders` | Trigger folder creation from overlay confirm |
 | `cdp-overlay-show` / `cdp-overlay-hide` | Show/hide CDP overlay |
 | `spa-navigated` | Re-run `runOnDocLoad()` on URL change |
+
+---
+
+## content-main.js — MAIN world script
+
+Two self-contained guards, both IIFE-scoped. No `chrome.*` APIs available here.
+
+| Function | What it does |
+|---|---|
+| `initAssemblyCreationGuard()` | Waits for `ul#document-tabs-create-ul` (confirmed selector). On each style/class mutation (dropdown open/close) and on every `data-oxt-assembly-count` change, calls `applyAssemblyGuard()` which finds `a#create-assembly-button` and sets `pointer-events:none / opacity:0.4` when count > 0. |
+| `initAssemblyFetchGuard()` | Patches `window.fetch`. Intercepts POST to `/api/v[N]/assemblies` and returns a synthetic 400 if `oxtAssemblyCount > 0`. Backstop in case the DOM guard is bypassed. |
+| `showAssemblyBlockedToast()` | Fixed red toast, auto-removes after 4 s. |
+
+**Data flow:** `content.js` writes `document.documentElement.dataset.oxtAssemblyCount` from two sources — cached storage on load, and a live `get-assembly-count` API call triggered by the insert-tab click. The second MutationObserver in `initAssemblyCreationGuard` re-runs `applyAssemblyGuard` the moment that value lands, even while the dropdown is already open.
+
+**Confirmed DOM selectors (live-observed 2026-04-26):**
+- Dropdown: `ul#document-tabs-create-ul` (class also `dropdown-menu bottom-up`, h=354 when open)
+- Assembly button: `a#create-assembly-button` (id stable, no text-matching fallback needed)
 
 ---
 

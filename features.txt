@@ -38,14 +38,17 @@ Replaces the default "New Document" dialog with a guided flow that asks whether 
 
 ### Quality Guardrails
 
-**Violations Checker**
-Automatically scans every document for version count, part count, and feature count violations. Results surface in the popup with timestamps.
+**Part Studio Toolbar Auto-Hide**
+Automatically hides the Part Studio modeling toolbar when a Part Studio has 250 or more features, keeping the UI uncluttered on complex parts. The toolbar is hidden via injected CSS so it survives Angular re-renders and updates when switching between elements in the same document.
 
 **Version Description Enforcer**
 Blocks version creation until a description is filled in. The Create button stays disabled and shows a red warning until text is entered.
 
 **Export Drawings/DXFs Blocker**
-Intercepts drawing export dialogs and disables the Export button if the document has no releases or has outstanding structural violations.
+Intercepts drawing export dialogs and disables the Export button if the document has no releases.
+
+**Import Restriction**
+Disables the "Import…" option in the insert-tab dropdown unless the document lives inside the OTS Parts top-level company folder. The folder check walks the parentId chain and caches the result per document for one hour.
 
 **Interference Detection**
 Runs an interference check across all assemblies in a document and reports which part pairs are colliding.
@@ -54,8 +57,11 @@ Runs an interference check across all assemblies in a document and reports which
 
 ### Collaboration & Access Control
 
-**Merge Permissions**
-Assign one or more "merge owners" per document. Anyone not on the list who attempts to merge a branch sees their merge dialog disabled with an explanatory warning — enforced automatically via MutationObserver.
+**Doc Permissions**
+Assign one or more "merge owners" per document. Anyone not on the list who attempts to merge into the main branch sees their merge dialog disabled with a warning that names the document owner — enforced automatically via MutationObserver. Branch merges that do not target main are unaffected.
 
-**Workspace Protection**
-On first open, automatically creates an initial version and a development branch so the main workspace is always protected from direct edits.
+**Release Branch Guard**
+Blocks release candidate creation when the current workspace is not the document's main workspace. A warning banner appears in the release dialog and all action buttons (Save draft, Apply, Submit, Release) are disabled until the user switches to the main workspace.
+
+**Workspace Protection Guard**
+Restricts the workspace protection toggle to the document creator only. If a non-creator opens the workspace permissions dialog, the enable-protection checkbox and Apply button are disabled with an explanatory warning. On first open by the creator, automatically creates an initial version and a development branch.

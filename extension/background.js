@@ -1639,7 +1639,7 @@ async function createInitialVersion(docId, wid) {
   console.log(`[NewDocSetup] Creating initial version for ${docId}`);
   try {
     const result = await onshapePost(`/api/v10/documents/d/${docId}/versions`, {
-      name: "Initial",
+      name: "V1",
       documentId: docId,
       workspaceId: wid,
     });
@@ -1655,7 +1655,7 @@ async function createDevelopmentBranch(docId, versionId) {
   console.log(`[NewDocSetup] Creating Development branch from version ${versionId}`);
   try {
     const result = await onshapePost(`/api/v10/documents/d/${docId}/workspaces`, {
-      name: "Development",
+      name: "B1",
       versionId: versionId,
     });
     console.log(`[NewDocSetup] Branch created: ${result.id || "ok"}`);
@@ -1734,7 +1734,7 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
     const wsMain = await waitForElement(tabId, `(() => {
       const spans = document.querySelectorAll('span.workspace-name');
       for (const s of spans) {
-        if (s.offsetHeight > 0) {
+        if (s.offsetHeight > 0 && s.textContent.trim() === 'Main') {
           const r = s.getBoundingClientRect();
           return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: s.textContent.trim() };
         }
@@ -2873,6 +2873,15 @@ function toBase64(bytes) {
 }
 
 // ---------------------------------------------------------------------------
+// SW keepalive — accept persistent ports from content.js to prevent idle termination
+// ---------------------------------------------------------------------------
+chrome.runtime.onConnect.addListener(port => {
+  if (port.name === "keepalive") {
+    port.onDisconnect.addListener(() => {});  // no-op; content.js reconnects automatically
+  }
+});
+
+// ---------------------------------------------------------------------------
 // Message handler
 // ---------------------------------------------------------------------------
 
@@ -3027,6 +3036,36 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (e) {
         console.log(`[ReleaseGuard] Workspace check failed: ${e.message}`);
         sendResponse({ isMain: true }); // fail open — don't block if check errors
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "check-parts-materials") {
+    // Returns { issues: string[] } — one entry per part that is missing a material
+    // or still has a default "Part N" name. Empty array means all parts are OK.
+    // Fails open (returns empty issues) if the fetch errors or eid is not a Part Studio.
+    (async () => {
+      const { docId, wid, eid } = msg;
+      if (!docId || !wid || !eid) { sendResponse({ issues: [] }); return; }
+      try {
+        const parts = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}`);
+        if (!Array.isArray(parts) || parts.length === 0) { sendResponse({ issues: [] }); return; }
+        const issues = [];
+        for (const p of parts) {
+          const noMaterial  = !p.material;
+          const defaultName = /^Part \d+$/i.test(p.name);
+          if (noMaterial || defaultName) {
+            const reasons = [];
+            if (defaultName) reasons.push("default name");
+            if (noMaterial)  reasons.push("no material");
+            issues.push(`${p.name} (${reasons.join(", ")})`);
+          }
+        }
+        console.log(`[PartsGuard] ${issues.length} issue(s) in ${eid}`);
+        sendResponse({ issues });
+      } catch (e) {
+        console.log(`[PartsGuard] Parts check failed: ${e.message}`);
+        sendResponse({ issues: [] }); // fail open — don't block if check errors
       }
     })();
     return true;
@@ -3544,6 +3583,82 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       const resp = await onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${eid}/features`).catch(() => null);
       const count = Array.isArray(resp?.features) ? resp.features.length : 0;
       sendResponse({ count });
+    })();
+    return true;
+
+  } else if (msg.type === "check-and-setup-doc") {
+    const { docId, wid } = msg;
+    const tabId = sender.tab?.id;
+    if (!docId || !wid || !tabId) { sendResponse({ skipped: true }); return; }
+    (async () => {
+      try {
+        // Already done for this doc?
+        const stored = await new Promise(r => chrome.storage.local.get(`docSetupDone_${docId}`, r));
+        if (stored[`docSetupDone_${docId}`]) { sendResponse({ skipped: true }); return; }
+
+        // Doc already set up if it has more than 1 version ("Start" is the default)
+        const versions = await onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(() => []);
+        const versionList = Array.isArray(versions) ? versions : (versions.items || []);
+        if (versionList.length > 1) {
+          chrome.storage.local.set({ [`docSetupDone_${docId}`]: true });
+          sendResponse({ skipped: true });
+          return;
+        }
+
+        // Fetch all elements once
+        const elements = await onshapeFetch(`/api/v10/documents/d/${docId}/w/${wid}/elements`).catch(() => []);
+        const items = Array.isArray(elements) ? elements : (elements.items || []);
+        const partStudios = items.filter(e => e.elementType === "PARTSTUDIO");
+        const assemblies  = items.filter(e => e.elementType === "ASSEMBLY");
+
+        // Check PS feature counts (stop at first hit)
+        let shouldTrigger = false;
+        for (const ps of partStudios) {
+          const resp = await onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`).catch(() => null);
+          const count = Array.isArray(resp?.features) ? resp.features.length : 0;
+          if (count >= 25) { shouldTrigger = true; break; }
+        }
+
+        // Check assembly instance counts (stop at first hit)
+        if (!shouldTrigger) {
+          for (const asm of assemblies) {
+            const resp = await onshapeFetch(`/api/v10/assemblies/d/${docId}/w/${wid}/e/${asm.id}`).catch(() => null);
+            const count = resp?.rootAssembly?.instances?.length ?? 0;
+            if (count >= 5) { shouldTrigger = true; break; }
+          }
+        }
+
+        if (!shouldTrigger) { sendResponse({ triggered: false }); return; }
+
+        // Mark done before running setup (prevent double-trigger on concurrent calls)
+        chrome.storage.local.set({ [`docSetupDone_${docId}`]: true });
+        sendResponse({ triggered: true });
+
+        // Run setup sequence
+        const vResult = await createInitialVersion(docId, wid);
+        if (!vResult.ok) {
+          chrome.tabs.sendMessage(tabId, { type: "setup-new-doc-done", success: false, error: "Version creation failed" }).catch(() => {});
+          return;
+        }
+
+        const bResult = await createDevelopmentBranch(docId, vResult.versionId);
+        if (!bResult.ok) {
+          chrome.tabs.sendMessage(tabId, { type: "setup-new-doc-done", success: false, error: "Branch creation failed" }).catch(() => {});
+          return;
+        }
+
+        const pResult = await enableWorkspaceProtection(tabId, tabId);
+        chrome.tabs.sendMessage(tabId, {
+          type: "setup-new-doc-done",
+          success: !!pResult?.ok,
+          protectionSkipped: pResult?.skipped,
+          error: pResult?.error,
+        }).catch(() => {});
+
+      } catch (e) {
+        console.error("[NewDocSetup] check-and-setup-doc error:", e.message);
+        sendResponse({ error: e.message });
+      }
     })();
     return true;
   }
