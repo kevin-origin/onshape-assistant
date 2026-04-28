@@ -348,8 +348,8 @@
   const FOLDER_NAMES = ["Part Studios", "Assemblies", "Drawings", "Feature Studios", "Variable Studios"];
 
   // Show folder creation overlay on any document without folders.
-  // Only guard: doc must have 0 folders. Auto-triggers every visit
-  // until folders are created (no persistent "already offered" tracking).
+  // Guards: doc must have 0 folders, auto-setup not triggered this session,
+  // and overlay must not have been shown in the last 24 hours.
   async function maybeOfferFolderCreation(scanResult) {
     const docId = scanResult.doc_id;
     if (!docId) { console.log("[FolderSetup] No docId"); return false; }
@@ -361,6 +361,14 @@
 
     // Don't show overlay if auto-setup was triggered this session
     if (_setupTriggeredDocs.has(docId)) { console.log("[FolderSetup] Skipped: auto-setup triggered"); return false; }
+
+    // 24-hour throttle: skip if overlay was shown within the last 24 hours
+    const stored = await new Promise(resolve => chrome.storage.local.get("folderOverlayLastShown", resolve));
+    const lastShown = stored.folderOverlayLastShown || 0;
+    if (Date.now() - lastShown < 86400000) {
+      console.log("[FolderSetup] Skipped: shown within last 24 hours");
+      return false;
+    }
 
     console.log("[FolderSetup] Showing overlay!");
     showFolderOverlay(docId);
@@ -451,6 +459,7 @@
       background: #16213e; color: #aaa; font-size: 14px; cursor: pointer;
     `;
     skipBtn.addEventListener("click", () => {
+      chrome.storage.local.set({ folderOverlayLastShown: Date.now() });
       overlay.remove();
     });
 
@@ -469,6 +478,7 @@
         progressText.style.color = "#dc2626";
         return;
       }
+      chrome.storage.local.set({ folderOverlayLastShown: Date.now() });
       // Remove the full overlay so CDP can reach the tab bar
       overlay.remove();
       _folderCreationInProgress = true;
