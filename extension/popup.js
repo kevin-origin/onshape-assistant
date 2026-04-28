@@ -16,11 +16,6 @@ document.getElementById("btnGoScanner").addEventListener("click", () => {
 });
 document.getElementById("btnBackFromDrawing").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnBackFromScanner").addEventListener("click", () => showSection("sectionMenu"));
-document.getElementById("btnGoInterference").addEventListener("click", () => {
-  showSection("sectionInterference");
-  loadInterferenceResults();
-});
-document.getElementById("btnBackFromInterference").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnGoMergePerms").addEventListener("click", () => {
   showSection("sectionMergePerms");
   loadMergePermissions();
@@ -39,7 +34,7 @@ document.getElementById("btnGoUrdf").addEventListener("click", () => {
     }
   });
 });
-document.getElementById("btnBackFromUrdf").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnBackFromUrdf").addEventListener("click", () => showSection("sectionExport"));
 document.getElementById("btnGoExport3D").addEventListener("click", () => showSection("sectionExport3D"));
 document.getElementById("btnBackFromExport3D").addEventListener("click", () => showSection("sectionExport"));
 document.getElementById("btnGoExportBulk").addEventListener("click", () => {
@@ -47,6 +42,8 @@ document.getElementById("btnGoExportBulk").addEventListener("click", () => {
   loadExportElements();
 });
 document.getElementById("btnBackFromExportBulk").addEventListener("click", () => showSection("sectionExport"));
+document.getElementById("btnGoFolderGen").addEventListener("click", () => showSection("sectionFolderGen"));
+document.getElementById("btnBackFromFolderGen").addEventListener("click", () => showSection("sectionMenu"));
 
 // Set merge permissions for current doc — triggers overlay in content script
 document.getElementById("btnSetMergePerms").addEventListener("click", () => {

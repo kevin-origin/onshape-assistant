@@ -295,21 +295,17 @@
       Doc Scanner
       <div class="menu-desc">Validate folder structure of the current document</div>
     </button>
-    <button class="btn-menu" id="btnGoInterference">
-      Interference Check
-      <div class="menu-desc">Check all assemblies in the current document for interferences</div>
-    </button>
     <button class="btn-menu" id="btnGoMergePerms">
       Doc Permissions
       <div class="menu-desc">Manage who can merge into the main branch per document</div>
     </button>
     <button class="btn-menu" id="btnGoExport">
       Export
-      <div class="menu-desc">Bulk export flat pattern DXFs and drawing PDFs as a ZIP</div>
+      <div class="menu-desc">Bulk export flat pattern DXFs, drawing PDFs, and URDF</div>
     </button>
-    <button class="btn-menu" id="btnGoUrdf">
-      URDF Export
-      <div class="menu-desc">Export assembly as URDF robot description + STL meshes</div>
+    <button class="btn-menu" id="btnGoFolderGen">
+      Folder Generator
+      <div class="menu-desc">Create standard folder structure for a document</div>
     </button>
   </div>
 
@@ -393,7 +389,6 @@
 
     <div class="btn-row">
       <button class="btn-rescan" id="btnRescan">Scan This Doc</button>
-      <button class="btn-rescan" id="btnGenerateFolders" style="background:#1b4332;color:#95d5b2;">Generate Folders</button>
     </div>
 
     <div style="margin-top:10px;padding:8px;background:#16213e;border-radius:4px;font-size:13px;color:#888;">
@@ -441,6 +436,10 @@
     <button class="btn-menu" id="btnGoExportBulk">
       Export DXFs &amp; Drawings
       <div class="menu-desc">Bulk export flat pattern DXFs and drawing PDFs as a ZIP</div>
+    </button>
+    <button class="btn-menu" id="btnGoUrdf">
+      URDF Export
+      <div class="menu-desc">Export assembly as URDF robot description + STL meshes</div>
     </button>
   </div>
 
@@ -505,6 +504,18 @@
     </div>
 
     <div id="urdfLog" style="margin-top:8px;max-height:220px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
+  </div>
+
+  <!-- ============ Folder Generator ============ -->
+  <div id="sectionFolderGen" class="section">
+    <h3><button class="btn-back" id="btnBackFromFolderGen">Back</button> Folder Generator</h3>
+    <div class="btn-row">
+      <button class="btn-rescan" id="btnGenerateFolders" style="background:#1b4332;color:#95d5b2;">Generate Folders</button>
+    </div>
+    <div style="margin-top:10px;padding:8px;background:#16213e;border-radius:4px;font-size:13px;color:#888;">
+      <div style="color:#aaa;margin-bottom:4px;font-weight:600;">Creates folders</div>
+      <div style="color:#95d5b2;">Part Studios, Assemblies, Drawings, CAD Imports, Feature Studios, Variable Studios</div>
+    </div>
   </div>
 
   <script src="popup.js"></script>
