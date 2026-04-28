@@ -172,6 +172,8 @@
   // ---------------------------------------------------------------------------
 
   let _toolbarStyleEl = null;
+  // Tracks Part Studio eids already notified about high feature count this session
+  const _featureCountNotifiedEids = new Set();
 
   function setToolbarHidden(hide) {
     if (!_toolbarStyleEl) {
@@ -197,6 +199,19 @@
     ).catch(() => ({ count: 0 }));
 
     setToolbarHidden(count >= 250);
+
+    // Onshape API excludes the 4 default features (planes + origin) from the count,
+    // so 196 API-returned features = 200 visible features in the Part Studio.
+    if (count >= 196 && count < 246 && !_featureCountNotifiedEids.has(eid)) {
+      _featureCountNotifiedEids.add(eid);
+      chrome.runtime.sendMessage({
+        type: "feature-count-notify",
+        docId,
+        docName: getDocName(),
+        eid,
+        count,
+      });
+    }
   }
 
   const _setupTriggeredDocs = new Set();

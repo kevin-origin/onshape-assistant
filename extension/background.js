@@ -870,6 +870,9 @@ function trySendScan(tabId) {
 
 const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
+// Tracks docs already notified about high tab count this SW session (avoid spamming)
+const _tabCountNotifiedDocs = new Set();
+
 async function storeDocScanResult(result) {
   if (!result || !result.doc_id) return;
   console.log("[Scanner] storeDocScanResult called, wid=" + (result.wid || "none") +
@@ -897,6 +900,20 @@ async function storeDocScanResult(result) {
       if (result.folders && result.folders["Assemblies"]) {
         result.folders["Assemblies"].assemblies = assemblies.length;
         console.log("[Scanner] Set Assemblies folder count to " + assemblies.length);
+      }
+
+      // Notify if doc has >= 35 elements (tabs) — once per SW session per doc
+      result.totalElements = elements.length;
+      if (elements.length >= 35 && elements.length < 40 && !_tabCountNotifiedDocs.has(result.doc_id)) {
+        _tabCountNotifiedDocs.add(result.doc_id);
+        const docName = result.doc_name || result.doc_id;
+        chrome.notifications.create(`tab-count-${result.doc_id}-${Date.now()}`, {
+          type: "basic",
+          iconUrl: "icons/icon128.png",
+          title: docName,
+          message: `You are approaching the limit of 35 tabs, split this document into multiple documents or the current one will be disabled.`,
+        });
+        console.log(`[Scanner] Tab count notification fired: ${elements.length} elements in ${result.doc_id}`);
       }
     } catch (e) {
       console.error("[Scanner] Elements API error:", e.message);
@@ -3489,6 +3506,14 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       message: "Incorrect folder structure, please take action.",
     });
 
+  } else if (msg.type === "feature-count-notify") {
+    chrome.notifications.create(`feature-count-${msg.eid}-${Date.now()}`, {
+      type: "basic",
+      iconUrl: "icons/icon128.png",
+      title: msg.docName || msg.docId,
+      message: `You are approaching the limit of 250 features, switch to a new Part Studio or the current one will be disabled.`,
+    });
+
   } else if (msg.type === "check-releases") {
     (async () => {
       try {
@@ -4217,6 +4242,10 @@ chrome.notifications.onClicked.addListener((notificationId) => {
   if (notificationId.startsWith("folder-scan-")) {
     section = "scanner";
   } else if (notificationId.startsWith("interference-")) {
+    section = "violations";
+  } else if (notificationId.startsWith("tab-count-")) {
+    section = "scanner";
+  } else if (notificationId.startsWith("feature-count-")) {
     section = "violations";
   }
   if (section) {
