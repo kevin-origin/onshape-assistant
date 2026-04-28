@@ -97,6 +97,78 @@
     setTimeout(() => toast.remove(), 4000);
   }
 
+  function initContextCreationGuard() {
+    new MutationObserver((mutations) => {
+      for (const m of mutations) {
+        for (const node of m.addedNodes) {
+          if (node.nodeType === 1 && node.classList.contains('context-menu-root')) {
+            applyContextGuard(node);
+          }
+        }
+      }
+    }).observe(document.body, { childList: true });
+  }
+
+  function applyContextGuard(root) {
+    // Find the "Edit in context" parent LI (class has hyphenated "context-menu-submenu")
+    let editInContextLi = null;
+    for (const li of root.querySelectorAll('li.context-menu-submenu')) {
+      const span = li.querySelector(':scope > span');
+      if (span && span.textContent.trim() === 'Edit in context') {
+        editInContextLi = li;
+        break;
+      }
+    }
+    if (!editInContextLi) return;
+
+    const subUl = editInContextLi.querySelector('ul.contextmenu-list');
+    if (!subUl) return;
+
+    function checkAndBlock() {
+      const items = subUl.querySelectorAll('li');
+      // More than 1 item means existing contexts are present alongside "Create new context"
+      if (items.length <= 1) return;
+
+      for (const li of items) {
+        const span = li.querySelector('span');
+        if (span && span.textContent.trim() === 'Create new context') {
+          li.style.pointerEvents = 'none';
+          li.style.opacity = '0.4';
+          li.style.cursor = 'not-allowed';
+          li.classList.add('not-selectable');
+          if (!li._contextGuardListener) {
+            li._contextGuardListener = (e) => {
+              e.preventDefault();
+              e.stopPropagation();
+              showContextBlockedToast();
+            };
+            li.addEventListener('click', li._contextGuardListener, true);
+          }
+        }
+      }
+    }
+
+    checkAndBlock();
+    // Also catch items loaded dynamically on hover
+    new MutationObserver(checkAndBlock).observe(subUl, { childList: true });
+  }
+
+  function showContextBlockedToast() {
+    if (document.getElementById('oxt-context-blocked-toast')) return;
+    const toast = document.createElement('div');
+    toast.id = 'oxt-context-blocked-toast';
+    toast.textContent = 'Part Studio is limited to 1 context.';
+    Object.assign(toast.style, {
+      position: 'fixed', bottom: '32px', left: '50%', transform: 'translateX(-50%)',
+      background: '#d32f2f', color: '#fff', padding: '10px 20px',
+      borderRadius: '4px', fontSize: '14px', zIndex: '99999',
+      boxShadow: '0 2px 8px rgba(0,0,0,0.3)', pointerEvents: 'none'
+    });
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
+  }
+
   initAssemblyCreationGuard();
   initAssemblyFetchGuard();
+  initContextCreationGuard();
 })();
