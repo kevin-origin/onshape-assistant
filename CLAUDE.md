@@ -20,7 +20,7 @@ updates.xml                      — Auto-update manifest (Chrome polls this for
 
 ### Why two content scripts?
 
-`content.js` runs in the ISOLATED world (extension sandbox) — it can use `chrome.*` APIs but cannot touch `window.fetch` or Angular-managed properties on the page's `window`. `content-main.js` runs in the MAIN world (same JS context as the page) — it can intercept `window.fetch` and read Angular DOM state, but cannot use `chrome.*` APIs. The two scripts communicate via `document.documentElement.dataset` attributes (`data-oxt-*`), which are visible across both worlds.
+`content.js` (ISOLATED world) — `chrome.*` APIs available, no `window.fetch` access. `content-main.js` (MAIN world) — can intercept `window.fetch` and read Angular state, no `chrome.*` APIs. They communicate via `document.documentElement.dataset` (`data-oxt-*` attributes).
 
 ---
 
@@ -38,181 +38,45 @@ After the user confirms the monitor is open, immediately:
 
 ---
 
-## background.js — sections
+## background.js / content.js / popup.js — navigation
 
-Find any section with: `// Section name`
+All major sections are marked `// Section name`. Use Grep to locate any section or function — do not read the full file.
 
-| Section header | What lives there |
-|---|---|
-| `Session user cache` | `getSessionUser()` — cached `/api/v10/users/sessioninfo` |
-| `Kill switch` | Blocked emails array (`[]` on dev, `[emails...]` on main — never comment out the block) |
-| `Team members cache` | `getTeamMembers()` — cached team member list |
-| `Onshape API via session cookies` | `onshapeFetch()`, `getXsrfToken()`, `onshapePost()` |
-| `Drawing Creator` | `createDrawingsForUrl()` — full drawing creation orchestrator; `broadcastDrawLog()`, `parsePartStudioUrl()`, `computeScale()`, `pollModify()` |
-| `Auto-dimension helpers` | `identifyViewOrientation()`, `getViewGeometry()`, `findBoundingEdges()`, `addOverallDimensions()` |
-| `Tab navigation helpers` | `navigateTab()`, `waitForTabLoad()` |
-| `Try sending scan message` | `trySendScan()` |
-| `Store scan result` | `storeDocScanResult()` — persists to `chrome.storage.local` |
-| `Violation checker` | `checkDocViolations()` — checks folder/tab structure per doc |
-| `DOM automation: add drawing sheet` | `addSheetViaIframe()` — iframe injection to add sheets |
-| `CDP helpers` | `cdpSend`, `cdpClick`, `cdpRightClick`, `cdpTypeText`, `cdpPressKey`, `cdpDrag`, `waitForElement()` |
-| `Discovery helper` | `discoverContextMenu()` — dumps right-click menu DOM (dev/diagnostics) |
-| `Folder creation orchestrator` | `createTabFolders()`, `sortDefaultTabs()` |
-| `New-doc setup` | `createInitialVersion()`, `createDevelopmentBranch()`, `enableWorkspaceProtection()` |
-| `Unpack Illegal Folders` | `unpackIllegalFolders()` — CDP right-click → Unpack |
-| `Tab Sorter` | `sortStrayTabs()` — moves stray root-level tabs into folders |
-| `Interference Detection` | `checkInterference()` — CDP assembly interference check |
-| `QC Note placement` | `placeQcNotes()` — CDP: place annotation notes on drawings |
-| `QC Point recording` | `startQcRecording()` — captures click coords for QC notes |
-| `Message handler` | `chrome.runtime.onMessage` dispatch — all message types (see below) |
-| `SPA navigation detection` | Notifies content.js when Onshape URL changes without reload |
-| `Storage cleanup` | `cleanupDeletedDocs()` — purge storage for dead docs |
-| `Auto-reload` | `checkForLocalUpdate()` — dev-mode file-change detection |
+```bash
+Grep("// Drawing Creator", "extension/background.js")   # → jump to line, then read offset
+Grep("checkInterference", "extension/background.js")
+Grep("scanTabFolders", "extension/content.js")
+```
 
-### background.js message types
-
-| Message type | Purpose |
-|---|---|
-| `check-kill-switch` | Check if current user is blocked |
-| `fetch-parts` | List parts in a Part Studio |
-| `create-drawings` | Trigger `createDrawingsForUrl()` |
-| `tab-folder-result` | Receive scan result from content.js |
-| `folder-scan-notify` | Notify popup of scan completion |
-| `check-releases` | Check release violations |
-| `test-add-sheet` | Test iframe sheet addition |
-| `check-versions` | Check version count violations |
-| `create-folders` | Trigger `createTabFolders()` |
-| `sort-tabs` | Trigger `sortStrayTabs()` |
-| `unpack-illegal-folders` | Trigger `unpackIllegalFolders()` |
-| `check-interference` | Trigger `checkInterference()` |
-| `discover-context-menu` | Trigger `discoverContextMenu()` |
-| `observe-dom-changes` | Start DOM mutation observer |
-| `read-dom-changes` | Read captured mutations |
-| `observe-drawing-iframe` | Observe drawing iframe DOM |
-| `read-drawing-iframe` | Read captured iframe mutations |
-| `start-qc-recording` | Start QC coordinate capture |
-| `delete-qc-point` / `toggle-qc-point` / `clear-qc-points` | QC point management |
-| `rescan-active-tab` | Force rescan current tab |
-| `get-session-user` | Return cached session user |
-| `get-team-members` | Return cached team members |
-| `check-merge-allowed` | Check if user can merge |
-| `save-merge-owners` | Persist merge owners to sync backend |
-| `get-merge-perms` | Fetch merge permissions |
-| `list-company-folders` | List top-level company folders |
-| `list-subfolders` | List subfolders of a folder |
-| `create-doc-in-folder` | Create new doc inside a folder |
-| `get-doc-creator` | Fetch doc creator info |
-| `check-main-workspace` | Returns `{ isMain }` — true if `wid` matches doc's `defaultWorkspace.id` |
-| `check-parts-materials` | Returns `{ issues }` — parts missing materials or with default "Part N" names |
-
----
-
-## content.js — sections
-
-| Section header | What lives there |
-|---|---|
-| `Release settings page guard` | Blocks non-admin users from `/companySettings/.../release` with full-page overlay |
-| `Helpers` | `sleep()`, `getDocIdFromUrl()`, `getWidFromUrl()`, `getDocName()`, `getAllTabsBreadcrumb()`, `getTabNames()`, `getBreadcrumbDepth()` |
-| `Main scan` | `clickAllTabs()`, `scanTabFolders()`, `sendScanResult()`, `waitForTabBar()` |
-| `Auto-scan logic` | `autoScan()` — debounced trigger on DOM change; `maybeOfferFolderCreation()` |
-| `Folder creation overlay` | `showFolderOverlay()`, `showProgressToast()`, `removeFolderOverlay()` |
-| `CDP automation overlay` | `showCdpOverlay()` / `removeCdpOverlay()` — shown while debugger is attached |
-| `Message handler` | `chrome.runtime.onMessage` dispatch (see below) |
-| `Auto-scan on page load` | `runOnDocLoad()` — entry point, sets up observers |
-| `Export Drawing detection` | Blocks export when violations/no releases exist; watches for export modal via MutationObserver |
-| `Merge dialog blocker` | Blocks non-owners from merging; MutationObserver watches for merge modal |
-| `Merge owner selection overlay` | `showMergeOwnerOverlay()` — assign merge permission owners |
-| `Create Document Interceptor` | `initCreateDocInterceptor()`, `showCreateDocOverlay()`, `showFolderPicker()` — force folder selection |
-| `Version Description Enforcer` | `initVersionDescriptionEnforcer()`, `attachVersionDescriptionGuard()` — block empty version submits |
-| `Workspace protection guard` | `initProtectionGuard()` — enforce owner-only access to protection toggle |
-| `Release branch guard` | MutationObserver blocks "Create Release Candidate" dialog when not on main workspace |
-
-### content.js message types received
-
-| Message type | Handler |
-|---|---|
-| `scan-tab-folders` | Trigger `scanTabFolders()` |
-| `folder-creation-progress` / `folder-creation-done` | Update folder overlay progress |
-| `show-merge-owner-popup` | Show `showMergeOwnerOverlay()` |
-| `unpack-progress` / `unpack-done` | Update unpack toast |
-| `tab-sort-progress` / `tab-sort-done` | Update sort toast |
-| `interference-progress` / `interference-done` | Update interference toast |
-| `setup-new-doc-progress` / `setup-new-doc-done` | Update new-doc setup toast |
-| `generate-folders` | Trigger folder creation from overlay confirm |
-| `cdp-overlay-show` / `cdp-overlay-hide` | Show/hide CDP overlay |
-| `spa-navigated` | Re-run `runOnDocLoad()` on URL change |
+Message types in background.js are dispatched in the `// Message handler` section. Grep for the message type string to find its handler and sender.
 
 ---
 
 ## content-main.js — MAIN world script
 
-Two self-contained guards, both IIFE-scoped. No `chrome.*` APIs available here.
+Two IIFE-scoped guards (`initAssemblyCreationGuard`, `initAssemblyFetchGuard`). No `chrome.*` APIs.
 
-| Function | What it does |
-|---|---|
-| `initAssemblyCreationGuard()` | Waits for `ul#document-tabs-create-ul` (confirmed selector). On each style/class mutation (dropdown open/close) and on every `data-oxt-assembly-count` change, calls `applyAssemblyGuard()` which finds `a#create-assembly-button` and sets `pointer-events:none / opacity:0.4` when count > 0. |
-| `initAssemblyFetchGuard()` | Patches `window.fetch`. Intercepts POST to `/api/v[N]/assemblies` and returns a synthetic 400 if `oxtAssemblyCount > 0`. Backstop in case the DOM guard is bypassed. |
-| `showAssemblyBlockedToast()` | Fixed red toast, auto-removes after 4 s. |
-
-**Data flow:** `content.js` writes `document.documentElement.dataset.oxtAssemblyCount` from two sources — cached storage on load, and a live `get-assembly-count` API call triggered by the insert-tab click. The second MutationObserver in `initAssemblyCreationGuard` re-runs `applyAssemblyGuard` the moment that value lands, even while the dropdown is already open.
+**Data flow:** `content.js` writes `document.documentElement.dataset.oxtAssemblyCount`. `initAssemblyCreationGuard` watches that attribute and applies `pointer-events:none / opacity:0.4` to the assembly button. `initAssemblyFetchGuard` patches `window.fetch` as a backstop — intercepts POST to `/api/v[N]/assemblies` and returns synthetic 400.
 
 **Confirmed DOM selectors (live-observed 2026-04-26):**
-- Dropdown: `ul#document-tabs-create-ul` (class also `dropdown-menu bottom-up`, h=354 when open)
+- Dropdown: `ul#document-tabs-create-ul`
 - Assembly button: `a#create-assembly-button` (id stable, no text-matching fallback needed)
-
----
-
-## popup.js — sections
-
-| Section header | What lives there |
-|---|---|
-| `Section navigation` | `showSection()`, all nav button listeners |
-| `Load saved config` / `Save config on change` | Persist popup settings to storage |
-| `Status display` | `showStatus()`, `hideStatus()` |
-| `Drawing Creator` | `appendDrawLog()`, `showPartSelection()`, `updateSelectAll()`, draw button listeners |
-| `Listen for messages from background.js` | Receives draw log updates, progress events |
-| `Load last scan result` | `loadLastScanForCurrentDoc()` |
-| `Scan This Doc` | Manual rescan button listener |
-| `Results display` | `showSingleResult()`, `validateFolders()` |
-| `Violations display` | `loadViolations()` |
-| `Merge Permissions display + edit` | `loadMergePermissions()`, save button listener |
 
 ---
 
 ## onshape-assistant-sync/src/index.js — Cloudflare Worker
 
-Routes (all require `X-API-Key: artila-onshape-sync-2026`):
-
-| Route | Method | Purpose |
-|---|---|---|
-| `/permissions/:docId` | GET | Fetch merge owners for a doc |
-| `/permissions/:docId` | POST | Save merge owners for a doc |
-| `/permissions` | GET | List all docs with permissions |
-
-KV namespace: `PERMISSIONS` — key = docId, value = JSON array of owner emails.
+Routes (all require `X-API-Key: artila-onshape-sync-2026`). KV namespace: `PERMISSIONS` — key = docId, value = JSON array of owner emails.
 
 ---
 
-## publish.py — functions
+## publish.py — release flow
 
-| Function | Purpose |
-|---|---|
-| `read_manifest()` / `write_manifest()` | Parse/write extension/manifest.json |
-| `bump_version()` | Increment patch version string |
-| `update_updates_xml()` | Patch version + URL in updates.xml |
-| `pack_crx()` | Shell out to `chrome.exe --pack-extension` |
-| `build_and_sign_firefox()` | Build Firefox build + sign via Mozilla API |
-| `git_commit_and_push()` | Commit + push to dev, merge to main, restore `dev_build` flag on dev |
-| `create_github_release()` | `gh release create` with .crx + .xpi assets |
-| `main()` | Orchestrates full release flow |
-
-**Release flow:**
-1. Bumps version in manifest.json, **strips `dev_build: true`** (must not appear in production CRX)
-2. Packs CRX + builds/signs Firefox XPI
-3. Updates `updates.xml` and `updates-firefox.json`
-4. Commits to dev → merges to main → pushes both
-5. **Restores `dev_build: true`** to dev branch manifest and commits
-6. Creates GitHub Release with CRX + XPI attached
+Non-obvious behavior:
+1. **Strips `dev_build: true`** from manifest.json before packing (must not appear in production CRX)
+2. Commits to dev → merges to main → pushes both
+3. **Restores `dev_build: true`** to dev branch manifest and commits
+4. Creates GitHub Release with CRX + XPI attached
 
 ---
 
@@ -352,6 +216,7 @@ CronCreate(
   ```
   Combining them causes Enter to fire before the TUI registers the text, leaving messages unsubmitted.
 - **Workflow improvements**: after debugging and fixing any workflow error (monitor setup, agent briefing, usage checks, etc.), ask Kevin: "Should I update this workflow in CLAUDE.md?" — do not silently apply the fix without offering to document it.
+- **SW relay — agents run it themselves**: agents must never ask Kevin to run commands in the service worker or to start the SW relay. Agents must launch the relay themselves (`pkill -f sw-relay.py 2>/dev/null; python3 ~/sw-relay.py > /tmp/sw-relay.log 2>&1 &`), verify it connected, and use `sw-exec.py` directly. Kevin is never involved in SW execution steps.
 
 ---
 
@@ -400,6 +265,7 @@ python3 ~/sw-exec.py "new Promise(r => chrome.storage.local.get(null, r))"
 
 ## Onshape API notes
 
+- If any Onshape API call returns a 429, flag it to Kevin immediately — endpoint, method, and which feature triggered it.
 - Company ID: `6810c247e7c40668c32816a6`
 - `filter=6` for documents by owner (`filter=7` = label filter, wrong)
 - `globaltreenodes/folder/{COMPANY_ID}` returns 403 on Pro — use `parentId` from docs + `GET /api/v10/folders/{fid}`
