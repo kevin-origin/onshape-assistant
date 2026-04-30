@@ -228,6 +228,12 @@ echo "" | python3 publish.py   # bump version (accepts default), pack CRX, push,
 
 `publish.py` has one interactive prompt (version number). Pipe an empty string to accept the auto-suggested patch bump. To specify a version explicitly: `echo "2.1.13" | python3 publish.py`
 
+### Version number convention (`MAJOR.MINOR.PATCH`)
+
+- **MAJOR** — complete rewrite or major UI overhaul
+- **MINOR** — new feature added
+- **PATCH** — bug fix or tweak to an existing feature
+
 ## Service worker testing (sw-relay)
 
 Run arbitrary JS in the Chrome extension service worker from WSL — no manual console needed.
