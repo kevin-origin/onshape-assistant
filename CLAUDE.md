@@ -223,8 +223,10 @@ CronCreate(
 ## Commands
 
 ```bash
-python3 publish.py   # bump version, pack CRX, push, create GitHub release
+echo "" | python3 publish.py   # bump version (accepts default), pack CRX, push, create GitHub release
 ```
+
+`publish.py` has one interactive prompt (version number). Pipe an empty string to accept the auto-suggested patch bump. To specify a version explicitly: `echo "2.1.13" | python3 publish.py`
 
 ## Service worker testing (sw-relay)
 
