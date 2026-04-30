@@ -1841,7 +1841,6 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
 // Unpack Illegal Folders — CDP right-click > Unpack on non-standard folders
 // ---------------------------------------------------------------------------
 
-/* COMMENTED OUT — unpack functionality disabled
 let _unpackInProgress = false;
 
 async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
@@ -1979,7 +1978,6 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
     }
   }
 }
-*/
 
 // ---------------------------------------------------------------------------
 // Tab Sorter — persistent, moves stray root-level tabs into matching folders
@@ -3560,27 +3558,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   } else if (msg.type === "sort-tabs") {
     // Persistent tab sorter — moves stray root tabs into matching folders
+    // Also unpacks illegal folders (names not in ALLOWED_FOLDERS) before sorting.
     // sender.tab exists when from content.js; from popup we need to find the active Onshape tab
     const fromTab = sender.tab?.id;
+    const runSortWithUnpack = async (tabId) => {
+      const preCheck = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const folders = [];
+          for (const tab of document.querySelectorAll('.os-tab-bar-tab-group')) {
+            const nameEl = tab.querySelector('.os-tab-name');
+            if (nameEl) folders.push(nameEl.textContent.trim());
+          }
+          return folders;
+        },
+      });
+      const allFolders = preCheck?.[0]?.result || [];
+      const illegalFolders = allFolders.filter(f => !ALLOWED_FOLDERS.includes(f));
+      if (illegalFolders.length > 0) {
+        console.log("[TabSort] Illegal folders detected, running unpack first:", illegalFolders);
+        unpackIllegalFolders(tabId, tabId, illegalFolders); // chains to sortStrayTabs internally
+        return { ok: true };
+      }
+      return sortStrayTabs(tabId, tabId);
+    };
     if (fromTab) {
-      sortStrayTabs(fromTab, fromTab).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
+      runSortWithUnpack(fromTab).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
     } else {
       chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
         const tab = tabs.find(t => t.url && t.url.includes("cad.onshape.com"));
         if (!tab) { sendResponse({ error: "No Onshape tab active" }); return; }
-        sortStrayTabs(tab.id, tab.id).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
+        runSortWithUnpack(tab.id).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
       });
     }
     return true;
 
-  /* COMMENTED OUT — unpack functionality disabled
   } else if (msg.type === "unpack-illegal-folders") {
     const tabId = sender.tab?.id;
     if (!tabId) { sendResponse({ error: "No tab" }); return; }
     unpackIllegalFolders(tabId, tabId, msg.folders || []);
     sendResponse({ ok: true });
     return;
-  */
 
   } else if (msg.type === "check-interference") {
     // Interference detection via CDP — triggered from popup or content.js
@@ -4273,7 +4291,7 @@ const _loadedVersion = chrome.runtime.getManifest().version;
 console.log(`[AutoUpdate] Extension loaded, version: ${_loadedVersion}`);
 
 function isExtensionBusy() {
-  return _drawingInProgress || _sortingInProgress || _interferenceInProgress /* || _unpackInProgress */;
+  return _drawingInProgress || _sortingInProgress || _interferenceInProgress || _unpackInProgress;
 }
 
 let _updatePending = false; // true when update detected but waiting for busy ops to finish
