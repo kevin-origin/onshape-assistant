@@ -7,7 +7,7 @@
 ### Drawing & Export
 
 **Automated Drawing Creator**
-Generate drawing tabs for every part in a Part Studio in one click. Automatically computes scale from bounding box, inserts a title block, and adds overall horizontal and vertical dimensions.
+Generate drawing tabs for every part in a Part Studio in one click. Automatically computes scale from bounding box, inserts a title block, places front/top/left/isometric views, and adds overall horizontal and vertical dimensions.
 
 **Drawing Notes**
 Batch-apply custom annotation text to multiple drawings at configurable text heights — no manual clicking required.
@@ -17,6 +17,9 @@ Export all flat-pattern DXFs and drawing PDFs from a document as a single ZIP fi
 
 **3D Export (STEP / STL)**
 Export individual parts from any Part Studio as STEP or STL files. Toggle format, pick parts, download.
+
+**URDF Export**
+Generate a ROS-compatible URDF package from any Onshape assembly. Walks the assembly hierarchy, exports each part as STL, resolves mate connectors into joint frames, and downloads everything as a ZIP ready for a ROS workspace.
 
 ---
 
@@ -40,6 +43,12 @@ Replaces the default "New Document" dialog with a guided flow that asks whether 
 
 **Part Studio Toolbar Auto-Hide**
 Automatically hides the Part Studio modeling toolbar when a Part Studio has 250 or more features, keeping the UI uncluttered on complex parts. The toolbar is hidden via injected CSS so it survives Angular re-renders and updates when switching between elements in the same document.
+
+**High Feature / Tab Count Warnings**
+Fires a Chrome notification when a Part Studio is approaching the toolbar-hide threshold (196–245 API features) or when a document is approaching the tab limit (35–39 tabs). Each warning fires once per session per document, and clicking it opens the relevant popup section.
+
+**Context Creation Guard**
+Blocks "Create new context" in the right-click menu when the Part Studio already has a context, enforcing Onshape's one-context-per-Part-Studio limit. A DOM guard disables the menu item and a fetch intercept acts as a backstop if the menu is bypassed.
 
 **Version Description Enforcer**
 Blocks version creation until a description is filled in. The Create button stays disabled and shows a red warning until text is entered.

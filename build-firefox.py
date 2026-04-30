@@ -38,6 +38,8 @@ m["browser_specific_settings"] = {
 
 # Remove Chrome's top-level update_url (Firefox uses the one inside gecko settings)
 m.pop("update_url", None)
+# Strip dev-only flag — must not appear in production builds
+m.pop("dev_build", None)
 
 with open(manifest_path, "w") as f:
     json.dump(m, f, indent=2)

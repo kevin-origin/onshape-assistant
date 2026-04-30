@@ -248,6 +248,20 @@ document.getElementById("btnGenerateFolders").addEventListener("click", () => {
   });
 });
 
+document.getElementById("btnSortTabs").addEventListener("click", () => {
+  const btn = document.getElementById("btnSortTabs");
+  btn.disabled = true;
+  btn.textContent = "Sorting...";
+  chrome.runtime.sendMessage({ type: "sort-tabs" }, (r) => {
+    btn.disabled = false;
+    btn.textContent = "Sort Tabs";
+    if (r && r.error) {
+      btn.textContent = "Error";
+      setTimeout(() => { btn.textContent = "Sort Tabs"; }, 3000);
+    }
+  });
+});
+
 // Interference Check — run button
 document.getElementById("btnRunInterference").addEventListener("click", () => {
   const btn = document.getElementById("btnRunInterference");

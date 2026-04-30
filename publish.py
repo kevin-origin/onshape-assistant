@@ -22,6 +22,7 @@ CRX_OUTPUT_NAME = "onshape-assistant.crx"
 CHROME_PATH = "/mnt/c/Program Files/Google/Chrome/Application/chrome.exe"
 GITHUB_REPO = "kevin-origin/onshape-assistant"
 GH_PATH = "/usr/bin/gh"
+TEMP_EXTENSION_DIR = "extension_build_tmp"  # temp dir for production CRX packing (never modifies real extension/)
 
 MOZILLA_API_KEY = "user:19882957:792"
 MOZILLA_API_SECRET = "9ac2cdd62e89377e62454793c66cf5ac74a052c3cceda150ff405903efbec5ef"
@@ -66,9 +67,9 @@ def to_win_path(linux_path):
     return result.stdout.strip() if result.returncode == 0 else linux_path
 
 
-def pack_crx():
-    """Pack extension using Chrome CLI. Returns path to .crx file."""
-    ext_abs = os.path.abspath(EXTENSION_DIR)
+def pack_crx(ext_dir=EXTENSION_DIR):
+    """Pack extension from ext_dir using Chrome CLI. Returns path to .crx file."""
+    ext_abs = os.path.abspath(ext_dir)
     pem_abs = os.path.abspath(PEM_PATH)
 
     if not os.path.isfile(CHROME_PATH):
@@ -134,7 +135,8 @@ def build_and_sign_firefox(version):
     if result.returncode != 0:
         print(f"ERROR signing Firefox extension: {result.stderr}")
         print(result.stdout)
-        sys.exit(1)
+        print("WARNING: Firefox signing failed — continuing without XPI (Chrome-only release)")
+        return None
 
     # Find and rename the signed .xpi (web-ext names it with addon ID)
     import glob
@@ -171,12 +173,11 @@ def run(cmd, check=True):
 
 
 def git_commit_and_push(version):
-    """Stage release files, commit, push dev, then merge to main and push."""
+    """Stage release files, commit to dev (with dev_build), merge to main (strip dev_build there), push both."""
     run(["git", "add", UPDATES_XML_PATH, MANIFEST_PATH, UPDATES_FIREFOX_PATH])
     msg = f"Release v{version}: bump version and update download URL"
     run(["git", "commit", "-m", msg])
 
-    # Push dev
     branch = subprocess.run(
         ["git", "rev-parse", "--abbrev-ref", "HEAD"],
         capture_output=True, text=True, check=True
@@ -184,24 +185,34 @@ def git_commit_and_push(version):
     run(["git", "push", "origin", branch])
     print(f"Pushed to {branch}")
 
-    # Merge to main so Chrome auto-update clients see the new version
+    # Merge to main — strip dev_build before committing so production manifest is clean
     print("Merging to main...")
     run(["git", "checkout", "main"])
-    run(["git", "merge", branch, "--no-edit"])
+    run(["git", "merge", branch, "--no-commit"])
+    main_manifest = read_manifest()
+    main_manifest.pop("dev_build", None)
+    write_manifest(main_manifest)
+    run(["git", "add", MANIFEST_PATH])
+    run(["git", "commit", "-m", msg])
     run(["git", "push", "origin", "main"])
     print("Pushed to main")
+
     run(["git", "checkout", branch])
     print(f"Returned to {branch}")
+    # dev manifest is restored by git checkout — dev_build was never stripped from dev
 
     return branch
 
 
 def create_github_release(version, crx_path, xpi_path):
-    """Create a GitHub Release and upload the .crx."""
+    """Create a GitHub Release and upload the .crx (and .xpi if available)."""
     tag = f"v{version}"
+    assets = [crx_path]
+    if xpi_path:
+        assets.append(xpi_path)
     cmd = [
         GH_PATH, "release", "create", tag,
-        crx_path, xpi_path,
+        *assets,
         "--title", tag,
         "--notes", f"Onshape Assistant {tag}",
         "--repo", GITHUB_REPO,
@@ -222,6 +233,12 @@ def main():
         sys.exit(1)
 
     manifest = read_manifest()
+    if not manifest.get("dev_build"):
+        print("ERROR: manifest.json is missing 'dev_build: true'.")
+        print("A previous publish.py run may have crashed before restoring it.")
+        print("Fix: add  \"dev_build\": true  to extension/manifest.json, then re-run.")
+        sys.exit(1)
+
     current = manifest["version"]
     suggested = bump_version(current)
 
@@ -239,21 +256,36 @@ def main():
 
     print(f"\nPublishing v{new_version}...\n")
 
-    # 1. Update manifest version and strip dev-only flag before packing
+    # 1. Update manifest version (keep dev_build — never strip from the real extension/)
     manifest["version"] = new_version
-    manifest.pop("dev_build", None)  # must not appear in production CRX
     write_manifest(manifest)
     print(f"Updated {MANIFEST_PATH} -> {new_version}")
 
-    # 2. Pack .crx
-    crx_path = pack_crx()
+    # 2. Pack .crx from a temp copy with dev_build stripped — real extension/ is never modified
+    print(f"\nCreating temp copy for Chrome packing...")
+    temp_dir = os.path.abspath(TEMP_EXTENSION_DIR)
+    if os.path.exists(temp_dir):
+        shutil.rmtree(temp_dir)
+    try:
+        shutil.copytree(EXTENSION_DIR, temp_dir)
+        with open(os.path.join(temp_dir, "manifest.json")) as f:
+            temp_manifest = json.load(f)
+        temp_manifest.pop("dev_build", None)
+        with open(os.path.join(temp_dir, "manifest.json"), "w") as f:
+            json.dump(temp_manifest, f, indent=2)
+            f.write("\n")
+        crx_path = pack_crx(temp_dir)
+    finally:
+        shutil.rmtree(temp_dir, ignore_errors=True)
+        print(f"Cleaned up {TEMP_EXTENSION_DIR}/")
 
     # 2b. Build and sign Firefox
     print("\nBuilding and signing Firefox extension...")
     xpi_path = build_and_sign_firefox(new_version)
 
-    # 3b. Update updates-firefox.json
-    update_updates_firefox_json(new_version)
+    # 3b. Update updates-firefox.json (only if XPI signed successfully)
+    if xpi_path:
+        update_updates_firefox_json(new_version)
 
     # 3. Update updates.xml
     update_updates_xml(new_version)
@@ -263,20 +295,11 @@ def main():
     print("\nCommitting and pushing...")
     branch = git_commit_and_push(new_version)
 
-    # 5. Restore dev_build flag on dev branch (stripped before packing)
-    dev_manifest = read_manifest()
-    dev_manifest["dev_build"] = True
-    write_manifest(dev_manifest)
-    run(["git", "add", MANIFEST_PATH])
-    run(["git", "commit", "-m", "chore: restore dev_build flag after release"])
-    run(["git", "push", "origin", branch])
-    print("Restored dev_build flag on dev")
-
-    # 6. Create GitHub Release
+    # 5. Create GitHub Release
     print("\nCreating GitHub Release...")
     release_url = create_github_release(new_version, crx_path, xpi_path)
 
-    # 7. Summary
+    # 6. Summary
     print("\n" + "=" * 50)
     print(f"  Version:  {new_version}")
     print(f"  Branch:   {branch}")

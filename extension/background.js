@@ -308,8 +308,8 @@ function computeScale(bb) {
     broadcastDrawLog("  bbox zero/tiny -- defaulting to 1:5", "log-err");
     return [1, 5];
   }
-  const AVAILABLE = 50.0;
-  const standards = [[2,1],[1,1],[1,2],[1,3],[1,4],[1,5],[1,7],[1,10],[1,15],[1,20],[1,50]];
+  const AVAILABLE = 100.0;
+  const standards = [[2,1],[1,1],[1,2],[1,3],[1,4],[1,5],[1,6],[1,7],[1,10],[1,15],[1,20],[1,50]];
   for (const [num, den] of standards) {
     if (largest * num / den <= AVAILABLE) return [num, den];
   }
@@ -426,7 +426,7 @@ async function createDrawingsForUrl(url, selectedParts) {
     let scale = [1, 5];
     let bb = null;
     try {
-      bb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${partId}/boundingboxes`);
+      bb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${encodeURIComponent(partId)}/boundingboxes?includeHidden=true`);
       scale = computeScale(bb);
     } catch (e) {
       broadcastDrawLog(`  bbox failed (${e.message}), using 1:5`, "log-err");
@@ -435,29 +435,51 @@ async function createDrawingsForUrl(url, selectedParts) {
 
     const ref = { documentId: docId, workspaceId: wid, elementId: eid, partId: partId };
 
-    // Dynamic view positions derived from bounding box so dim text never goes off-sheet.
-    // A3 landscape, Y-up (origin bottom-left, title block ~60mm at bottom).
-    // Formulas calibrated to reproduce confirmed-working observer command values for Cradle at 1:16:
-    //   front≈{121.8,221.2}, side≈{298.2,221.2}, top≈{121.8,111.4}
-    // frontPtY = 239 - scmm(highY)  → Cradle: 239-18.1=220.9mm ≈ 221.2 ✓
-    // frontPtX = 103 - scmm(lowX)   → Cradle: 103+18.75=121.75mm ≈ 121.8 ✓
-    // topPtY   = 75 + (frontPtY-75)/4 → Cradle: 75+36.5=111.5mm ≈ 111.4 ✓
-    // sidePtX  = frontPtX + scmm(highX) + 22 + 22 - scmm(lowZ)
-    const FALLBACK = { front: { x: 0.1218, y: 0.2212 }, top: { x: 0.1218, y: 0.1114 }, left: { x: 0.2982, y: 0.2212 } };
-    let FRONT_POS_M, TOP_POS_M, LEFT_POS_M;
+    // View positions: center the 4-view block within the usable A3 area.
+    // A3 landscape 420×297mm. Onshape position coords: origin top-right, x leftward, y downward (meters).
+    // Compute physical layout in mm (Y-up, origin bottom-left), then convert.
+    // 2×2 grid layout:  [iso][top]   ← upper row (higher physical y)
+    //                   [left][front] ← lower row
+    // Col1 = depth D (left/iso), Col2 = W_F (front/top). Row2 = H_F (lower), Row1 = D (upper).
+    const SW = 420, SH = 297;  // sheet dimensions mm
+    // FALLBACK: defaults for ~60×85×29mm part at 1:10
+    const FALLBACK = { front: { x: 0.1855, y: 0.1405 }, top: { x: 0.1855, y: 0.0635 }, left: { x: 0.250, y: 0.1405 }, iso: { x: 0.250, y: 0.0635 } };
+    let FRONT_POS_M, TOP_POS_M, LEFT_POS_M, ISO_POS_M;
     if (bb) {
-      const scmm = v => v * 1000 * scale[0] / scale[1];
-      const frontPtY = 239 - scmm(bb.highY);
-      const frontPtX = 103 - scmm(bb.lowX);
-      const topPtY   = 75 + (frontPtY - 75) / 4;
-      const sidePtX  = frontPtX + scmm(bb.highX) + 22 + 22 - scmm(bb.lowZ);
-      FRONT_POS_M = { x: frontPtX / 1000, y: frontPtY / 1000 };
-      TOP_POS_M   = { x: frontPtX / 1000, y: topPtY   / 1000 };
-      LEFT_POS_M  = { x: sidePtX  / 1000, y: frontPtY / 1000 };
+      const s   = scale[0] / scale[1];
+      const W_F = (bb.highX - bb.lowX) * 1000 * s;  // front view width on paper (mm)
+      const H_F = (bb.highY - bb.lowY) * 1000 * s;  // front view height on paper (mm)
+      const D   = (bb.highZ - bb.lowZ) * 1000 * s;  // depth → top view height = left view width (mm)
+      const GAP = 20;
+
+      // Usable area in physical coords (mm, Y-up): A3 420×297, title block 65mm + 10mm margin at bottom
+      const uL = 10, uR = 410, uBot = 75, uTop = 287;
+      const uW = uR - uL, uH = uTop - uBot;   // 400 × 212 mm
+
+      // Block: col1(D) + gap + col2(W_F) wide;  row2(H_F) + gap + row1(D) tall
+      const blockW = D + GAP + W_F;
+      const blockH = H_F + GAP + D;
+
+      // Center block in usable area (physical coords)
+      const bL   = uL   + Math.max(0, (uW - blockW) / 2);
+      const bBot = uBot + Math.max(0, (uH - blockH) / 2);
+
+      // Physical positions (mm from bottom-left, Y-up)
+      const leftX  = bL + D / 2;                    // col1 center x (left/iso column)
+      const frontX = bL + D + GAP + W_F / 2;        // col2 center x (front/top column)
+      const frontY = bBot + H_F / 2;                // row2 center y (lower row)
+      const topY   = bBot + H_F + GAP + D / 2;      // row1 center y (upper row)
+
+      // Convert to Onshape position (origin top-right, x leftward, y downward, meters)
+      FRONT_POS_M = { x: (SW - frontX) / 1000, y: (SH - frontY) / 1000 };
+      TOP_POS_M   = { x: (SW - frontX) / 1000, y: (SH - topY)   / 1000 };
+      LEFT_POS_M  = { x: (SW - leftX)  / 1000, y: (SH - frontY) / 1000 };
+      ISO_POS_M   = { x: (SW - leftX)  / 1000, y: (SH - topY)   / 1000 };
     } else {
       FRONT_POS_M = FALLBACK.front;
       TOP_POS_M   = FALLBACK.top;
       LEFT_POS_M  = FALLBACK.left;
+      ISO_POS_M   = FALLBACK.iso;
     }
 
     // Step 1: Create front + top + left + iso views
@@ -473,27 +495,28 @@ async function createDrawingsForUrl(url, selectedParts) {
               orientation: "front",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
-              point: FRONT_POS_M,
+              position: FRONT_POS_M,
             },
             {
               viewType: "TopLevel",
               orientation: "top",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
-              point: TOP_POS_M,
+              position: TOP_POS_M,
             },
             {
               viewType: "TopLevel",
               orientation: "left",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
-              point: LEFT_POS_M,
+              position: LEFT_POS_M,
             },
             {
               viewType: "TopLevel",
               orientation: "isometric",
               scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
               reference: ref,
+              position: ISO_POS_M,
             },
           ],
         }],
@@ -530,6 +553,7 @@ async function createDrawingsForUrl(url, selectedParts) {
           showViewLabel: true,
           label: identifyView(v),
           name: identifyView(v),
+          scale: { scaleSource: "Custom", numerator: scale[0], denumerator: scale[1] },
         }));
         const editBody = {
           description: "Enable view labels",
@@ -542,18 +566,20 @@ async function createDrawingsForUrl(url, selectedParts) {
         const editResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, editBody);
         const editMid = editResp.id || "";
         if (editMid) await pollModify(docId, wid, drawingEid, editMid);
-        // Build viewPosMm: use v.position from API if present (diagnostic confirmed it returns
-        // position for settled views), fall back to hardcoded FRONT_POS_M for Front view.
+        // Build viewPosMm: physical mm (Y-up, origin bottom-left) for addOverallDimensions.
+        // Onshape position is (origin top-right, x leftward, y downward) in meters, so convert:
+        //   physical_x = SW - pos.x*1000,  physical_y = SH - pos.y*1000
         const viewPosMm = {};
+        const _toPhys = (pos) => ({ x: SW - pos.x * 1000, y: SH - pos.y * 1000 });
         for (const v of viewList) {
           if (v.position) {
-            viewPosMm[v.viewId] = { x: v.position.x * 1000, y: v.position.y * 1000 };
+            viewPosMm[v.viewId] = _toPhys(v.position);
           } else if (identifyView(v) === "Front") {
-            viewPosMm[v.viewId] = { x: FRONT_POS_M.x * 1000, y: FRONT_POS_M.y * 1000 };
+            viewPosMm[v.viewId] = _toPhys(FRONT_POS_M);
           } else if (identifyView(v) === "Top") {
-            viewPosMm[v.viewId] = { x: TOP_POS_M.x * 1000, y: TOP_POS_M.y * 1000 };
+            viewPosMm[v.viewId] = _toPhys(TOP_POS_M);
           } else if (identifyView(v) === "Left") {
-            viewPosMm[v.viewId] = { x: LEFT_POS_M.x * 1000, y: LEFT_POS_M.y * 1000 };
+            viewPosMm[v.viewId] = _toPhys(LEFT_POS_M);
           }
         }
         broadcastDrawLog(`  labels applied`);
@@ -564,71 +590,6 @@ async function createDrawingsForUrl(url, selectedParts) {
       broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
     }
 
-    // Step 2: Add Sheet 2 via DOM automation (navigate active tab to drawing)
-    try {
-      const drawingUrl = `${ONSHAPE_BASE}/documents/${docId}/w/${wid}/e/${drawingEid}`;
-      broadcastDrawLog(`  navigating to drawing for sheet creation...`);
-
-      // Find the active Onshape tab (the one the user triggered from)
-      const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
-      if (tabs.length === 0) {
-        broadcastDrawLog(`  no Onshape tab found for DOM automation`, "log-err");
-      } else {
-        const activeTab = tabs[0];
-
-        // Ensure tab is focused (Onshape won't fully init an unfocused editor)
-        await chrome.tabs.update(activeTab.id, { active: true });
-        await chrome.windows.update(activeTab.windowId, { focused: true });
-
-        // Navigate the active tab to the drawing
-        await navigateTab(activeTab.id, drawingUrl);
-
-        // Inject into drawing iframe and click Add Sheet
-        const sheetResult = await addSheetViaIframe(activeTab.id);
-
-        if (sheetResult.error) {
-          broadcastDrawLog(`  sheet 2 DOM failed: ${sheetResult.error}`, "log-err");
-        } else {
-          broadcastDrawLog(`  sheet 2 created (${sheetResult.sheetBefore} -> ${sheetResult.sheetAfter})`);
-        }
-
-        // Tab stays on the drawing — no need to navigate back
-        // Add flat pattern view on Sheet 2 via API (sheetIndex: 1)
-        if (!sheetResult.error) {
-          const flatBody = {
-            description: "Add flat pattern view",
-            jsonRequests: [{
-              messageName: "onshapeCreateViews",
-              formatVersion: "2021-01-01",
-              views: [{
-                viewType: "TopLevel",
-                orientation: "flatPattern",
-                scale: { scaleSource: "Custom", numerator: scale[0], denominator: scale[1] },
-                reference: ref,
-                sheetIndex: 1,
-              }],
-            }],
-          };
-          const flatResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, flatBody);
-          console.log("[Drawing] Flat pattern response:", JSON.stringify(flatResp));
-          const flatMid = flatResp.id || "";
-          if (flatMid) await pollModify(docId, wid, drawingEid, flatMid);
-
-          // Check what views exist now
-          try {
-            const allViews = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
-            const items = allViews.items || [];
-            console.log("[Drawing] Views after flat pattern:", items.length, items.map(v => ({
-              viewId: v.viewId, sheetIndex: v.sheetIndex, label: v.label, viewType: v.viewType,
-            })));
-          } catch (_) {}
-          broadcastDrawLog(`  flat pattern added to sheet 2`);
-        }
-      }
-    } catch (e) {
-      broadcastDrawLog(`  sheet 2 / flat pattern failed: ${e.message}`, "log-err");
-    }
-
     created++;
     broadcastDrawLog(`  done`, "log-ok");
   }
@@ -637,20 +598,6 @@ async function createDrawingsForUrl(url, selectedParts) {
 
   // Sort new drawings into Drawings folder
   if (created > 0) {
-    broadcastDrawLog("Sorting drawings into folders...");
-    try {
-      const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
-      const tab = tabs.find(t => t.url && t.url.includes(docId));
-      if (tab) {
-        // Navigate back to the document and wait for drawings to finish generating
-        await navigateTab(tab.id, `https://cad.onshape.com/documents/${docId}/w/${wid}`);
-        await new Promise(r => setTimeout(r, 10000));
-        await sortStrayTabs(tab.id, tab.id);
-        broadcastDrawLog("Drawings sorted into folders", "log-ok");
-      }
-    } catch (e) {
-      broadcastDrawLog(`Sort failed: ${e.message} (drawings created but not sorted)`, "log-err");
-    }
   }
 
   _drawingInProgress = false;
@@ -1894,7 +1841,6 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
 // Unpack Illegal Folders — CDP right-click > Unpack on non-standard folders
 // ---------------------------------------------------------------------------
 
-/* COMMENTED OUT — unpack functionality disabled
 let _unpackInProgress = false;
 
 async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
@@ -2032,7 +1978,6 @@ async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
     }
   }
 }
-*/
 
 // ---------------------------------------------------------------------------
 // Tab Sorter — persistent, moves stray root-level tabs into matching folders
@@ -3613,19 +3558,47 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   } else if (msg.type === "sort-tabs") {
     // Persistent tab sorter — moves stray root tabs into matching folders
-    const tabId = sender.tab?.id;
-    if (!tabId) { sendResponse({ error: "No tab" }); return; }
-    sortStrayTabs(tabId, tabId).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
+    // Also unpacks illegal folders (names not in ALLOWED_FOLDERS) before sorting.
+    // sender.tab exists when from content.js; from popup we need to find the active Onshape tab
+    const fromTab = sender.tab?.id;
+    const runSortWithUnpack = async (tabId) => {
+      const preCheck = await chrome.scripting.executeScript({
+        target: { tabId },
+        func: () => {
+          const folders = [];
+          for (const tab of document.querySelectorAll('.os-tab-bar-tab-group')) {
+            const nameEl = tab.querySelector('.os-tab-name');
+            if (nameEl) folders.push(nameEl.textContent.trim());
+          }
+          return folders;
+        },
+      });
+      const allFolders = preCheck?.[0]?.result || [];
+      const illegalFolders = allFolders.filter(f => !ALLOWED_FOLDERS.includes(f));
+      if (illegalFolders.length > 0) {
+        console.log("[TabSort] Illegal folders detected, running unpack first:", illegalFolders);
+        unpackIllegalFolders(tabId, tabId, illegalFolders); // chains to sortStrayTabs internally
+        return { ok: true };
+      }
+      return sortStrayTabs(tabId, tabId);
+    };
+    if (fromTab) {
+      runSortWithUnpack(fromTab).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
+    } else {
+      chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+        const tab = tabs.find(t => t.url && t.url.includes("cad.onshape.com"));
+        if (!tab) { sendResponse({ error: "No Onshape tab active" }); return; }
+        runSortWithUnpack(tab.id).then(r => sendResponse(r)).catch(e => sendResponse({ error: e.message }));
+      });
+    }
     return true;
 
-  /* COMMENTED OUT — unpack functionality disabled
   } else if (msg.type === "unpack-illegal-folders") {
     const tabId = sender.tab?.id;
     if (!tabId) { sendResponse({ error: "No tab" }); return; }
     unpackIllegalFolders(tabId, tabId, msg.folders || []);
     sendResponse({ ok: true });
     return;
-  */
 
   } else if (msg.type === "check-interference") {
     // Interference detection via CDP — triggered from popup or content.js
@@ -4318,7 +4291,7 @@ const _loadedVersion = chrome.runtime.getManifest().version;
 console.log(`[AutoUpdate] Extension loaded, version: ${_loadedVersion}`);
 
 function isExtensionBusy() {
-  return _drawingInProgress || _sortingInProgress || _interferenceInProgress /* || _unpackInProgress */;
+  return _drawingInProgress || _sortingInProgress || _interferenceInProgress || _unpackInProgress;
 }
 
 let _updatePending = false; // true when update detected but waiting for busy ops to finish
