@@ -184,6 +184,37 @@ async function refreshAndApplyKillSwitch() {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Doc whitelist — per-document disable list, admin-only writes
+// ---------------------------------------------------------------------------
+
+async function getDisabledDocs() {
+  const { disabledDocsCache, disabledDocsFetchedAt } =
+    await chrome.storage.local.get(["disabledDocsCache", "disabledDocsFetchedAt"]);
+  if (disabledDocsCache && disabledDocsFetchedAt &&
+      Date.now() - disabledDocsFetchedAt < 60 * 60 * 1000) {
+    return disabledDocsCache;
+  }
+  try {
+    const res = await fetch(`${SYNC_SERVER}/api/disabled-docs`);
+    if (res.ok) {
+      const data = await res.json();
+      const docs = data.disabledDocs || [];
+      await chrome.storage.local.set({ disabledDocsCache: docs, disabledDocsFetchedAt: Date.now() });
+      return docs;
+    }
+  } catch (e) {
+    console.warn("[DocWhitelist] fetch failed:", e.message);
+  }
+  return disabledDocsCache || [];
+}
+
+async function isDocDisabled(docId) {
+  if (!docId) return false;
+  const docs = await getDisabledDocs();
+  return docs.includes(docId);
+}
+
 // Kill switch only runs on production builds.
 // dev branch manifest has "dev_build": true — absent on main.
 const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
@@ -3383,6 +3414,10 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const parsed = parsePartStudioUrl(msg.url || "");
       if (!parsed) { sendResponse({ error: "Invalid Part Studio URL" }); return; }
+      if (await isDocDisabled(parsed.docId)) {
+        sendResponse({ error: "Extension disabled for this document." });
+        return;
+      }
       try {
         const parts = await onshapeFetch(`/api/v10/parts/d/${parsed.docId}/w/${parsed.wid}/e/${parsed.eid}`);
         if (!parts || parts.length === 0) { sendResponse({ error: "No parts found" }); return; }
@@ -3396,9 +3431,16 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true; // async sendResponse
 
   } else if (msg.type === "create-drawings") {
-    createDrawingsForUrl(msg.url, msg.selectedParts || null);
-    sendResponse({ ok: true });
-    return;
+    (async () => {
+      const docId = (msg.url || "").match(/\/documents\/([a-f0-9]+)/)?.[1];
+      if (docId && await isDocDisabled(docId)) {
+        sendResponse({ error: "Extension disabled for this document." });
+        return;
+      }
+      createDrawingsForUrl(msg.url, msg.selectedParts || null);
+      sendResponse({ ok: true });
+    })();
+    return true;
 
   } else if (msg.type === "fetch-drawing-elements") {
     (async () => {
@@ -3640,23 +3682,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   } else if (msg.type === "check-interference") {
     // Interference detection via CDP — triggered from popup or content.js
-    const { docId, wid } = msg;
-    // sender.tab exists when from content.js; from popup we need to find the Onshape tab
-    const fromTab = sender.tab?.id;
-    if (fromTab) {
-      checkInterference(fromTab, fromTab, docId, wid);
-    } else {
-      chrome.tabs.query({ url: "https://cad.onshape.com/*" }, (tabs) => {
-        const tab = tabs.find(t => t.url && t.url.includes(docId));
-        if (tab) {
-          checkInterference(tab.id, tab.id, docId, wid);
-        } else {
-          sendResponse({ error: "No matching Onshape tab" });
-        }
-      });
-    }
-    sendResponse({ ok: true });
-    return;
+    (async () => {
+      const { docId, wid } = msg;
+      if (await isDocDisabled(docId)) {
+        sendResponse({ error: "Extension disabled for this document." });
+        return;
+      }
+      // sender.tab exists when from content.js; from popup we need to find the Onshape tab
+      const fromTab = sender.tab?.id;
+      if (fromTab) {
+        checkInterference(fromTab, fromTab, docId, wid);
+        sendResponse({ ok: true });
+      } else {
+        chrome.tabs.query({ url: "https://cad.onshape.com/*" }, (tabs) => {
+          const tab = tabs.find(t => t.url && t.url.includes(docId));
+          if (tab) {
+            checkInterference(tab.id, tab.id, docId, wid);
+            sendResponse({ ok: true });
+          } else {
+            sendResponse({ error: "No matching Onshape tab" });
+          }
+        });
+      }
+    })();
+    return true;
 
   } else if (msg.type === "discover-context-menu") {
     // Discovery helper — run once to find context menu selectors
@@ -3779,6 +3828,44 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     (async () => {
       const user = await getSessionUser();
       sendResponse(user || { error: "Could not get session user" });
+    })();
+    return true;
+
+  } else if (msg.type === "check-doc-disabled") {
+    (async () => {
+      const disabled = await isDocDisabled(msg.docId);
+      sendResponse({ disabled });
+    })();
+    return true;
+
+  } else if (msg.type === "set-doc-disabled") {
+    // Admin-only: only kevin@origin.tech may modify the whitelist
+    (async () => {
+      const user = await getSessionUser();
+      if (!user || user.email !== "kevin@10xconstruction.ai") {
+        sendResponse({ error: "Unauthorized" });
+        return;
+      }
+      const method = msg.disabled ? "PUT" : "DELETE";
+      const result = await syncFetch(`/api/disabled-docs/${msg.docId}`, { method });
+      if (!result || result.error) {
+        sendResponse({ error: result?.error || "Server error" });
+        return;
+      }
+      // Bust local cache so next check-doc-disabled reflects the change immediately
+      await chrome.storage.local.set({
+        disabledDocsCache: result.disabledDocs,
+        disabledDocsFetchedAt: Date.now(),
+      });
+      // Reload any open tab showing this doc so content.js re-runs the early-exit check
+      chrome.tabs.query({ url: "https://cad.onshape.com/*" }, (tabs) => {
+        for (const tab of tabs) {
+          if (tab.url && tab.url.includes(msg.docId)) {
+            chrome.tabs.reload(tab.id);
+          }
+        }
+      });
+      sendResponse({ ok: true, disabled: msg.disabled });
     })();
     return true;
 

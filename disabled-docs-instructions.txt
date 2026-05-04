@@ -1,0 +1,53 @@
+Doc Whitelist — Path B Instructions (curl)
+============================================
+
+Each command targets EXACTLY ONE doc ID. You cannot accidentally affect other docs.
+
+Get the doc ID from the Onshape URL:
+  https://cad.onshape.com/documents/THIS_PART_IS_THE_DOC_ID/w/.../e/...
+
+------------------------------------------------------------
+DISABLE extension for a doc (add to whitelist)
+------------------------------------------------------------
+
+curl -X PUT https://onshape-assistant-sync.artilabot.workers.dev/api/disabled-docs/DOC_ID_HERE \
+  -H "X-API-Key: artila-onshape-sync-2026"
+
+Example:
+  curl -X PUT https://onshape-assistant-sync.artilabot.workers.dev/api/disabled-docs/a1b2c3d4e5f6a1b2c3d4e5f6 \
+    -H "X-API-Key: artila-onshape-sync-2026"
+
+Response:
+  {"ok":true,"action":"disabled","docId":"a1b2c3d4e5f6a1b2c3d4e5f6","disabledDocs":["a1b2c3d4e5f6a1b2c3d4e5f6"]}
+
+------------------------------------------------------------
+RE-ENABLE extension for a doc (remove from whitelist)
+------------------------------------------------------------
+
+curl -X DELETE https://onshape-assistant-sync.artilabot.workers.dev/api/disabled-docs/DOC_ID_HERE \
+  -H "X-API-Key: artila-onshape-sync-2026"
+
+Example:
+  curl -X DELETE https://onshape-assistant-sync.artilabot.workers.dev/api/disabled-docs/a1b2c3d4e5f6a1b2c3d4e5f6 \
+    -H "X-API-Key: artila-onshape-sync-2026"
+
+Response:
+  {"ok":true,"action":"enabled","docId":"a1b2c3d4e5f6a1b2c3d4e5f6","disabledDocs":[]}
+
+------------------------------------------------------------
+VIEW current whitelist (all disabled docs)
+------------------------------------------------------------
+
+curl https://onshape-assistant-sync.artilabot.workers.dev/api/disabled-docs
+
+Response:
+  {"disabledDocs":["a1b2c3d4e5f6a1b2c3d4e5f6"]}
+
+------------------------------------------------------------
+Notes
+------------------------------------------------------------
+- PUT is idempotent — running it twice on the same doc ID is safe
+- DELETE on a doc that isn't in the list is safe (no-op)
+- Changes take effect for other users within 60 minutes (cache TTL)
+- Changes take effect immediately for you via the popup toggle
+- Only kevin@10xconstruction.ai can use the popup toggle; curl requires the API key above

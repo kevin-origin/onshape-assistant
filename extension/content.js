@@ -821,6 +821,17 @@
       console.log("[Scanner] Kill switch active — content script disabled");
       return;
     }
+    // Check per-doc whitelist — if this doc is disabled, bail out silently
+    const _docId = getDocIdFromUrl();
+    if (_docId) {
+      const docCheck = await new Promise(resolve =>
+        chrome.runtime.sendMessage({ type: "check-doc-disabled", docId: _docId }, resolve)
+      );
+      if (docCheck?.disabled) {
+        console.log("[Scanner] Doc whitelist active — extension disabled for this document");
+        return;
+      }
+    }
     // Wait for setup check before scanning — prevents folder overlay from showing on new docs
     await maybeSetupDoc();
     runOnDocLoad();
@@ -832,6 +843,18 @@
     if (_killSwitchActive) return;
     if (msg.type === "spa-navigated") {
       console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
+      // Re-check doc whitelist for the new doc
+      const _navDocId = getDocIdFromUrl();
+      if (_navDocId) {
+        const docCheck = await new Promise(resolve =>
+          chrome.runtime.sendMessage({ type: "check-doc-disabled", docId: _navDocId }, resolve)
+        );
+        if (docCheck?.disabled) {
+          console.log("[Scanner] Doc whitelist active — extension disabled for this document");
+          removeFolderOverlay();
+          return;
+        }
+      }
       _notifiedDocIds.clear(); // reset notification tracking for new doc
       removeFolderOverlay();
       await maybeSetupDoc();

@@ -1133,3 +1133,64 @@ function loadMergePermissions() {
   });
 }
 
+// ---------------------------------------------------------------------------
+// Doc whitelist toggle — only shown for kevin@origin.tech
+// ---------------------------------------------------------------------------
+
+function initDocWhitelistToggle() {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
+    if (!docMatch) return; // not an Onshape doc
+    const docId = docMatch[1];
+
+    // Check session user first — only render for Kevin
+    chrome.runtime.sendMessage({ type: "get-session-user" }, (user) => {
+      if (!user || user.email !== "kevin@10xconstruction.ai") return;
+
+      // Check current disabled state
+      chrome.runtime.sendMessage({ type: "check-doc-disabled", docId }, (resp) => {
+        const $section = document.getElementById("docWhitelistSection");
+        const $status = document.getElementById("docWhitelistStatus");
+        const $btn = document.getElementById("btnDocWhitelistToggle");
+
+        function render(disabled) {
+          $section.style.display = "block";
+          if (disabled) {
+            $status.textContent = "Extension DISABLED for this doc";
+            $status.style.color = "#ff6b6b";
+            $btn.textContent = "Re-enable";
+            $btn.style.background = "#3a3a3a";
+          } else {
+            $status.textContent = "Extension active for this doc";
+            $status.style.color = "#aaa";
+            $btn.textContent = "Disable for this doc";
+            $btn.style.background = "";
+          }
+        }
+
+        let _disabled = resp?.disabled || false;
+        render(_disabled);
+
+        $btn.addEventListener("click", () => {
+          $btn.disabled = true;
+          const newDisabled = !_disabled;
+          chrome.runtime.sendMessage({ type: "set-doc-disabled", docId, disabled: newDisabled }, (result) => {
+            $btn.disabled = false;
+            if (result?.ok) {
+              _disabled = newDisabled;
+              render(_disabled);
+            } else {
+              $status.textContent = "Error: " + (result?.error || "unknown");
+              $status.style.color = "#ff6b6b";
+            }
+          });
+        });
+      });
+    });
+  });
+}
+
+initDocWhitelistToggle();
+

@@ -27,6 +27,12 @@ export default {
       return json({ blocked: val || [] }, corsHeaders);
     }
 
+    // GET /api/disabled-docs — public, no auth; returns list of doc IDs where extension is disabled
+    if (path === "/api/disabled-docs" && request.method === "GET") {
+      const val = await env.MERGE_PERMS.get("__disabled_docs__", "json");
+      return json({ disabledDocs: val || [] }, corsHeaders);
+    }
+
     // Auth required for all other /api routes
     const apiKey = request.headers.get("X-API-Key");
     if (apiKey !== env.API_KEY) {
@@ -39,6 +45,24 @@ export default {
       const emails = (body.blocked || []).map(e => e.toLowerCase());
       await env.MERGE_PERMS.put("__blocked_emails__", JSON.stringify(emails));
       return json({ ok: true, blocked: emails }, corsHeaders);
+    }
+
+    // PUT /api/disabled-docs/:docId — admin only, adds exactly one doc to the disabled list
+    // DELETE /api/disabled-docs/:docId — admin only, removes exactly one doc from the disabled list
+    const disabledDocMatch = path.match(/^\/api\/disabled-docs\/([a-f0-9]+)$/);
+    if (disabledDocMatch) {
+      const docId = disabledDocMatch[1];
+      const current = await env.MERGE_PERMS.get("__disabled_docs__", "json") || [];
+      if (request.method === "PUT") {
+        if (!current.includes(docId)) current.push(docId);
+        await env.MERGE_PERMS.put("__disabled_docs__", JSON.stringify(current));
+        return json({ ok: true, action: "disabled", docId, disabledDocs: current }, corsHeaders);
+      }
+      if (request.method === "DELETE") {
+        const updated = current.filter(id => id !== docId);
+        await env.MERGE_PERMS.put("__disabled_docs__", JSON.stringify(updated));
+        return json({ ok: true, action: "enabled", docId, disabledDocs: updated }, corsHeaders);
+      }
     }
 
     // GET /api/merge-permissions — list all docs' perms (skip internal keys)
