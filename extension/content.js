@@ -1243,7 +1243,13 @@
       if (dropdown && dropdown !== _lastDropdown) {
         _lastDropdown = dropdown;
         applyGuard(dropdown);
-      } else if (!dropdown) {
+      } else if (!dropdown && _lastDropdown) {
+        _lastDropdown.querySelectorAll("[data-oxt-create-guarded]").forEach(btn => {
+          btn.style.opacity = "";
+          btn.style.pointerEvents = "";
+          btn.style.cursor = "";
+          delete btn.dataset.oxtCreateGuarded;
+        });
         _lastDropdown = null;
       }
     });
@@ -1384,6 +1390,15 @@
           const wid = getWidFromUrl();
           if (!docId || !wid) return;
 
+          // Reset rollback bar to end of feature list for all Part Studios
+          chrome.runtime.sendMessage({ type: "reset-partstudio-rollbacks", docId, wid }, (resp) => {
+            if (resp?.ok) {
+              console.log(`[RollbackReset] Reset ${resp.count} Part Studio(s)`);
+            } else {
+              console.log("[RollbackReset] Failed or no Part Studios:", resp?.error);
+            }
+          });
+
           chrome.runtime.sendMessage({ type: "check-main-workspace", docId, wid }, (resp) => {
             if (resp && resp.isMain) {
               console.log("[ReleaseGuard] On main workspace — release allowed");
@@ -1433,6 +1448,36 @@
 
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
     console.log("[ReleaseGuard] Observer started");
+  })();
+
+  // ---------------------------------------------------------------------------
+  // Rollback reset — move all Part Studio rollback bars to end of feature list
+  // when the Versions and History panel button is clicked.
+  // ---------------------------------------------------------------------------
+
+  (function initRollbackOnVersionsPanel() {
+    // Event delegation — survives Angular re-renders. Capture phase so Angular
+    // stop-propagation on the button doesn't swallow the event.
+    document.addEventListener("click", (e) => {
+      // The element itself carries data-bs-original-title; no closest() needed.
+      const el = e.target;
+      const tip = el.getAttribute("data-bs-original-title") || el.getAttribute("title") ||
+                  el.parentElement?.getAttribute("data-bs-original-title") || "";
+      if (tip !== "Versions and history") return;
+
+      const docId = getDocIdFromUrl();
+      const wid = getWidFromUrl();
+      if (!docId || !wid) return;
+      chrome.runtime.sendMessage({ type: "reset-partstudio-rollbacks", docId, wid }, (resp) => {
+        if (resp?.ok) {
+          console.log(`[RollbackReset] Reset ${resp.count} Part Studio(s) via Versions panel`);
+        } else {
+          console.log("[RollbackReset] Versions panel trigger failed:", resp?.error);
+        }
+      });
+    }, true);
+
+    console.log("[RollbackReset] Versions panel click delegation active");
   })();
 
   // ---------------------------------------------------------------------------
@@ -1687,6 +1732,83 @@
     applyTabLimitGuard();
     console.log("[InsertTabGuard] Observer started");
   }
+
+  // ---------------------------------------------------------------------------
+  // Rollback dialog inject — adds "Roll to end for all Part Studios" button
+  // inside the Onshape release dialog when it opens.
+  // ---------------------------------------------------------------------------
+  (function initRollbackDialog() {
+    const DIALOG_SEL  = "div.modal.release-dialog.show";
+    const BTN_ID      = "oxt-rollback-btn";
+    const STATUS_ID   = "oxt-rollback-status";
+
+    function injectButton(dialog) {
+      if (dialog.querySelector("#" + BTN_ID)) return; // already injected
+
+      const btn = document.createElement("button");
+      btn.id    = BTN_ID;
+      btn.type  = "button";
+      btn.textContent = "Roll to end for all Part Studios";
+      btn.style.cssText = [
+        "display:inline-flex",
+        "align-items:center",
+        "gap:6px",
+        "margin:8px 0 4px",
+        "padding:5px 12px",
+        "border:1px solid #1565c0",
+        "border-radius:4px",
+        "background:#1a73e8",
+        "color:#fff",
+        "font-size:13px",
+        "cursor:pointer",
+        "white-space:nowrap",
+      ].join(";");
+
+      const status = document.createElement("span");
+      status.id = STATUS_ID;
+      status.style.cssText = "font-size:12px;color:#555;margin-left:6px";
+
+      btn.addEventListener("click", () => {
+        const docId = getDocIdFromUrl();
+        const wid   = getWidFromUrl();
+        if (!docId || !wid) {
+          status.textContent = "Could not read doc/workspace from URL.";
+          return;
+        }
+        btn.disabled = true;
+        status.textContent = "Working…";
+        chrome.runtime.sendMessage({ type: "reset-partstudio-rollbacks", docId, wid }, (resp) => {
+          btn.disabled = false;
+          if (resp?.ok) {
+            status.textContent = `Done — reset ${resp.count} Part Studio(s).`;
+            btn.style.background   = "#198754";
+            btn.style.borderColor  = "#198754";
+          } else {
+            status.textContent = "Failed: " + (resp?.error || "unknown error");
+            btn.style.background   = "#dc3545";
+            btn.style.borderColor  = "#dc3545";
+          }
+        });
+      });
+
+      // Insert at top of the modal body so it's immediately visible
+      const body = dialog.querySelector(".modal-body, .modal-content");
+      if (body) {
+        const wrapper = document.createElement("div");
+        wrapper.style.cssText = "padding:0 16px 4px";
+        wrapper.appendChild(btn);
+        wrapper.appendChild(status);
+        body.insertAdjacentElement("afterbegin", wrapper);
+      }
+    }
+
+    const observer = new MutationObserver(() => {
+      const dialog = document.querySelector(DIALOG_SEL);
+      if (dialog) injectButton(dialog);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[RollbackDialog] Observer started");
+  })();
 
   // Start interceptors
   initCreateDropdownGuard();

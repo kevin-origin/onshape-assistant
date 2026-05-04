@@ -435,6 +435,20 @@ async function createDrawingsForUrl(url, selectedParts) {
 
     const ref = { documentId: docId, workspaceId: wid, elementId: eid, partId: partId };
 
+    // Look up flat pattern body (sheet metal parts only)
+    let flatRef = null;
+    try {
+      const insParams = new URLSearchParams({ includeFlattenedBodies: "true", includeParts: "false", elementId: eid });
+      const ins = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/insertables?${insParams}`);
+      const fb = (ins.items || []).find(i => i.isFlattenedBody && i.unflattenedPartDeterministicId === partId);
+      if (fb) {
+        flatRef = { documentId: docId, workspaceId: wid, elementId: eid, partId: fb.deterministicId };
+        broadcastDrawLog(`  flat body: ${fb.deterministicId}`);
+      }
+    } catch(e) {
+      broadcastDrawLog(`  flat body lookup: ${e.message}`, "log-err");
+    }
+
     // View positions: center the 4-view block within the usable A3 area.
     // A3 landscape 420×297mm. Onshape position coords: origin top-right, x leftward, y downward (meters).
     // Compute physical layout in mm (Y-up, origin bottom-left), then convert.
@@ -3531,6 +3545,30 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (e) {
         console.log(`[PartsGuard] Parts check failed: ${e.message}`);
         sendResponse({ issues: [] }); // fail open — don't block if check errors
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "reset-partstudio-rollbacks") {
+    // POST rollbackIndex:-1 to every Part Studio in the doc — fires when release dialog opens.
+    (async () => {
+      const { docId, wid } = msg;
+      if (!docId || !wid) { sendResponse({ ok: false, error: "Missing docId or wid" }); return; }
+      try {
+        const elements = await onshapeFetch(`/api/v10/documents/d/${docId}/w/${wid}/elements`);
+        const items = Array.isArray(elements) ? elements : (elements.items || []);
+        const partStudios = items.filter(e => e.elementType === "PARTSTUDIO");
+        for (const ps of partStudios) {
+          await onshapePost(
+            `/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features/rollback`,
+            { rollbackIndex: -1 }
+          );
+        }
+        console.log(`[RollbackReset] Reset rollback bar for ${partStudios.length} Part Studio(s) in doc ${docId}`);
+        sendResponse({ ok: true, count: partStudios.length });
+      } catch (e) {
+        console.log(`[RollbackReset] Failed: ${e.message}`);
+        sendResponse({ ok: false, error: e.message });
       }
     })();
     return true;
