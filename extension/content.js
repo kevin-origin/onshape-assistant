@@ -1540,9 +1540,8 @@
             const banner = document.createElement("div");
             banner.id = "oxt-parts-banner";
             banner.style.cssText = `
-              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
               padding: 10px 14px; margin: 8px 16px; font-size: 13px;
-              color: #92400e; font-weight: 500;
+              color: #dc2626; font-weight: 500;
               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             `;
             const list = resp.issues.map(i => `• ${i}`).join("\n");

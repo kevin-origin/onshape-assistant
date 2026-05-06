@@ -9,7 +9,17 @@ function showSection(id) {
   document.getElementById(id).classList.add('active');
 }
 
-document.getElementById("btnGoDrawing").addEventListener("click", () => showSection("sectionDrawing"));
+document.getElementById("btnGoDrawing").addEventListener("click", () => {
+  showSection("sectionDrawing");
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    if (url.includes("cad.onshape.com/documents/") && url.includes("/w/") && url.includes("/e/")) {
+      _drawingUrl = url.split("?")[0];
+      $btnCreateDraw.click();
+    }
+  });
+});
 document.getElementById("btnGoScanner").addEventListener("click", () => {
   showSection("sectionScanner");
   loadLastScanForCurrentDoc();
@@ -35,7 +45,17 @@ document.getElementById("btnGoUrdf").addEventListener("click", () => {
   });
 });
 document.getElementById("btnBackFromUrdf").addEventListener("click", () => showSection("sectionExport"));
-document.getElementById("btnGoExport3D").addEventListener("click", () => showSection("sectionExport3D"));
+document.getElementById("btnGoExport3D").addEventListener("click", () => {
+  showSection("sectionExport3D");
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    if (url.includes("cad.onshape.com/documents/") && url.includes("/w/") && url.includes("/e/")) {
+      _export3dUrl = url.split("?")[0];
+      loadExport3dParts();
+    }
+  });
+});
 document.getElementById("btnBackFromExport3D").addEventListener("click", () => showSection("sectionExport"));
 document.getElementById("btnGoExportBulk").addEventListener("click", () => {
   showSection("sectionExportBulk");
@@ -443,6 +463,7 @@ function validateFolders(result) {
 
 let _export3dFormat = "STEP";
 let _export3dParts  = [];
+let _export3dUrl    = "";
 
 const $btnFormatStep  = document.getElementById("btnFormatStep");
 const $btnFormatStl   = document.getElementById("btnFormatStl");
@@ -470,21 +491,18 @@ function append3dLog(text, cls) {
   $log.scrollTop = $log.scrollHeight;
 }
 
-document.getElementById("btnLoadExport3dParts").addEventListener("click", () => {
-  const url = document.getElementById("export3dUrl").value.trim();
+function loadExport3dParts() {
+  const url = _export3dUrl;
   if (!url || !url.includes("cad.onshape.com/documents/")) {
-    append3dLog("Enter a valid Part Studio URL", "log-err");
+    append3dLog("Not on a Part Studio tab", "log-err");
     return;
   }
-  const btn = document.getElementById("btnLoadExport3dParts");
-  btn.disabled = true;
   document.getElementById("export3dPartPanel").style.display = "none";
   document.getElementById("export3dLog").style.display = "none";
   document.getElementById("export3dLog").innerHTML = "";
   append3dLog("Fetching parts...");
 
   chrome.runtime.sendMessage({ type: "fetch-parts", url }, (response) => {
-    btn.disabled = false;
     if (!response || response.error) {
       append3dLog(response ? response.error : "No response from background", "log-err");
       return;
@@ -521,7 +539,7 @@ document.getElementById("btnLoadExport3dParts").addEventListener("click", () => 
     });
     document.getElementById("export3dPartPanel").style.display = "block";
   });
-});
+}
 
 document.getElementById("chkExport3dSelectAll").addEventListener("change", (e) => {
   document.getElementById("export3dPartList").querySelectorAll(".export3d-part-cb")
@@ -529,7 +547,7 @@ document.getElementById("chkExport3dSelectAll").addEventListener("change", (e) =
 });
 
 document.getElementById("btnRunExport3d").addEventListener("click", () => {
-  const url = document.getElementById("export3dUrl").value.trim();
+  const url = _export3dUrl;
   const boxes = document.getElementById("export3dPartList").querySelectorAll(".export3d-part-cb:checked");
   const selectedParts = Array.from(boxes).map(cb => _export3dParts[parseInt(cb.dataset.index)]);
   if (selectedParts.length === 0) { append3dLog("No parts selected", "log-err"); return; }
@@ -578,7 +596,7 @@ document.getElementById("btnGenerateUrdf").addEventListener("click", () => {
 
 // ---------------------------------------------------------------------------
 // Drawing Creator elements
-const $partStudioUrl   = document.getElementById("partStudioUrl");
+let _drawingUrl        = "";
 const $btnCreateDraw   = document.getElementById("btnCreateDrawings");
 const $drawLog         = document.getElementById("drawLog");
 const $partSelectPanel = document.getElementById("partSelectPanel");
@@ -602,18 +620,6 @@ const $resultList   = document.getElementById("resultList");
 // ---------------------------------------------------------------------------
 // Load saved config
 // ---------------------------------------------------------------------------
-
-chrome.storage.local.get(["partStudioUrl"], (data) => {
-  $partStudioUrl.value = data.partStudioUrl || "";
-});
-
-// ---------------------------------------------------------------------------
-// Save config on change
-// ---------------------------------------------------------------------------
-
-$partStudioUrl.addEventListener("change", () => {
-  chrome.storage.local.set({ partStudioUrl: $partStudioUrl.value.trim() });
-});
 
 // ---------------------------------------------------------------------------
 // Status display
@@ -643,11 +649,9 @@ function appendDrawLog(text, cls) {
 
 // "Generate Drawings" — fetch parts and show selection panel
 $btnCreateDraw.addEventListener("click", () => {
-  chrome.storage.local.set({ partStudioUrl: $partStudioUrl.value.trim() });
-
-  const url = $partStudioUrl.value.trim();
+  const url = _drawingUrl;
   if (!url || !url.includes("cad.onshape.com/documents/")) {
-    appendDrawLog("Enter a valid Part Studio URL", "log-err");
+    appendDrawLog("Not on a Part Studio tab", "log-err");
     return;
   }
 
@@ -738,7 +742,7 @@ $btnConfirm.addEventListener("click", () => {
 
   chrome.runtime.sendMessage({
     type: "create-drawings",
-    url: $partStudioUrl.value.trim(),
+    url: _drawingUrl,
     selectedParts: selectedParts,
     weldment: null,
   }, (response) => {

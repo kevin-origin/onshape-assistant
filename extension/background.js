@@ -4154,10 +4154,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const { docId: did, wid, eid } = parsed;
         const ext = format === "STEP" ? "step" : "stl";
         const files = [];
+        const docInfo = await onshapeFetch(`/api/v10/documents/${did}`);
+        const safeDocName = (docInfo?.name || "Document").replace(/[\\/:*?"<>|]/g, "_").trim();
         chrome.runtime.sendMessage({ type: "export-3d-progress", message: `Starting ${format} export for ${selectedParts.length} part(s)...` }).catch(() => {});
 
         for (const part of selectedParts) {
-          const safeName = (part.name || part.partId).replace(/[^a-zA-Z0-9_\-]/g, "_");
+          const safePartName = (part.name || part.partId).replace(/[\\/:*?"<>|]/g, "_").trim();
+          const safeName = `${safeDocName} - ${safePartName}`;
           chrome.runtime.sendMessage({ type: "export-3d-progress", message: `  ${part.name}...` }).catch(() => {});
           try {
             const jobBody = { formatName: format, storeInDocument: false, partIds: part.partId };
