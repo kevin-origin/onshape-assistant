@@ -821,6 +821,17 @@
       console.log("[Scanner] Kill switch active — content script disabled");
       return;
     }
+    // Check per-doc whitelist — if this doc is disabled, bail out silently
+    const _docId = getDocIdFromUrl();
+    if (_docId) {
+      const docCheck = await new Promise(resolve =>
+        chrome.runtime.sendMessage({ type: "check-doc-disabled", docId: _docId }, resolve)
+      );
+      if (docCheck?.disabled) {
+        console.log("[Scanner] Doc whitelist active — extension disabled for this document");
+        return;
+      }
+    }
     // Wait for setup check before scanning — prevents folder overlay from showing on new docs
     await maybeSetupDoc();
     runOnDocLoad();
@@ -832,6 +843,18 @@
     if (_killSwitchActive) return;
     if (msg.type === "spa-navigated") {
       console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
+      // Re-check doc whitelist for the new doc
+      const _navDocId = getDocIdFromUrl();
+      if (_navDocId) {
+        const docCheck = await new Promise(resolve =>
+          chrome.runtime.sendMessage({ type: "check-doc-disabled", docId: _navDocId }, resolve)
+        );
+        if (docCheck?.disabled) {
+          console.log("[Scanner] Doc whitelist active — extension disabled for this document");
+          removeFolderOverlay();
+          return;
+        }
+      }
       _notifiedDocIds.clear(); // reset notification tracking for new doc
       removeFolderOverlay();
       await maybeSetupDoc();
@@ -1237,13 +1260,20 @@
 
     let _lastDropdown = null;
     const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
       const dropdown = document.querySelector(
         "div.dropdown-menu.os-create-menu.create-new-type-menu.show"
       );
       if (dropdown && dropdown !== _lastDropdown) {
         _lastDropdown = dropdown;
         applyGuard(dropdown);
-      } else if (!dropdown) {
+      } else if (!dropdown && _lastDropdown) {
+        _lastDropdown.querySelectorAll("[data-oxt-create-guarded]").forEach(btn => {
+          btn.style.opacity = "";
+          btn.style.pointerEvents = "";
+          btn.style.cursor = "";
+          delete btn.dataset.oxtCreateGuarded;
+        });
         _lastDropdown = null;
       }
     });
@@ -1258,6 +1288,7 @@
     let _lastModal = null;
 
     const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
       const modal = document.querySelector(
         "div.modal.version-or-workspace-dialog.show"
       );
@@ -1384,6 +1415,15 @@
           const wid = getWidFromUrl();
           if (!docId || !wid) return;
 
+          // Reset rollback bar to end of feature list for all Part Studios
+          chrome.runtime.sendMessage({ type: "reset-partstudio-rollbacks", docId, wid }, (resp) => {
+            if (resp?.ok) {
+              console.log(`[RollbackReset] Reset ${resp.count} Part Studio(s)`);
+            } else {
+              console.log("[RollbackReset] Failed or no Part Studios:", resp?.error);
+            }
+          });
+
           chrome.runtime.sendMessage({ type: "check-main-workspace", docId, wid }, (resp) => {
             if (resp && resp.isMain) {
               console.log("[ReleaseGuard] On main workspace — release allowed");
@@ -1436,6 +1476,36 @@
   })();
 
   // ---------------------------------------------------------------------------
+  // Rollback reset — move all Part Studio rollback bars to end of feature list
+  // when the Versions and History panel button is clicked.
+  // ---------------------------------------------------------------------------
+
+  (function initRollbackOnVersionsPanel() {
+    // Event delegation — survives Angular re-renders. Capture phase so Angular
+    // stop-propagation on the button doesn't swallow the event.
+    document.addEventListener("click", (e) => {
+      // The element itself carries data-bs-original-title; no closest() needed.
+      const el = e.target;
+      const tip = el.getAttribute("data-bs-original-title") || el.getAttribute("title") ||
+                  el.parentElement?.getAttribute("data-bs-original-title") || "";
+      if (tip !== "Versions and history") return;
+
+      const docId = getDocIdFromUrl();
+      const wid = getWidFromUrl();
+      if (!docId || !wid) return;
+      chrome.runtime.sendMessage({ type: "reset-partstudio-rollbacks", docId, wid }, (resp) => {
+        if (resp?.ok) {
+          console.log(`[RollbackReset] Reset ${resp.count} Part Studio(s) via Versions panel`);
+        } else {
+          console.log("[RollbackReset] Versions panel trigger failed:", resp?.error);
+        }
+      });
+    }, true);
+
+    console.log("[RollbackReset] Versions panel click delegation active");
+  })();
+
+  // ---------------------------------------------------------------------------
   // Parts materials guard — blocks release if any parts are missing materials
   // or still have a default "Part N" name.
   // ---------------------------------------------------------------------------
@@ -1472,9 +1542,8 @@
             const banner = document.createElement("div");
             banner.id = "oxt-parts-banner";
             banner.style.cssText = `
-              background: #fef3c7; border: 1px solid #f59e0b; border-radius: 4px;
               padding: 10px 14px; margin: 8px 16px; font-size: 13px;
-              color: #92400e; font-weight: 500;
+              color: #dc2626; font-weight: 500;
               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             `;
             const list = resp.issues.map(i => `• ${i}`).join("\n");
@@ -1687,6 +1756,84 @@
     applyTabLimitGuard();
     console.log("[InsertTabGuard] Observer started");
   }
+
+  // ---------------------------------------------------------------------------
+  // Rollback dialog inject — adds "Roll to end for all Part Studios" button
+  // inside the Onshape release dialog when it opens.
+  // ---------------------------------------------------------------------------
+  (function initRollbackDialog() {
+    const DIALOG_SEL  = "div.modal.release-dialog.show";
+    const BTN_ID      = "oxt-rollback-btn";
+    const STATUS_ID   = "oxt-rollback-status";
+
+    function injectButton(dialog) {
+      if (dialog.querySelector("#" + BTN_ID)) return; // already injected
+
+      const btn = document.createElement("button");
+      btn.id    = BTN_ID;
+      btn.type  = "button";
+      btn.textContent = "Roll to end for all Part Studios";
+      btn.style.cssText = [
+        "display:inline-flex",
+        "align-items:center",
+        "gap:6px",
+        "margin:8px 0 4px",
+        "padding:5px 12px",
+        "border:1px solid #1565c0",
+        "border-radius:4px",
+        "background:#1a73e8",
+        "color:#fff",
+        "font-size:13px",
+        "cursor:pointer",
+        "white-space:nowrap",
+      ].join(";");
+
+      const status = document.createElement("span");
+      status.id = STATUS_ID;
+      status.style.cssText = "font-size:12px;color:#555;margin-left:6px";
+
+      btn.addEventListener("click", () => {
+        const docId = getDocIdFromUrl();
+        const wid   = getWidFromUrl();
+        if (!docId || !wid) {
+          status.textContent = "Could not read doc/workspace from URL.";
+          return;
+        }
+        btn.disabled = true;
+        status.textContent = "Working…";
+        chrome.runtime.sendMessage({ type: "reset-partstudio-rollbacks", docId, wid }, (resp) => {
+          btn.disabled = false;
+          if (resp?.ok) {
+            status.textContent = `Done — reset ${resp.count} Part Studio(s).`;
+            btn.style.background   = "#198754";
+            btn.style.borderColor  = "#198754";
+          } else {
+            status.textContent = "Failed: " + (resp?.error || "unknown error");
+            btn.style.background   = "#dc3545";
+            btn.style.borderColor  = "#dc3545";
+          }
+        });
+      });
+
+      // Insert at top of the modal body so it's immediately visible
+      const body = dialog.querySelector(".modal-body, .modal-content");
+      if (body) {
+        const wrapper = document.createElement("div");
+        wrapper.style.cssText = "padding:0 16px 4px";
+        wrapper.appendChild(btn);
+        wrapper.appendChild(status);
+        body.insertAdjacentElement("afterbegin", wrapper);
+      }
+    }
+
+    const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
+      const dialog = document.querySelector(DIALOG_SEL);
+      if (dialog) injectButton(dialog);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[RollbackDialog] Observer started");
+  })();
 
   // Start interceptors
   initCreateDropdownGuard();

@@ -223,14 +223,22 @@ CronCreate(
 ## Commands
 
 ```bash
-python3 publish.py   # bump version, pack CRX, push, create GitHub release
+echo "" | python3 publish.py   # bump version (accepts default), pack CRX, push, create GitHub release
 ```
+
+`publish.py` has one interactive prompt (version number). Pipe an empty string to accept the auto-suggested patch bump. To specify a version explicitly: `echo "2.1.13" | python3 publish.py`
+
+### Version number convention (`MAJOR.MINOR.PATCH`)
+
+- **MAJOR** — complete rewrite or major UI overhaul
+- **MINOR** — new feature added
+- **PATCH** — bug fix or tweak to an existing feature
 
 ## Service worker testing (sw-relay)
 
 Run arbitrary JS in the Chrome extension service worker from WSL — no manual console needed.
 
-**Setup:**
+**Setup — Claude runs all of this autonomously, never asks Kevin:**
 1. Launch Chrome:
    ```bash
    powershell.exe -Command "Stop-Process -Name chrome -Force -ErrorAction SilentlyContinue; Start-Sleep 2; Start-Process 'C:\Program Files\Google\Chrome\Application\chrome.exe' -ArgumentList '--remote-debugging-port=9223','--user-data-dir=C:\Users\kevin\AppData\Local\Google\Chrome\Debug'"
@@ -242,7 +250,7 @@ Run arbitrary JS in the Chrome extension service worker from WSL — no manual c
    ```
 4. Verify connected:
    ```bash
-   sleep 4 && cat /tmp/sw-relay.log
+   sleep 5 && cat /tmp/sw-relay.log
    # expect: [relay] CDP connected: ws://127.0.0.1:9223/devtools/page/...
    ```
 5. `python3 ~/sw-exec.py "<js expression>"` — sends expression, prints result

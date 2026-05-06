@@ -307,14 +307,18 @@
       Folder Generator
       <div class="menu-desc">Create standard folder structure for a document</div>
     </button>
+    <!-- Doc whitelist toggle — only rendered for kevin@origin.tech -->
+    <div id="docWhitelistSection" style="display:none; border-top:1px solid #3a3a3a; margin-top:10px; padding-top:10px">
+      <div style="display:flex; align-items:center; gap:8px">
+        <span id="docWhitelistStatus" style="flex:1; font-size:11px; color:#aaa"></span>
+        <button id="btnDocWhitelistToggle" class="btn" style="font-size:11px; padding:3px 10px; white-space:nowrap"></button>
+      </div>
+    </div>
   </div>
 
   <!-- ============ Drawing Creator ============ -->
   <div id="sectionDrawing" class="section">
     <h3><button class="btn-back" id="btnBackFromDrawing">Back</button> Drawing Creator</h3>
-
-    <label>Part Studio URL</label>
-    <input type="text" id="partStudioUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
 
     <div class="btn-row">
       <button class="btn-draw" id="btnCreateDrawings">Generate Drawings</button>
@@ -447,17 +451,10 @@
   <div id="sectionExport3D" class="section">
     <h3><button class="btn-back" id="btnBackFromExport3D">Back</button> Export Parts 3D</h3>
 
-    <label>Part Studio URL</label>
-    <input type="text" id="export3dUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
-
-    <label style="margin-top:10px;">Format</label>
+    <label>Format</label>
     <div class="btn-row" style="margin-top:4px;">
       <button id="btnFormatStep" style="background:#1b4332;color:#95d5b2;border:none;border-radius:4px;padding:7px 10px;font-size:14px;font-weight:600;cursor:pointer;flex:1;">STEP</button>
       <button id="btnFormatStl" style="background:#1a1a40;color:#7ec8e3;border:1px solid #333;border-radius:4px;padding:7px 10px;font-size:14px;font-weight:600;cursor:pointer;flex:1;">STL</button>
-    </div>
-
-    <div class="btn-row" style="margin-top:10px;">
-      <button class="btn-rescan" id="btnLoadExport3dParts">Load Parts</button>
     </div>
 
     <div id="export3dPartPanel" style="display:none;margin-top:10px;border:1px solid #333;border-radius:6px;background:#16213e;padding:10px;">
