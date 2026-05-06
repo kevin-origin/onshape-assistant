@@ -1260,6 +1260,7 @@
 
     let _lastDropdown = null;
     const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
       const dropdown = document.querySelector(
         "div.dropdown-menu.os-create-menu.create-new-type-menu.show"
       );
@@ -1287,6 +1288,7 @@
     let _lastModal = null;
 
     const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
       const modal = document.querySelector(
         "div.modal.version-or-workspace-dialog.show"
       );
@@ -1825,6 +1827,7 @@
     }
 
     const observer = new MutationObserver(() => {
+      if (_killSwitchActive) return;
       const dialog = document.querySelector(DIALOG_SEL);
       if (dialog) injectButton(dialog);
     });
