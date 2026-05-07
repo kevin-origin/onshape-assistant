@@ -219,13 +219,15 @@ async function isDocDisabled(docId) {
 // dev branch manifest has "dev_build": true — absent on main.
 const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 
+// Always force-refresh the disabled-docs list on every SW startup (both dev and production).
+// Busting the timestamp ensures we never serve a stale empty list after a doc is added.
+chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
+
 if (IS_PRODUCTION_BUILD) {
   // Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
   checkKillSwitchSync().then(blocked => {
     if (!blocked) refreshAndApplyKillSwitch();
   });
-  // Also prime the disabled-docs cache on startup
-  getDisabledDocs();
 
   // Hourly alarm: keep blocked state and disabled-docs list current without waiting for a tab load
   chrome.alarms.create("kill-switch-refresh", { periodInMinutes: 60 });
