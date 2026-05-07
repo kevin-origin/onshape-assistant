@@ -20,12 +20,12 @@ document.getElementById("btnGoDrawing").addEventListener("click", () => {
     }
   });
 });
-document.getElementById("btnGoScanner").addEventListener("click", () => {
-  showSection("sectionScanner");
+document.getElementById("btnGoFolderStructure").addEventListener("click", () => {
+  showSection("sectionFolderStructure");
   loadLastScanForCurrentDoc();
 });
 document.getElementById("btnBackFromDrawing").addEventListener("click", () => showSection("sectionMenu"));
-document.getElementById("btnBackFromScanner").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnBackFromFolderStructure").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnGoMergePerms").addEventListener("click", () => {
   showSection("sectionMergePerms");
   loadMergePermissions();
@@ -62,8 +62,23 @@ document.getElementById("btnGoExportBulk").addEventListener("click", () => {
   loadExportElements();
 });
 document.getElementById("btnBackFromExportBulk").addEventListener("click", () => showSection("sectionExport"));
-document.getElementById("btnGoFolderGen").addEventListener("click", () => showSection("sectionFolderGen"));
-document.getElementById("btnBackFromFolderGen").addEventListener("click", () => showSection("sectionMenu"));
+document.getElementById("btnGoBomGen").addEventListener("click", () => {
+  showSection("sectionBomGen");
+  document.getElementById("bomGenParamPanel").style.display = "none";
+  document.getElementById("bomGenLog").style.display = "none";
+  document.getElementById("bomGenLog").innerHTML = "";
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    if (url.includes("cad.onshape.com/documents/") && url.includes("/w/") && url.includes("/e/")) {
+      _bomGenUrl = url.split("?")[0];
+      loadBomConfigs();
+    } else {
+      appendBomLog("Open an Onshape Assembly tab first", "log-err");
+    }
+  });
+});
+document.getElementById("btnBackFromBomGen").addEventListener("click", () => showSection("sectionExport"));
 
 // Set merge permissions for current doc — triggers overlay in content script
 document.getElementById("btnSetMergePerms").addEventListener("click", () => {
@@ -399,14 +414,14 @@ chrome.storage.local.get("popupTargetSection", (data) => {
   if (data.popupTargetSection) {
     chrome.storage.local.remove("popupTargetSection");
     if (data.popupTargetSection === "scanner") {
-      showSection("sectionScanner");
+      showSection("sectionFolderStructure");
       loadLastScanForCurrentDoc();
     }
   }
   // Also check URL params (fallback when opened as tab)
   const params = new URLSearchParams(window.location.search);
   const section = params.get("section");
-  if (section === "scanner") { showSection("sectionScanner"); loadLastScanForCurrentDoc(); }
+  if (section === "scanner") { showSection("sectionFolderStructure"); loadLastScanForCurrentDoc(); }
 });
 
 // ---------------------------------------------------------------------------
@@ -889,6 +904,108 @@ function appendNotesLog(text, cls) {
 }
 
 // ---------------------------------------------------------------------------
+// BOM Generator
+// ---------------------------------------------------------------------------
+
+let _bomGenUrl = "";
+
+function appendBomLog(text, cls) {
+  const $log = document.getElementById("bomGenLog");
+  $log.style.display = "block";
+  const line = document.createElement("div");
+  line.className = "log-line" + (cls ? " " + cls : "");
+  line.textContent = text;
+  $log.appendChild(line);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+function loadBomConfigs() {
+  document.getElementById("bomGenParamPanel").style.display = "none";
+  document.getElementById("bomGenLog").style.display = "none";
+  document.getElementById("bomGenLog").innerHTML = "";
+  appendBomLog("Fetching configurations...");
+  chrome.runtime.sendMessage({ type: "fetch-bom-configs", url: _bomGenUrl });
+}
+
+function renderBomConfigs(params) {
+  document.getElementById("bomGenLog").style.display = "none";
+  document.getElementById("bomGenLog").innerHTML = "";
+  const $list = document.getElementById("bomGenParamList");
+  $list.innerHTML = "";
+  if (params.length === 0) {
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:12px;color:#888;margin-bottom:8px;";
+    info.textContent = "No configuration — default BOM will be generated.";
+    $list.appendChild(info);
+  } else {
+    params.forEach(param => {
+      const row = document.createElement("div");
+      row.style.marginBottom = "10px";
+      const lbl = document.createElement("div");
+      lbl.style.cssText = "font-size:12px;color:#aaa;margin-bottom:4px;";
+      lbl.textContent = param.name;
+      row.appendChild(lbl);
+      if (param.type === "enum") {
+        const sel = document.createElement("select");
+        sel.dataset.paramId = param.id;
+        sel.className = "bom-config-input";
+        param.values.forEach(v => {
+          const opt = document.createElement("option");
+          opt.value = v.value;
+          opt.textContent = v.label;
+          if (v.value === param.defaultValue) opt.selected = true;
+          sel.appendChild(opt);
+        });
+        row.appendChild(sel);
+      } else if (param.type === "boolean") {
+        const wrap = document.createElement("label");
+        wrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;color:#e0e0e0;cursor:pointer;";
+        const cb = document.createElement("input");
+        cb.type = "checkbox";
+        cb.dataset.paramId = param.id;
+        cb.dataset.inputType = "boolean";
+        cb.className = "bom-config-input";
+        cb.checked = param.defaultValue === "true";
+        wrap.appendChild(cb);
+        wrap.appendChild(document.createTextNode("Enabled"));
+        row.appendChild(wrap);
+      } else {
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.dataset.paramId = param.id;
+        inp.className = "bom-config-input";
+        inp.value = param.defaultValue || "";
+        inp.placeholder = param.unitSpec || "value";
+        row.appendChild(inp);
+      }
+      $list.appendChild(row);
+    });
+  }
+  document.getElementById("bomGenParamPanel").style.display = "block";
+}
+
+document.getElementById("btnGenerateBomCsv").addEventListener("click", () => {
+  const configParts = [];
+  document.querySelectorAll(".bom-config-input").forEach(el => {
+    const id = el.dataset.paramId;
+    if (!id) return;
+    if (el.type === "checkbox") {
+      configParts.push(`${id}=${el.checked}`);
+    } else {
+      if (el.tagName === "SELECT" || el.value.trim()) configParts.push(`${id}=${el.value.trim()}`);
+    }
+  });
+  const configuration = configParts.join(";");
+  const btn = document.getElementById("btnGenerateBomCsv");
+  btn.disabled = true;
+  document.getElementById("bomGenLog").innerHTML = "";
+  appendBomLog("Generating BOM...");
+  chrome.runtime.sendMessage({ type: "export-bom-csv", url: _bomGenUrl, configuration }, (response) => {
+    if (!response) { appendBomLog("No response from background", "log-err"); btn.disabled = false; }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Listen for messages from background.js
 // ---------------------------------------------------------------------------
 
@@ -958,6 +1075,19 @@ chrome.runtime.onMessage.addListener((msg) => {
       a.href = "data:application/zip;base64," + msg.zipBase64;
       a.download = msg.filename || "export.zip";
       a.click();
+    }
+  } else if (msg.type === "bom-configs-loaded") {
+    renderBomConfigs(msg.params || []);
+  } else if (msg.type === "bom-configs-error") {
+    appendBomLog("Error: " + msg.error, "log-err");
+  } else if (msg.type === "bom-export-progress") {
+    appendBomLog(msg.message, msg.cls);
+  } else if (msg.type === "bom-export-done") {
+    document.getElementById("btnGenerateBomCsv").disabled = false;
+    if (msg.error) {
+      appendBomLog("Error: " + msg.error, "log-err");
+    } else {
+      appendBomLog(`Downloaded: ${msg.filename} (${msg.rows ?? 0} rows)`, "log-ok");
     }
   }
 });

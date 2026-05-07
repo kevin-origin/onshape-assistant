@@ -277,3 +277,4 @@ python3 ~/sw-exec.py "new Promise(r => chrome.storage.local.get(null, r))"
 - Company ID: `6810c247e7c40668c32816a6`
 - `filter=6` for documents by owner (`filter=7` = label filter, wrong)
 - `globaltreenodes/folder/{COMPANY_ID}` returns 403 on Pro — use `parentId` from docs + `GET /api/v10/folders/{fid}`
+- BOM Template - Origin ID: `dc9153301b06a1d59d889555` — pass as `?templateId=` to `GET /api/v10/assemblies/d/{did}/{wvm}/{wvmid}/e/{eid}/bom`

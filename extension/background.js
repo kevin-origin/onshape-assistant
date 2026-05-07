@@ -4215,6 +4215,94 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return;
 
+  } else if (msg.type === "fetch-bom-configs") {
+    const { url } = msg;
+    if (!url) { sendResponse({ ok: true }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const parsed = parsePartStudioUrl(url);
+        if (!parsed) { chrome.runtime.sendMessage({ type: "bom-configs-error", error: "Invalid assembly URL" }).catch(() => {}); return; }
+        const { docId: did, wid, eid } = parsed;
+        const cfg = await onshapeFetch(`/api/v10/elements/d/${did}/w/${wid}/e/${eid}/configuration`);
+        const rawParams = cfg?.configurationParameters || [];
+        // Build current-config map so we can use live defaults
+        const currentCfg = {};
+        (cfg?.currentConfiguration || []).forEach(p => {
+          const pm = p.message || p;
+          currentCfg[pm.parameterId] = pm.value;
+        });
+        const params = rawParams.map(p => {
+          const m = p.message || p;
+          const typeStr = (p.btType || p.type || "").toLowerCase();
+          const id = m.parameterId;
+          const name = m.parameterName || id;
+          const defaultVal = String(currentCfg[id] ?? m.defaultValue ?? "");
+          if (typeStr.includes("enum")) {
+            return {
+              type: "enum", id, name, defaultValue: defaultVal,
+              values: (m.options || []).map(opt => ({ value: opt.option, label: opt.optionName || opt.option }))
+            };
+          } else if (typeStr.includes("boolean")) {
+            return { type: "boolean", id, name, defaultValue: defaultVal };
+          } else {
+            return { type: "quantity", id, name, defaultValue: defaultVal, unitSpec: m.units || "" };
+          }
+        });
+        chrome.runtime.sendMessage({ type: "bom-configs-loaded", params }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "bom-configs-error", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
+  } else if (msg.type === "export-bom-csv") {
+    const { url, configuration } = msg;
+    if (!url) { sendResponse({ ok: true }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      function csvEsc(v) {
+        const s = v == null ? "" : String(v);
+        return (s.includes('"') || s.includes(',') || s.includes('\n'))
+          ? '"' + s.replace(/"/g, '""') + '"'
+          : s;
+      }
+      try {
+        const parsed = parsePartStudioUrl(url);
+        if (!parsed) throw new Error("Invalid assembly URL");
+        const { docId: did, wid, eid } = parsed;
+        const docInfo = await onshapeFetch(`/api/v10/documents/d/${did}`).catch(() => ({}));
+        const safeDocName = (docInfo?.name || did).replace(/[\\/:*?"<>|]/g, "_").trim();
+        const configParam = configuration ? `&configuration=${encodeURIComponent(configuration)}` : "";
+        chrome.runtime.sendMessage({ type: "bom-export-progress", message: "Fetching BOM data..." }).catch(() => {});
+        const bom = await onshapeFetch(
+          `/api/v10/assemblies/d/${did}/w/${wid}/e/${eid}/bom?generateIfAbsent=true&indented=false${configParam}`
+        );
+        if (!bom || bom.error) throw new Error(bom?.error?.message || bom?.message || "BOM fetch failed");
+        const cols = (bom.headers || []).filter(h => h.visible);
+        const csvLines = [cols.map(h => csvEsc(h.name)).join(",")];
+        for (const row of (bom.rows || [])) {
+          const cells = cols.map(col => {
+            const val = row.headerIdToValue?.[col.id];
+            if (val == null) return "";
+            if (col.valueType === "OBJECT" || (val !== null && typeof val === "object")) {
+              return csvEsc(val.displayName || val.value || "");
+            }
+            return csvEsc(String(val));
+          });
+          csvLines.push(cells.join(","));
+        }
+        const csvStr = csvLines.join("\r\n");
+        const csvBytes = new TextEncoder().encode(csvStr);
+        const filename = `bom_${safeDocName}.csv`;
+        chrome.downloads.download({ url: `data:text/csv;base64,${toBase64(csvBytes)}`, filename, saveAs: false });
+        chrome.runtime.sendMessage({ type: "bom-export-done", filename, rows: bom.rows?.length ?? 0 }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "bom-export-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
   } else if (msg.type === "get-feature-count") {
     const { docId, wid, eid } = msg;
     if (!docId || !wid || !eid) { sendResponse({ count: 0 }); return; }

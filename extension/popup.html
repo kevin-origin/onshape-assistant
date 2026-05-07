@@ -45,7 +45,7 @@
       margin-bottom: 3px;
       margin-top: 10px;
     }
-    textarea, input[type="text"] {
+    textarea, input[type="text"], select {
       width: 100%;
       background: #16213e;
       border: 1px solid #333;
@@ -291,9 +291,9 @@
       Drawing Creator
       <div class="menu-desc">Generate drawings for all parts in a Part Studio</div>
     </button>
-    <button class="btn-menu" id="btnGoScanner">
-      Doc Scanner
-      <div class="menu-desc">Validate folder structure of the current document</div>
+    <button class="btn-menu" id="btnGoFolderStructure">
+      Folder Structure
+      <div class="menu-desc">Validate and create standard folder structure for a document</div>
     </button>
     <button class="btn-menu" id="btnGoMergePerms">
       Doc Permissions
@@ -302,10 +302,6 @@
     <button class="btn-menu" id="btnGoExport">
       Export
       <div class="menu-desc">Bulk export flat pattern DXFs, drawing PDFs, and URDF</div>
-    </button>
-    <button class="btn-menu" id="btnGoFolderGen">
-      Folder Generator
-      <div class="menu-desc">Create standard folder structure for a document</div>
     </button>
     <!-- Doc whitelist toggle — only rendered for kevin@origin.tech -->
     <div id="docWhitelistSection" style="display:none; border-top:1px solid #3a3a3a; margin-top:10px; padding-top:10px">
@@ -387,9 +383,9 @@
     </div>
   </div>
 
-  <!-- ============ Doc Scanner ============ -->
-  <div id="sectionScanner" class="section">
-    <h3><button class="btn-back" id="btnBackFromScanner">Back</button> Doc Scanner</h3>
+  <!-- ============ Folder Structure ============ -->
+  <div id="sectionFolderStructure" class="section">
+    <h3><button class="btn-back" id="btnBackFromFolderStructure">Back</button> Folder Structure</h3>
 
     <div class="btn-row">
       <button class="btn-rescan" id="btnRescan">Scan This Doc</button>
@@ -405,6 +401,17 @@
     <div id="results">
       <div class="summary" id="summaryText"></div>
       <div id="resultList"></div>
+    </div>
+
+    <div style="border-top:1px solid #2a2a4a;margin-top:14px;padding-top:12px;">
+      <div class="btn-row">
+        <button class="btn-rescan" id="btnGenerateFolders" style="background:#1b4332;color:#95d5b2;">Generate Folders</button>
+        <button class="btn-rescan" id="btnSortTabs" style="background:#1a2a3a;color:#7ec8e3;">Sort Tabs</button>
+      </div>
+      <div style="margin-top:10px;padding:8px;background:#16213e;border-radius:4px;font-size:13px;color:#888;">
+        <div style="color:#aaa;margin-bottom:4px;font-weight:600;">Creates folders</div>
+        <div style="color:#95d5b2;">Part Studios, Assemblies, Drawings, CAD Imports, Feature Studios, Variable Studios</div>
+      </div>
     </div>
   </div>
 
@@ -444,6 +451,10 @@
     <button class="btn-menu" id="btnGoUrdf">
       URDF Export
       <div class="menu-desc">Export assembly as URDF robot description + STL meshes</div>
+    </button>
+    <button class="btn-menu" id="btnGoBomGen">
+      BOM Generator
+      <div class="menu-desc">Export assembly BOM as CSV with configuration selection</div>
     </button>
   </div>
 
@@ -503,17 +514,18 @@
     <div id="urdfLog" style="margin-top:8px;max-height:220px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
   </div>
 
-  <!-- ============ Folder Generator ============ -->
-  <div id="sectionFolderGen" class="section">
-    <h3><button class="btn-back" id="btnBackFromFolderGen">Back</button> Folder Generator</h3>
-    <div class="btn-row">
-      <button class="btn-rescan" id="btnGenerateFolders" style="background:#1b4332;color:#95d5b2;">Generate Folders</button>
-      <button class="btn-rescan" id="btnSortTabs" style="background:#1a2a3a;color:#7ec8e3;">Sort Tabs</button>
+  <!-- ============ BOM Generator ============ -->
+  <div id="sectionBomGen" class="section">
+    <h3><button class="btn-back" id="btnBackFromBomGen">Back</button> BOM Generator</h3>
+
+    <div id="bomGenParamPanel" style="display:none;margin-top:6px;">
+      <div id="bomGenParamList"></div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn-draw" id="btnGenerateBomCsv">Generate BOM CSV</button>
+      </div>
     </div>
-    <div style="margin-top:10px;padding:8px;background:#16213e;border-radius:4px;font-size:13px;color:#888;">
-      <div style="color:#aaa;margin-bottom:4px;font-weight:600;">Creates folders</div>
-      <div style="color:#95d5b2;">Part Studios, Assemblies, Drawings, CAD Imports, Feature Studios, Variable Studios</div>
-    </div>
+
+    <div id="bomGenLog" style="margin-top:8px;max-height:180px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
   </div>
 
   <script src="popup.js"></script>

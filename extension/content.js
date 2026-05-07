@@ -1650,34 +1650,6 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Insert tab limit guard — disables the insert-tab button when tabs >= 40
-  // ---------------------------------------------------------------------------
-
-  function applyTabLimitGuard() {
-    const btn = document.querySelector('[data-bs-original-title="Insert new tab"]');
-    if (!btn) return;
-    const countStr = document.documentElement.dataset.oxtTabCount;
-    const count = parseInt(countStr, 10);
-    const overLimit = !isNaN(count) && count >= 40;
-    if (overLimit) {
-      if (!btn.dataset.oxtTabLimitDisabled) {
-        btn.dataset.oxtTabLimitDisabled = "1";
-        btn.style.opacity = "0.4";
-        btn.style.pointerEvents = "none";
-        btn.style.cursor = "not-allowed";
-        console.log(`[InsertTabGuard] Button disabled — ${count} tabs (limit: 40)`);
-      }
-    } else {
-      if (btn.dataset.oxtTabLimitDisabled) {
-        delete btn.dataset.oxtTabLimitDisabled;
-        btn.style.opacity = "";
-        btn.style.pointerEvents = "";
-        btn.style.cursor = "";
-      }
-    }
-  }
-
-  // ---------------------------------------------------------------------------
   // Insert tab import guard — disable Import in insert-tab dropdown unless
   // the doc's top-level folder is "OTS Parts"
   // ---------------------------------------------------------------------------
