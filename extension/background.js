@@ -219,16 +219,24 @@ async function isDocDisabled(docId) {
 // dev branch manifest has "dev_build": true — absent on main.
 const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 
+// Always force-refresh the disabled-docs list on every SW startup (both dev and production).
+// Busting the timestamp ensures we never serve a stale empty list after a doc is added.
+chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
+
 if (IS_PRODUCTION_BUILD) {
   // Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
   checkKillSwitchSync().then(blocked => {
     if (!blocked) refreshAndApplyKillSwitch();
   });
 
-  // Hourly alarm: keep blocked state current without waiting for a tab load
+  // Hourly alarm: keep blocked state and disabled-docs list current without waiting for a tab load
   chrome.alarms.create("kill-switch-refresh", { periodInMinutes: 60 });
   chrome.alarms.onAlarm.addListener(alarm => {
-    if (alarm.name === "kill-switch-refresh") refreshAndApplyKillSwitch();
+    if (alarm.name === "kill-switch-refresh") {
+      refreshAndApplyKillSwitch();
+      // Force-refresh disabled docs by busting cache timestamp first
+      chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
+    }
   });
 } else {
   // Dev build — clear any persisted disabled state left by a previous production run
@@ -2740,7 +2748,7 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
         sheetMetalFlat: "true",
         triggerAutoDownload: "true",
         storeInDocument: "false",
-        configuration: "",
+        configuration: ps.configuration || "",
         cloudStorageAccountId: "",
         cloudObjectId: "",
         partIds: item.deterministicId,
@@ -2981,16 +2989,17 @@ function extractMateParams(featureMessage) {
   return params;
 }
 
-async function generateUrdf(did, wid, eid) {
+async function generateUrdf(did, wid, eid, configuration) {
   const bcast = (msg, cls) =>
     chrome.runtime.sendMessage({ type: "urdf-progress", message: msg, cls }).catch(() => {});
 
+  const cfgParam = configuration ? `&configuration=${encodeURIComponent(configuration)}` : "";
   bcast("Fetching assembly definition...");
   // includeMateFeatures/includeMateConnectors ensure rootAssembly.features is populated;
   // includeNonSolids captures surface bodies that may appear in mates.
   const asmDef = await onshapeFetch(
     `/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}` +
-    `?includeMateFeatures=true&includeMateConnectors=true&includeNonSolids=true`
+    `?includeMateFeatures=true&includeMateConnectors=true&includeNonSolids=true${cfgParam}`
   );
   const robotName = urdfSafeName(asmDef.name || "robot");
 
@@ -3409,7 +3418,52 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   if (_extensionDisabled) return; // kill switch active — ignore all messages
 
-  if (msg.type === "fetch-parts") {
+  if (msg.type === "fetch-ps-configs") {
+    const { url, did: msgDid, wid: msgWid, eid: msgEid } = msg;
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        let did, wid, eid;
+        if (url) {
+          const parsed = parsePartStudioUrl(url);
+          if (!parsed) throw new Error("Invalid URL");
+          ({ docId: did, wid, eid } = parsed);
+        } else {
+          did = msgDid; wid = msgWid; eid = msgEid;
+        }
+        if (!did || !wid || !eid) throw new Error("Missing did/wid/eid");
+        const cfg = await onshapeFetch(`/api/v10/elements/d/${did}/w/${wid}/e/${eid}/configuration`);
+        const rawParams = cfg?.configurationParameters || [];
+        const currentCfg = {};
+        (cfg?.currentConfiguration || []).forEach(p => {
+          const pm = p.message || p;
+          currentCfg[pm.parameterId] = pm.value;
+        });
+        const params = rawParams.map(p => {
+          const m = p.message || p;
+          const typeStr = (p.btType || p.type || "").toLowerCase();
+          const id = m.parameterId;
+          const name = m.parameterName || id;
+          const defaultVal = String(currentCfg[id] ?? m.defaultValue ?? "");
+          if (typeStr.includes("enum")) {
+            return {
+              type: "enum", id, name, defaultValue: defaultVal,
+              values: (m.options || []).map(opt => ({ value: opt.option, label: opt.optionName || opt.option }))
+            };
+          } else if (typeStr.includes("boolean")) {
+            return { type: "boolean", id, name, defaultValue: defaultVal };
+          } else {
+            return { type: "quantity", id, name, defaultValue: defaultVal, unitSpec: m.units || "" };
+          }
+        });
+        chrome.runtime.sendMessage({ type: "ps-configs-loaded", eid, params }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "ps-configs-error", eid: msgEid, error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
+  } else if (msg.type === "fetch-parts") {
     // Fetch parts list and return to popup for selection
     (async () => {
       const parsed = parsePartStudioUrl(msg.url || "");
@@ -3419,7 +3473,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return;
       }
       try {
-        const parts = await onshapeFetch(`/api/v10/parts/d/${parsed.docId}/w/${parsed.wid}/e/${parsed.eid}`);
+        const configParam = msg.configuration ? `?configuration=${encodeURIComponent(msg.configuration)}` : "";
+        const parts = await onshapeFetch(`/api/v10/parts/d/${parsed.docId}/w/${parsed.wid}/e/${parsed.eid}${configParam}`);
         if (!parts || parts.length === 0) { sendResponse({ error: "No parts found" }); return; }
         // Return minimal part data to popup
         const partList = parts.map(p => ({ partId: p.partId, name: p.name || "Unnamed" }));
@@ -4144,7 +4199,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
 
   } else if (msg.type === "export-3d-parts") {
-    const { url, format, selectedParts } = msg;
+    const { url, format, selectedParts, configuration } = msg;
     if (!url || !format || !selectedParts?.length) { sendResponse({ ok: true }); return; }
     sendResponse({ ok: true });
     (async () => {
@@ -4165,7 +4220,8 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           try {
             const jobBody = { formatName: format, storeInDocument: false, partIds: part.partId };
             if (format === "STL") jobBody.units = "millimeter";
-            const job = await onshapePost(`/api/v6/partstudios/d/${did}/w/${wid}/e/${eid}/translations`, jobBody);
+            const cfgQ = configuration ? `?configuration=${encodeURIComponent(configuration)}` : "";
+            const job = await onshapePost(`/api/v6/partstudios/d/${did}/w/${wid}/e/${eid}/translations${cfgQ}`, jobBody);
             let t;
             for (let i = 0; i < 30; i++) {
               await new Promise(r => setTimeout(r, 2000));
@@ -4201,16 +4257,157 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
 
   } else if (msg.type === "export-urdf") {
-    const { url } = msg;
+    const { url, configuration } = msg;
     if (!url) { sendResponse({ ok: true }); return; }
     sendResponse({ ok: true });
     (async () => {
       try {
         const parsed = parsePartStudioUrl(url);
         if (!parsed) throw new Error("Invalid assembly URL — must contain /documents/{did}/w/{wid}/e/{eid}");
-        await generateUrdf(parsed.docId, parsed.wid, parsed.eid);
+        await generateUrdf(parsed.docId, parsed.wid, parsed.eid, configuration);
       } catch (e) {
         chrome.runtime.sendMessage({ type: "urdf-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
+  } else if (msg.type === "fetch-bom-configs") {
+    const { url } = msg;
+    if (!url) { sendResponse({ ok: true }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const parsed = parsePartStudioUrl(url);
+        if (!parsed) { chrome.runtime.sendMessage({ type: "bom-configs-error", error: "Invalid assembly URL" }).catch(() => {}); return; }
+        const { docId: did, wid, eid } = parsed;
+        // Only assemble BOM for Assembly elements — check type first
+        const elList = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements?elementId=${eid}`);
+        const el = Array.isArray(elList) ? elList[0] : (elList?.items?.[0]);
+        if (!el || el.elementType !== "ASSEMBLY") {
+          chrome.runtime.sendMessage({ type: "bom-configs-loaded", params: [], notAssembly: true }).catch(() => {});
+          return;
+        }
+        const cfg = await onshapeFetch(`/api/v10/elements/d/${did}/w/${wid}/e/${eid}/configuration`);
+        const rawParams = cfg?.configurationParameters || [];
+        // Build current-config map so we can use live defaults
+        const currentCfg = {};
+        (cfg?.currentConfiguration || []).forEach(p => {
+          const pm = p.message || p;
+          currentCfg[pm.parameterId] = pm.value;
+        });
+        const params = rawParams.map(p => {
+          const m = p.message || p;
+          const typeStr = (p.btType || p.type || "").toLowerCase();
+          const id = m.parameterId;
+          const name = m.parameterName || id;
+          const defaultVal = String(currentCfg[id] ?? m.defaultValue ?? "");
+          if (typeStr.includes("enum")) {
+            return {
+              type: "enum", id, name, defaultValue: defaultVal,
+              values: (m.options || []).map(opt => ({ value: opt.option, label: opt.optionName || opt.option }))
+            };
+          } else if (typeStr.includes("boolean")) {
+            return { type: "boolean", id, name, defaultValue: defaultVal };
+          } else {
+            return { type: "quantity", id, name, defaultValue: defaultVal, unitSpec: m.units || "" };
+          }
+        });
+        chrome.runtime.sendMessage({ type: "bom-configs-loaded", params }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "bom-configs-error", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
+  } else if (msg.type === "fetch-urdf-configs") {
+    const { url } = msg;
+    if (!url) { sendResponse({ ok: true }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const parsed = parsePartStudioUrl(url);
+        if (!parsed) { chrome.runtime.sendMessage({ type: "urdf-configs-error", error: "Invalid assembly URL" }).catch(() => {}); return; }
+        const { docId: did, wid, eid } = parsed;
+        const elList = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements?elementId=${eid}`);
+        const el = Array.isArray(elList) ? elList[0] : (elList?.items?.[0]);
+        if (!el || el.elementType !== "ASSEMBLY") {
+          chrome.runtime.sendMessage({ type: "urdf-configs-loaded", params: [], notAssembly: true }).catch(() => {});
+          return;
+        }
+        const cfg = await onshapeFetch(`/api/v10/elements/d/${did}/w/${wid}/e/${eid}/configuration`);
+        const rawParams = cfg?.configurationParameters || [];
+        const currentCfg = {};
+        (cfg?.currentConfiguration || []).forEach(p => {
+          const pm = p.message || p;
+          currentCfg[pm.parameterId] = pm.value;
+        });
+        const params = rawParams.map(p => {
+          const m = p.message || p;
+          const typeStr = (p.btType || p.type || "").toLowerCase();
+          const id = m.parameterId;
+          const name = m.parameterName || id;
+          const defaultVal = String(currentCfg[id] ?? m.defaultValue ?? "");
+          if (typeStr.includes("enum")) {
+            return {
+              type: "enum", id, name, defaultValue: defaultVal,
+              values: (m.options || []).map(opt => ({ value: opt.option, label: opt.optionName || opt.option }))
+            };
+          } else if (typeStr.includes("boolean")) {
+            return { type: "boolean", id, name, defaultValue: defaultVal };
+          } else {
+            return { type: "quantity", id, name, defaultValue: defaultVal, unitSpec: m.units || "" };
+          }
+        });
+        chrome.runtime.sendMessage({ type: "urdf-configs-loaded", params }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "urdf-configs-error", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
+  } else if (msg.type === "export-bom-csv") {
+    const { url, configuration } = msg;
+    if (!url) { sendResponse({ ok: true }); return; }
+    sendResponse({ ok: true });
+    (async () => {
+      function csvEsc(v) {
+        const s = v == null ? "" : String(v);
+        return (s.includes('"') || s.includes(',') || s.includes('\n'))
+          ? '"' + s.replace(/"/g, '""') + '"'
+          : s;
+      }
+      try {
+        const parsed = parsePartStudioUrl(url);
+        if (!parsed) throw new Error("Invalid assembly URL");
+        const { docId: did, wid, eid } = parsed;
+        const docInfo = await onshapeFetch(`/api/v10/documents/d/${did}`).catch(() => ({}));
+        const safeDocName = (docInfo?.name || did).replace(/[\\/:*?"<>|]/g, "_").trim();
+        const configParam = configuration ? `&configuration=${encodeURIComponent(configuration)}` : "";
+        chrome.runtime.sendMessage({ type: "bom-export-progress", message: "Fetching BOM data..." }).catch(() => {});
+        const bom = await onshapeFetch(
+          `/api/v10/assemblies/d/${did}/w/${wid}/e/${eid}/bom?generateIfAbsent=true&indented=false${configParam}`
+        );
+        if (!bom || bom.error) throw new Error(bom?.error?.message || bom?.message || "BOM fetch failed");
+        const cols = (bom.headers || []).filter(h => h.visible);
+        const csvLines = [cols.map(h => csvEsc(h.name)).join(",")];
+        for (const row of (bom.rows || [])) {
+          const cells = cols.map(col => {
+            const val = row.headerIdToValue?.[col.id];
+            if (val == null) return "";
+            if (col.valueType === "OBJECT" || (val !== null && typeof val === "object")) {
+              return csvEsc(val.displayName || val.value || "");
+            }
+            return csvEsc(String(val));
+          });
+          csvLines.push(cells.join(","));
+        }
+        const csvStr = csvLines.join("\r\n");
+        const csvBytes = new TextEncoder().encode(csvStr);
+        const filename = `bom_${safeDocName}.csv`;
+        chrome.downloads.download({ url: `data:text/csv;base64,${toBase64(csvBytes)}`, filename, saveAs: false });
+        chrome.runtime.sendMessage({ type: "bom-export-done", filename, rows: bom.rows?.length ?? 0 }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "bom-export-done", error: e.message }).catch(() => {});
       }
     })();
     return;
