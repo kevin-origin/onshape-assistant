@@ -749,6 +749,7 @@
   let _pollInterval = null;
   const POLL_INTERVAL_MS = 600000; // 10 min
   let _killSwitchActive = false; // set true if background says extension is disabled
+  let _docDisabled = false;     // set true if current doc is in the disabled-docs list; resets on navigation
 
   // ---------------------------------------------------------------------------
   // Assembly guard — write oxtAssemblyCount to DOM dataset so content-main.js
@@ -776,7 +777,7 @@
       const count = typeof docResult.totalAssemblies === 'number' ? docResult.totalAssemblies : 0;
       document.documentElement.dataset.oxtAssemblyCount = String(count);
     });
-    if (_killSwitchActive) return;
+    if (_killSwitchActive || _docDisabled) return;
     const docId = getDocIdFromUrl();
     if (!docId || docId === _lastDocId) return;
     _lastDocId = docId;
@@ -798,7 +799,6 @@
       chrome.runtime.sendMessage({ type: "get-tab-count", docId: _tabCountDocId, wid }, (resp) => {
         if (resp && typeof resp.count === "number") {
           document.documentElement.dataset.oxtTabCount = String(resp.count);
-          applyTabLimitGuard();
           console.log("[InsertTabGuard] Tab count fetched:", resp.count);
         }
       });
@@ -828,6 +828,7 @@
         chrome.runtime.sendMessage({ type: "check-doc-disabled", docId: _docId }, resolve)
       );
       if (docCheck?.disabled) {
+        _docDisabled = true;
         console.log("[Scanner] Doc whitelist active — extension disabled for this document");
         return;
       }
@@ -843,6 +844,7 @@
     if (_killSwitchActive) return;
     if (msg.type === "spa-navigated") {
       console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
+      _docDisabled = false; // reset for new doc before re-checking
       // Re-check doc whitelist for the new doc
       const _navDocId = getDocIdFromUrl();
       if (_navDocId) {
@@ -850,6 +852,7 @@
           chrome.runtime.sendMessage({ type: "check-doc-disabled", docId: _navDocId }, resolve)
         );
         if (docCheck?.disabled) {
+          _docDisabled = true;
           console.log("[Scanner] Doc whitelist active — extension disabled for this document");
           removeFolderOverlay();
           return;
@@ -868,6 +871,7 @@
     if (_killSwitchActive) return;
     const docId = getDocIdFromUrl();
     if (docId && docId !== _lastDocId) {
+      _docDisabled = false; // reset for new doc; spa-navigated handler will re-check async
       console.log("[Scanner] URL poll detected new doc:", docId);
       removeFolderOverlay();
       runOnDocLoad();
@@ -886,7 +890,7 @@
   let _exportDetected = false;
 
   const exportObserver = new MutationObserver((mutations) => {
-    if (_exportDetected || _killSwitchActive) return;
+    if (_exportDetected || _killSwitchActive || _docDisabled) return;
     for (const m of mutations) {
       for (const node of m.addedNodes) {
         if (node.nodeType !== 1) continue;
@@ -1091,7 +1095,7 @@
     let _lastModal = null;
 
     const observer = new MutationObserver(() => {
-      if (_killSwitchActive) return;
+      if (_killSwitchActive || _docDisabled) return;
       const modal = document.querySelector("div.modal.selective-preview-dialog.show");
       if (modal && modal !== _lastModal) {
         _lastModal = modal;
@@ -1260,7 +1264,7 @@
 
     let _lastDropdown = null;
     const observer = new MutationObserver(() => {
-      if (_killSwitchActive) return;
+      if (_killSwitchActive || _docDisabled) return;
       const dropdown = document.querySelector(
         "div.dropdown-menu.os-create-menu.create-new-type-menu.show"
       );
@@ -1288,7 +1292,7 @@
     let _lastModal = null;
 
     const observer = new MutationObserver(() => {
-      if (_killSwitchActive) return;
+      if (_killSwitchActive || _docDisabled) return;
       const modal = document.querySelector(
         "div.modal.version-or-workspace-dialog.show"
       );
@@ -1405,7 +1409,7 @@
     let _lastModal = null;
 
     const observer = new MutationObserver(() => {
-      if (_killSwitchActive) return;
+      if (_killSwitchActive || _docDisabled) return;
       const modal = document.querySelector("div.modal.release-dialog.show");
       if (modal && modal !== _lastModal) {
         _lastModal = modal;
@@ -1517,7 +1521,7 @@
     let _lastModal = null;
 
     const observer = new MutationObserver(() => {
-      if (_killSwitchActive) return;
+      if (_killSwitchActive || _docDisabled) return;
       const modal = document.querySelector("div.modal.release-dialog.show");
       if (modal && modal !== _lastModal) {
         _lastModal = modal;
@@ -1590,7 +1594,7 @@
     let _lastModal = null;
 
     const observer = new MutationObserver(() => {
-      if (_killSwitchActive) return;
+      if (_killSwitchActive || _docDisabled) return;
       const modal = document.querySelector("div.modal.workspace-permissions-dialog.show");
       if (modal && modal !== _lastModal) {
         _lastModal = modal;
@@ -1652,38 +1656,75 @@
   // ---------------------------------------------------------------------------
   // Insert tab import guard — disable Import in insert-tab dropdown unless
   // the doc's top-level folder is "OTS Parts"
+  // Tab limit guard — disable create items in dropdown when tabs >= 40
   // ---------------------------------------------------------------------------
-  // Selector confirmed via live DOM observation:
-  //   Dropdown:    ul.dropdown-menu.bottom-up  (added to DOM when insert button clicked)
-  //   Import item: a#upload-button.dropdown-item  (inside a <li> in that ul)
+  // Selectors confirmed via live DOM observation (2026-05-07):
+  //   Dropdown:       ul.dropdown-menu.bottom-up
+  //   Import item:    a#upload-button
+  //   Part Studio:    a#create-part-studio-button
+  //   Drawing:        a#create-drawing-button
+  //   Variable Studio: a#create-variable-studio-button
   // ---------------------------------------------------------------------------
   function initInsertTabGuard() {
     function applyGuard() {
       const menu = document.querySelector("ul.dropdown-menu.bottom-up");
       if (!menu || menu.offsetHeight === 0) return;
+
+      // Import guard
       const importItem = menu.querySelector("a#upload-button");
-      if (!importItem || importItem.dataset.oxtImportGuarded) return;
-      importItem.dataset.oxtImportGuarded = "1";
+      if (importItem && !importItem.dataset.oxtImportGuarded) {
+        importItem.dataset.oxtImportGuarded = "1";
+        importItem.style.opacity = "0.4";
+        importItem.style.pointerEvents = "none";
+        importItem.style.cursor = "not-allowed";
+        console.log("[InsertTabGuard] Import disabled by default");
 
-      // Disable by default
-      importItem.style.opacity = "0.4";
-      importItem.style.pointerEvents = "none";
-      importItem.style.cursor = "not-allowed";
-      console.log("[InsertTabGuard] Import disabled by default");
-
-      const docId = getDocIdFromUrl();
-      if (!docId) return;
-
-      chrome.runtime.sendMessage({ type: "get-top-folder", docId }, (resp) => {
-        if (resp?.topFolderName === "OTS Parts") {
-          importItem.style.opacity = "";
-          importItem.style.pointerEvents = "";
-          importItem.style.cursor = "";
-          console.log("[InsertTabGuard] Import enabled — OTS Parts doc");
-        } else {
-          console.log("[InsertTabGuard] Import stays disabled — top folder: " + resp?.topFolderName);
+        const docId = getDocIdFromUrl();
+        if (docId) {
+          chrome.runtime.sendMessage({ type: "get-top-folder", docId }, (resp) => {
+            if (resp?.topFolderName === "OTS Parts") {
+              importItem.style.opacity = "";
+              importItem.style.pointerEvents = "";
+              importItem.style.cursor = "";
+              console.log("[InsertTabGuard] Import enabled — OTS Parts doc");
+            } else {
+              console.log("[InsertTabGuard] Import stays disabled — top folder: " + resp?.topFolderName);
+            }
+          });
         }
-      });
+      }
+
+      // Tab limit guard — disable create items when doc has >= 40 tabs
+      const tabCount = parseInt(document.documentElement.dataset.oxtTabCount, 10);
+      const overLimit = !isNaN(tabCount) && tabCount >= 40;
+      const CREATE_IDS = [
+        "create-part-studio-button",
+        "create-drawing-button",
+        "create-variable-studio-button",
+      ];
+      for (const id of CREATE_IDS) {
+        let btn = menu.querySelector(`a#${id}`);
+        // Fallback: text match if ID not found
+        if (!btn) {
+          const label = id.replace("create-", "").replace("-button", "").replace(/-/g, " ");
+          for (const a of menu.querySelectorAll("a.dropdown-item")) {
+            if (a.textContent.trim().toLowerCase().startsWith(label)) { btn = a; break; }
+          }
+        }
+        if (!btn) continue;
+        if (overLimit) {
+          btn.style.opacity = "0.4";
+          btn.style.pointerEvents = "none";
+          btn.style.cursor = "not-allowed";
+          btn.dataset.oxtTabLimitDisabled = "1";
+        } else if (btn.dataset.oxtTabLimitDisabled) {
+          delete btn.dataset.oxtTabLimitDisabled;
+          btn.style.opacity = "";
+          btn.style.pointerEvents = "";
+          btn.style.cursor = "";
+        }
+      }
+      if (overLimit) console.log(`[InsertTabGuard] Create items disabled — ${tabCount} tabs (limit: 40)`);
     }
 
     // Watch for insert tab button click to eagerly fetch assembly count
@@ -1692,16 +1733,6 @@
       const btn = document.querySelector('[data-bs-original-title="Insert new tab"]');
       if (!btn || btn.dataset.oxtInsertListening) return;
       btn.dataset.oxtInsertListening = "1";
-
-      // Capture-phase blocker: stop click before Bootstrap opens the dropdown
-      btn.addEventListener("click", (e) => {
-        const count = parseInt(document.documentElement.dataset.oxtTabCount, 10);
-        if (!isNaN(count) && count >= 40) {
-          e.stopImmediatePropagation();
-          e.preventDefault();
-          console.log("[InsertTabGuard] Click blocked — tab limit reached");
-        }
-      }, true);
 
       btn.addEventListener("click", () => {
         const docId = getDocIdFromUrl();
@@ -1717,15 +1748,13 @@
     }
 
     const observer = new MutationObserver(() => {
-      if (_killSwitchActive) return;
+      if (_killSwitchActive || _docDisabled) return;
       applyGuard();
-      applyTabLimitGuard();
       attachInsertBtnListener();
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
     attachInsertBtnListener();
-    applyTabLimitGuard();
     console.log("[InsertTabGuard] Observer started");
   }
 
@@ -1799,7 +1828,7 @@
     }
 
     const observer = new MutationObserver(() => {
-      if (_killSwitchActive) return;
+      if (_killSwitchActive || _docDisabled) return;
       const dialog = document.querySelector(DIALOG_SEL);
       if (dialog) injectButton(dialog);
     });
