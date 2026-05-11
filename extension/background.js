@@ -3670,6 +3670,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
 
+  } else if (msg.type === "sync-outdated-drawings") {
+    // Fetch out-of-date drawings and sync them in a loop until none remain.
+    // syncApplicationElements returns 204 (empty body) — cannot use onshapePost.
+    // Fire-and-forget — no sendResponse needed.
+    (async () => {
+      const { docId, wid } = msg;
+      if (!docId || !wid) return;
+      try {
+        const xsrf = await getXsrfToken();
+        for (let pass = 0; pass < 10; pass++) {
+          const outdated = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
+          const list = Array.isArray(outdated) ? outdated : (outdated?.items || []);
+          console.log(`[DrawingSync] Pass ${pass + 1} — out-of-date: ${list.length === 0 ? "none" : list.map(e => e.name).join(", ")}`);
+          if (list.length === 0) break;
+          await Promise.all(list.map(el =>
+            fetch(`${ONSHAPE_BASE}/api/documents/d/${docId}/w/${wid}/syncApplicationElements?applicationElementIds=${el.id}`, {
+              method: "POST",
+              credentials: "include",
+              headers: { "Accept": "application/json", "Content-Type": "application/json", "X-XSRF-TOKEN": xsrf },
+              body: "{}",
+            }).then(r => console.log(`[DrawingSync] Synced "${el.name}" → ${r.status}`))
+              .catch(e => console.log(`[DrawingSync] Failed "${el.name}": ${e.message}`))
+          ));
+          // Re-check immediately; only wait if drawings are still outdated (Onshape processing lag)
+          const recheck = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
+          const remaining = Array.isArray(recheck) ? recheck : (recheck?.items || []);
+          console.log(`[DrawingSync] Re-check: ${remaining.length} still outdated`);
+          if (remaining.length === 0) break;
+          console.log(`[DrawingSync] Waiting 1.5s before next pass...`);
+          await new Promise(r => setTimeout(r, 1500));
+        }
+        console.log("[DrawingSync] Done.");
+      } catch (e) {
+        console.log(`[DrawingSync] Error: ${e.message}`);
+      }
+    })();
+
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -3897,7 +3934,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Admin-only: only kevin@origin.tech may modify the whitelist
     (async () => {
       const user = await getSessionUser();
-      if (!user || user.email !== "kevin@10xconstruction.ai") {
+      if (!user || !["kevin@10xconstruction.ai", "sai@origin.tech"].includes(user.email)) {
         sendResponse({ error: "Unauthorized" });
         return;
       }
@@ -4247,7 +4284,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         if (!files.length) throw new Error("No files exported");
         for (const file of files) {
-          chrome.downloads.download({ url: "data:application/octet-stream;base64," + toBase64(file.data), filename: file.name, saveAs: false });
+          chrome.downloads.download({ url: "data:application/octet-stream;base64," + toBase64(file.data), filename: file.name, saveAs: true });
         }
         chrome.runtime.sendMessage({ type: "export-3d-done", count: files.length }).catch(() => {});
       } catch (e) {
