@@ -35,12 +35,17 @@ document.getElementById("btnGoExport").addEventListener("click", () => showSecti
 document.getElementById("btnBackFromExport").addEventListener("click", () => showSection("sectionMenu"));
 document.getElementById("btnGoUrdf").addEventListener("click", () => {
   showSection("sectionUrdf");
-  // Auto-fill URL from active tab if it's an Onshape assembly
+  document.getElementById("urdfConfigPanel").style.display = "none";
+  document.getElementById("urdfLog").style.display = "none";
+  document.getElementById("urdfLog").innerHTML = "";
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs.length) return;
     const url = tabs[0].url || "";
-    if (url.includes("cad.onshape.com/documents/") && url.includes("/e/")) {
-      document.getElementById("urdfAsmUrl").value = url.split("?")[0];
+    if (url.includes("cad.onshape.com/documents/") && url.includes("/w/") && url.includes("/e/")) {
+      _urdfUrl = url.split("?")[0];
+      loadUrdfConfigs();
+    } else {
+      appendUrdfLog("Open an Onshape Assembly tab first", "log-err");
     }
   });
 });
@@ -52,7 +57,7 @@ document.getElementById("btnGoExport3D").addEventListener("click", () => {
     const url = tabs[0].url || "";
     if (url.includes("cad.onshape.com/documents/") && url.includes("/w/") && url.includes("/e/")) {
       _export3dUrl = url.split("?")[0];
-      loadExport3dParts();
+      loadExport3dConfigs();
     }
   });
 });
@@ -110,7 +115,17 @@ document.getElementById("btnBulkExport").addEventListener("click", () => {
     const psId = cb.dataset.psId;
     const psCb = document.querySelector(`.ps-cb[data-ps-id="${psId}"]`);
     if (!psCb || !psCb.checked) return;
-    if (!psMap[psId]) psMap[psId] = { psId, psName: psCb.dataset.psName, parts: [] };
+    if (!psMap[psId]) {
+      const cfgInputs = document.querySelectorAll(`[data-ps-config-wrap="${psId}"] .ps-config-input`);
+      const cfgParts = [];
+      cfgInputs.forEach(el => {
+        const id = el.dataset.paramId;
+        if (!id) return;
+        if (el.type === "checkbox") cfgParts.push(`${id}=${el.checked}`);
+        else if (el.value.trim()) cfgParts.push(`${id}=${el.value.trim()}`);
+      });
+      psMap[psId] = { psId, psName: psCb.dataset.psName, parts: [], configuration: cfgParts.join(";") };
+    }
     psMap[psId].parts.push({ partName: cb.dataset.partName, deterministicId: cb.dataset.deterministicId });
   });
   const selectedPartStudios = Object.values(psMap);
@@ -207,6 +222,7 @@ function renderExportElements(partStudios, drawings) {
   for (const ps of psWithParts) {
     const psRow = document.createElement("div");
     psRow.className = "part-item";
+    psRow.dataset.psEid = ps.id;
     const psCb = document.createElement("input");
     psCb.type = "checkbox";
     psCb.checked = true;
@@ -218,6 +234,13 @@ function renderExportElements(partStudios, drawings) {
     psLabel.textContent = ps.name;
     psRow.appendChild(psCb);
     psRow.appendChild(psLabel);
+    // Config placeholder — populated when ps-configs-loaded fires for this eid
+    const cfgWrap = document.createElement("div");
+    cfgWrap.dataset.psConfigWrap = ps.id;
+    cfgWrap.style.cssText = "padding-left:23px;margin-top:4px;display:none;";
+    psRow.appendChild(cfgWrap);
+    // Fetch configs for this PS
+    chrome.runtime.sendMessage({ type: "fetch-ps-configs", did: _exportData?.did, wid: _exportData?.wid, eid: ps.id });
     const partContainer = document.createElement("div");
     partContainer.style.paddingLeft = "18px";
     psRow.addEventListener("click", (e) => {
@@ -479,6 +502,8 @@ function validateFolders(result) {
 let _export3dFormat = "STEP";
 let _export3dParts  = [];
 let _export3dUrl    = "";
+let _export3dEid    = "";
+let _export3dConfig = "";
 
 const $btnFormatStep  = document.getElementById("btnFormatStep");
 const $btnFormatStl   = document.getElementById("btnFormatStl");
@@ -506,18 +531,31 @@ function append3dLog(text, cls) {
   $log.scrollTop = $log.scrollHeight;
 }
 
-function loadExport3dParts() {
+function loadExport3dConfigs() {
   const url = _export3dUrl;
   if (!url || !url.includes("cad.onshape.com/documents/")) {
     append3dLog("Not on a Part Studio tab", "log-err");
     return;
   }
+  document.getElementById("export3dConfigPanel").style.display = "none";
+  document.getElementById("export3dPartPanel").style.display = "none";
+  document.getElementById("export3dLog").style.display = "none";
+  document.getElementById("export3dLog").innerHTML = "";
+  _export3dConfig = "";
+  const eidMatch = url.match(/\/e\/([^/?#]+)/);
+  _export3dEid = eidMatch ? eidMatch[1] : "";
+  append3dLog("Fetching configuration...");
+  chrome.runtime.sendMessage({ type: "fetch-ps-configs", url });
+}
+
+function loadExport3dParts() {
+  const url = _export3dUrl;
   document.getElementById("export3dPartPanel").style.display = "none";
   document.getElementById("export3dLog").style.display = "none";
   document.getElementById("export3dLog").innerHTML = "";
   append3dLog("Fetching parts...");
 
-  chrome.runtime.sendMessage({ type: "fetch-parts", url }, (response) => {
+  chrome.runtime.sendMessage({ type: "fetch-parts", url, configuration: _export3dConfig }, (response) => {
     if (!response || response.error) {
       append3dLog(response ? response.error : "No response from background", "log-err");
       return;
@@ -561,6 +599,19 @@ document.getElementById("chkExport3dSelectAll").addEventListener("change", (e) =
     .forEach(cb => cb.checked = e.target.checked);
 });
 
+document.getElementById("btnLoadExport3dParts").addEventListener("click", () => {
+  // Collect config values from the config panel
+  const configParts = [];
+  document.querySelectorAll("#export3dConfigList .ps-config-input").forEach(el => {
+    const id = el.dataset.paramId;
+    if (!id) return;
+    if (el.type === "checkbox") configParts.push(`${id}=${el.checked}`);
+    else if (el.value.trim()) configParts.push(`${id}=${el.value.trim()}`);
+  });
+  _export3dConfig = configParts.join(";");
+  loadExport3dParts();
+});
+
 document.getElementById("btnRunExport3d").addEventListener("click", () => {
   const url = _export3dUrl;
   const boxes = document.getElementById("export3dPartList").querySelectorAll(".export3d-part-cb:checked");
@@ -572,7 +623,7 @@ document.getElementById("btnRunExport3d").addEventListener("click", () => {
   document.getElementById("export3dLog").innerHTML = "";
   append3dLog(`Exporting ${selectedParts.length} part(s) as ${_export3dFormat}...`);
 
-  chrome.runtime.sendMessage({ type: "export-3d-parts", url, format: _export3dFormat, selectedParts }, (response) => {
+  chrome.runtime.sendMessage({ type: "export-3d-parts", url, format: _export3dFormat, selectedParts, configuration: _export3dConfig }, (response) => {
     if (!response) { append3dLog("No response from background", "log-err"); btn.disabled = false; }
   });
 });
@@ -580,6 +631,8 @@ document.getElementById("btnRunExport3d").addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 // URDF Export
 // ---------------------------------------------------------------------------
+
+let _urdfUrl = "";
 
 function appendUrdfLog(text, cls) {
   const $log = document.getElementById("urdfLog");
@@ -591,17 +644,51 @@ function appendUrdfLog(text, cls) {
   $log.scrollTop = $log.scrollHeight;
 }
 
+function loadUrdfConfigs() {
+  document.getElementById("urdfConfigPanel").style.display = "none";
+  document.getElementById("urdfLog").style.display = "none";
+  document.getElementById("urdfLog").innerHTML = "";
+  appendUrdfLog("Fetching configurations...");
+  chrome.runtime.sendMessage({ type: "fetch-urdf-configs", url: _urdfUrl });
+}
+
+function renderUrdfConfigs(params) {
+  document.getElementById("urdfLog").style.display = "none";
+  document.getElementById("urdfLog").innerHTML = "";
+  const $list = document.getElementById("urdfConfigList");
+  $list.innerHTML = "";
+  if (params.length === 0) {
+    const info = document.createElement("div");
+    info.style.cssText = "font-size:12px;color:#888;margin-bottom:8px;";
+    info.textContent = "No configuration — default export will be generated.";
+    $list.appendChild(info);
+  } else {
+    renderPsConfigInputs($list, params, "urdf-config-input");
+  }
+  document.getElementById("urdfConfigPanel").style.display = "block";
+}
+
 document.getElementById("btnGenerateUrdf").addEventListener("click", () => {
-  const url = document.getElementById("urdfAsmUrl").value.trim();
-  if (!url || !url.includes("cad.onshape.com/documents/")) {
-    appendUrdfLog("Enter a valid Assembly URL", "log-err");
+  if (!_urdfUrl) {
+    appendUrdfLog("Open an Assembly tab first", "log-err");
     return;
   }
+  const cfgParts = [];
+  document.querySelectorAll(".urdf-config-input").forEach(el => {
+    const id = el.dataset.paramId;
+    if (!id) return;
+    if (el.type === "checkbox") {
+      cfgParts.push(`${id}=${el.checked}`);
+    } else {
+      if (el.tagName === "SELECT" || el.value.trim()) cfgParts.push(`${id}=${el.value.trim()}`);
+    }
+  });
+  const configuration = cfgParts.join(";");
   const btn = document.getElementById("btnGenerateUrdf");
   btn.disabled = true;
   document.getElementById("urdfLog").innerHTML = "";
   appendUrdfLog("Starting URDF export...");
-  chrome.runtime.sendMessage({ type: "export-urdf", url }, (response) => {
+  chrome.runtime.sendMessage({ type: "export-urdf", url: _urdfUrl, configuration }, (response) => {
     if (!response) {
       appendUrdfLog("No response from background — try reloading extension", "log-err");
       btn.disabled = false;
@@ -927,6 +1014,51 @@ function loadBomConfigs() {
   chrome.runtime.sendMessage({ type: "fetch-bom-configs", url: _bomGenUrl });
 }
 
+function renderPsConfigInputs($container, params, cssClass) {
+  $container.innerHTML = "";
+  params.forEach(param => {
+    const row = document.createElement("div");
+    row.style.marginBottom = "6px";
+    const lbl = document.createElement("div");
+    lbl.style.cssText = "font-size:11px;color:#aaa;margin-bottom:2px;";
+    lbl.textContent = param.name;
+    row.appendChild(lbl);
+    if (param.type === "enum") {
+      const sel = document.createElement("select");
+      sel.dataset.paramId = param.id;
+      sel.className = cssClass;
+      param.values.forEach(v => {
+        const opt = document.createElement("option");
+        opt.value = v.value;
+        opt.textContent = v.label;
+        if (v.value === param.defaultValue) opt.selected = true;
+        sel.appendChild(opt);
+      });
+      row.appendChild(sel);
+    } else if (param.type === "boolean") {
+      const wrap = document.createElement("label");
+      wrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:12px;color:#e0e0e0;cursor:pointer;";
+      const cb = document.createElement("input");
+      cb.type = "checkbox";
+      cb.dataset.paramId = param.id;
+      cb.className = cssClass;
+      cb.checked = param.defaultValue === "true";
+      wrap.appendChild(cb);
+      wrap.appendChild(document.createTextNode("Enabled"));
+      row.appendChild(wrap);
+    } else {
+      const inp = document.createElement("input");
+      inp.type = "text";
+      inp.dataset.paramId = param.id;
+      inp.className = cssClass;
+      inp.value = param.defaultValue || "";
+      inp.placeholder = param.unitSpec || "value";
+      row.appendChild(inp);
+    }
+    $container.appendChild(row);
+  });
+}
+
 function renderBomConfigs(params) {
   document.getElementById("bomGenLog").style.display = "none";
   document.getElementById("bomGenLog").innerHTML = "";
@@ -938,48 +1070,7 @@ function renderBomConfigs(params) {
     info.textContent = "No configuration — default BOM will be generated.";
     $list.appendChild(info);
   } else {
-    params.forEach(param => {
-      const row = document.createElement("div");
-      row.style.marginBottom = "10px";
-      const lbl = document.createElement("div");
-      lbl.style.cssText = "font-size:12px;color:#aaa;margin-bottom:4px;";
-      lbl.textContent = param.name;
-      row.appendChild(lbl);
-      if (param.type === "enum") {
-        const sel = document.createElement("select");
-        sel.dataset.paramId = param.id;
-        sel.className = "bom-config-input";
-        param.values.forEach(v => {
-          const opt = document.createElement("option");
-          opt.value = v.value;
-          opt.textContent = v.label;
-          if (v.value === param.defaultValue) opt.selected = true;
-          sel.appendChild(opt);
-        });
-        row.appendChild(sel);
-      } else if (param.type === "boolean") {
-        const wrap = document.createElement("label");
-        wrap.style.cssText = "display:flex;align-items:center;gap:6px;font-size:13px;color:#e0e0e0;cursor:pointer;";
-        const cb = document.createElement("input");
-        cb.type = "checkbox";
-        cb.dataset.paramId = param.id;
-        cb.dataset.inputType = "boolean";
-        cb.className = "bom-config-input";
-        cb.checked = param.defaultValue === "true";
-        wrap.appendChild(cb);
-        wrap.appendChild(document.createTextNode("Enabled"));
-        row.appendChild(wrap);
-      } else {
-        const inp = document.createElement("input");
-        inp.type = "text";
-        inp.dataset.paramId = param.id;
-        inp.className = "bom-config-input";
-        inp.value = param.defaultValue || "";
-        inp.placeholder = param.unitSpec || "value";
-        row.appendChild(inp);
-      }
-      $list.appendChild(row);
-    });
+    renderPsConfigInputs($list, params, "bom-config-input");
   }
   document.getElementById("bomGenParamPanel").style.display = "block";
 }
@@ -1053,10 +1144,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (msg.error) {
       appendUrdfLog("Error: " + msg.error, "log-err");
     } else {
-      const a = document.createElement("a");
-      a.href = "data:application/zip;base64," + msg.zipBase64;
-      a.download = msg.zipName || "robot_urdf.zip";
-      a.click();
+      chrome.downloads.download({ url: "data:application/zip;base64," + msg.zipBase64, filename: msg.zipName || "robot_urdf.zip", saveAs: true });
       appendUrdfLog("Downloaded: " + (msg.zipName || "robot_urdf.zip"), "log-ok");
     }
   } else if (msg.type === "bulk-export-done") {
@@ -1070,14 +1158,50 @@ chrome.runtime.onMessage.addListener((msg) => {
     } else {
       $status.textContent = "Download ready";
       $status.style.color = "#95d5b2";
-      // Trigger download via data URL
-      const a = document.createElement("a");
-      a.href = "data:application/zip;base64," + msg.zipBase64;
-      a.download = msg.filename || "export.zip";
-      a.click();
+      chrome.downloads.download({ url: "data:application/zip;base64," + msg.zipBase64, filename: msg.filename || "export.zip", saveAs: true });
     }
+  } else if (msg.type === "ps-configs-loaded") {
+    const { eid, params } = msg;
+    if (eid === _export3dEid) {
+      // 3D Export: show config panel or skip straight to parts
+      document.getElementById("export3dLog").style.display = "none";
+      document.getElementById("export3dLog").innerHTML = "";
+      if (!params || params.length === 0) {
+        loadExport3dParts();
+      } else {
+        renderPsConfigInputs(document.getElementById("export3dConfigList"), params, "ps-config-input");
+        document.getElementById("export3dConfigPanel").style.display = "block";
+      }
+    } else {
+      // Bulk Export: find the cfgWrap for this PS and inject config selects
+      const wrap = document.querySelector(`[data-ps-config-wrap="${eid}"]`);
+      if (wrap && params && params.length > 0) {
+        renderPsConfigInputs(wrap, params, "ps-config-input");
+        wrap.style.display = "block";
+      }
+    }
+  } else if (msg.type === "ps-configs-error") {
+    // Silently ignore per-PS config errors in bulk export; log for 3D export
+    if (msg.eid === _export3dEid) {
+      document.getElementById("export3dLog").style.display = "none";
+      document.getElementById("export3dLog").innerHTML = "";
+      append3dLog("Config fetch failed: " + msg.error + " — loading parts anyway", "log-err");
+      loadExport3dParts();
+    }
+  } else if (msg.type === "urdf-configs-loaded") {
+    if (msg.notAssembly) {
+      appendUrdfLog("Open an Assembly tab to use URDF Export", "log-err");
+    } else {
+      renderUrdfConfigs(msg.params || []);
+    }
+  } else if (msg.type === "urdf-configs-error") {
+    appendUrdfLog("Error: " + msg.error, "log-err");
   } else if (msg.type === "bom-configs-loaded") {
-    renderBomConfigs(msg.params || []);
+    if (msg.notAssembly) {
+      appendBomLog("Open an Assembly tab to use the BOM Generator", "log-err");
+    } else {
+      renderBomConfigs(msg.params || []);
+    }
   } else if (msg.type === "bom-configs-error") {
     appendBomLog("Error: " + msg.error, "log-err");
   } else if (msg.type === "bom-export-progress") {
@@ -1281,7 +1405,7 @@ function initDocWhitelistToggle() {
 
     // Check session user first — only render for Kevin
     chrome.runtime.sendMessage({ type: "get-session-user" }, (user) => {
-      if (!user || user.email !== "kevin@10xconstruction.ai") return;
+      if (!user || !["kevin@10xconstruction.ai", "sai@origin.tech"].includes(user.email)) return;
 
       // Check current disabled state
       chrome.runtime.sendMessage({ type: "check-doc-disabled", docId }, (resp) => {

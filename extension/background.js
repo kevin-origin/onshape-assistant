@@ -248,6 +248,83 @@ if (IS_PRODUCTION_BUILD) {
 }
 
 // ---------------------------------------------------------------------------
+// Compliance Monitor — heartbeat
+// ---------------------------------------------------------------------------
+
+async function sendComplianceHeartbeat() {
+  try {
+    // Only send if an Onshape tab is open
+    const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
+    if (!tabs.length) return;
+    const user = await getSessionUser();
+    if (!user) return;
+    await fetch(`${SYNC_SERVER}/api/compliance/heartbeat`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email: user.email, timestamp: new Date().toISOString() }),
+    });
+  } catch { /* non-critical */ }
+}
+
+// Send heartbeat every 5 minutes while Onshape is open
+chrome.alarms.create("compliance-heartbeat", { periodInMinutes: 5 });
+chrome.alarms.onAlarm.addListener(alarm => {
+  if (alarm.name === "compliance-heartbeat") sendComplianceHeartbeat();
+});
+
+// Also send immediately on SW startup
+sendComplianceHeartbeat();
+
+// ---------------------------------------------------------------------------
+// Compliance Monitor — auto-register per-user webhook on SW startup
+// ---------------------------------------------------------------------------
+
+(async () => {
+  try {
+    const user = await getSessionUser();
+    if (!user) return;
+
+    // Check if we already registered a webhook for this user
+    const stored = await chrome.storage.local.get("complianceWebhookId");
+    if (stored.complianceWebhookId) {
+      // Verify it still exists on Onshape's side
+      try {
+        await onshapeFetch(`/api/v10/webhooks/${stored.complianceWebhookId}`);
+        return; // still valid
+      } catch {
+        // Webhook gone — clear and re-register below
+        await chrome.storage.local.remove("complianceWebhookId");
+      }
+    }
+
+    // Register a per-user webhook so company-level events fire for this user's actions
+    const xsrf = await getXsrfToken();
+    const headers = { "Accept": "application/json", "Content-Type": "application/json" };
+    if (xsrf) headers["X-XSRF-TOKEN"] = xsrf;
+    const resp = await fetch(`${ONSHAPE_BASE}/api/v10/webhooks`, {
+      method: "POST",
+      credentials: "include",
+      headers,
+      body: JSON.stringify({
+        events: ["onshape.model.lifecycle.createversion"],
+        companyId: COMPANY_ID,
+        options: { collapseEvents: false },
+        url: `${SYNC_SERVER}/api/webhook/onshape`,
+        clientData: "compliance-monitor",
+        isTransient: false,
+      }),
+    });
+    if (resp.ok) {
+      const data = await resp.json();
+      await chrome.storage.local.set({ complianceWebhookId: data.id });
+      console.log(`[Compliance] Webhook registered: ${data.id} for ${user.email}`);
+    }
+  } catch (e) {
+    console.log("[Compliance] Webhook auto-register failed:", e.message);
+  }
+})();
+
+// ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
 // ---------------------------------------------------------------------------
 
@@ -3384,6 +3461,44 @@ async function generateUrdf(did, wid, eid, configuration) {
 }
 
 // ---------------------------------------------------------------------------
+// Compliance Monitor — Onshape webhook registration + management
+// ---------------------------------------------------------------------------
+
+const COMPLIANCE_WEBHOOK_URL = `${SYNC_SERVER}/api/webhook/onshape`;
+const COMPLIANCE_ADMINS = ["kevin@origin.tech", "sai@origin.tech"];
+
+async function registerComplianceWebhook() {
+  // onshape.model.lifecycle.createversion fires when any workspace version is created.
+  // companyId must be a top-level field (not filter string) on Pro plan.
+  // NOTE: Onshape Pro webhook payloads do NOT include userId — only documentId, versionId, timestamp.
+  return onshapePost("/api/v10/webhooks", {
+    events: ["onshape.model.lifecycle.createversion"],
+    companyId: COMPANY_ID,
+    options: { collapseEvents: false },
+    url: COMPLIANCE_WEBHOOK_URL,
+    clientData: "compliance-monitor",
+    description: "Onshape Assistant compliance monitor",
+    isTransient: false,
+  });
+}
+
+async function getComplianceWebhooks() {
+  // List all webhooks registered for this company
+  return onshapeFetch(`/api/v10/webhooks?company=${COMPANY_ID}`);
+}
+
+async function deleteComplianceWebhook(webhookId) {
+  const xsrf = await getXsrfToken();
+  const resp = await fetch(`${ONSHAPE_BASE}/api/v10/webhooks/${webhookId}`, {
+    method: "DELETE",
+    credentials: "include",
+    headers: { "Accept": "application/json", ...(xsrf ? { "X-XSRF-TOKEN": xsrf } : {}) },
+  });
+  if (!resp.ok) throw new Error(`Delete webhook ${webhookId}: ${resp.status}`);
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
 // SW keepalive — accept persistent ports from content.js to prevent idle termination
 // ---------------------------------------------------------------------------
 chrome.runtime.onConnect.addListener(port => {
@@ -3670,6 +3785,43 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
 
+  } else if (msg.type === "sync-outdated-drawings") {
+    // Fetch out-of-date drawings and sync them in a loop until none remain.
+    // syncApplicationElements returns 204 (empty body) — cannot use onshapePost.
+    // Fire-and-forget — no sendResponse needed.
+    (async () => {
+      const { docId, wid } = msg;
+      if (!docId || !wid) return;
+      try {
+        const xsrf = await getXsrfToken();
+        for (let pass = 0; pass < 10; pass++) {
+          const outdated = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
+          const list = Array.isArray(outdated) ? outdated : (outdated?.items || []);
+          console.log(`[DrawingSync] Pass ${pass + 1} — out-of-date: ${list.length === 0 ? "none" : list.map(e => e.name).join(", ")}`);
+          if (list.length === 0) break;
+          await Promise.all(list.map(el =>
+            fetch(`${ONSHAPE_BASE}/api/documents/d/${docId}/w/${wid}/syncApplicationElements?applicationElementIds=${el.id}`, {
+              method: "POST",
+              credentials: "include",
+              headers: { "Accept": "application/json", "Content-Type": "application/json", "X-XSRF-TOKEN": xsrf },
+              body: "{}",
+            }).then(r => console.log(`[DrawingSync] Synced "${el.name}" → ${r.status}`))
+              .catch(e => console.log(`[DrawingSync] Failed "${el.name}": ${e.message}`))
+          ));
+          // Re-check immediately; only wait if drawings are still outdated (Onshape processing lag)
+          const recheck = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
+          const remaining = Array.isArray(recheck) ? recheck : (recheck?.items || []);
+          console.log(`[DrawingSync] Re-check: ${remaining.length} still outdated`);
+          if (remaining.length === 0) break;
+          console.log(`[DrawingSync] Waiting 1.5s before next pass...`);
+          await new Promise(r => setTimeout(r, 1500));
+        }
+        console.log("[DrawingSync] Done.");
+      } catch (e) {
+        console.log(`[DrawingSync] Error: ${e.message}`);
+      }
+    })();
+
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -3897,7 +4049,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Admin-only: only kevin@origin.tech may modify the whitelist
     (async () => {
       const user = await getSessionUser();
-      if (!user || user.email !== "kevin@10xconstruction.ai") {
+      if (!user || !["kevin@10xconstruction.ai", "sai@origin.tech"].includes(user.email)) {
         sendResponse({ error: "Unauthorized" });
         return;
       }
@@ -4247,7 +4399,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         if (!files.length) throw new Error("No files exported");
         for (const file of files) {
-          chrome.downloads.download({ url: "data:application/octet-stream;base64," + toBase64(file.data), filename: file.name, saveAs: false });
+          chrome.downloads.download({ url: "data:application/octet-stream;base64," + toBase64(file.data), filename: file.name, saveAs: true });
         }
         chrome.runtime.sendMessage({ type: "export-3d-done", count: files.length }).catch(() => {});
       } catch (e) {
@@ -4493,6 +4645,54 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
       } catch (e) {
         console.error("[NewDocSetup] check-and-setup-doc error:", e.message);
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "register-compliance-webhook") {
+    (async () => {
+      try {
+        const user = await getSessionUser();
+        if (!user || !COMPLIANCE_ADMINS.includes(user.email)) {
+          sendResponse({ error: "Unauthorized" });
+          return;
+        }
+        const result = await registerComplianceWebhook();
+        console.log("[Compliance] Webhook registered:", result?.id);
+        sendResponse({ ok: true, webhook: result });
+      } catch (e) {
+        console.error("[Compliance] Register webhook failed:", e.message);
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "get-compliance-webhooks") {
+    (async () => {
+      try {
+        const result = await getComplianceWebhooks();
+        sendResponse({ ok: true, webhooks: result });
+      } catch (e) {
+        console.error("[Compliance] Get webhooks failed:", e.message);
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "delete-compliance-webhook") {
+    (async () => {
+      try {
+        const user = await getSessionUser();
+        if (!user || !COMPLIANCE_ADMINS.includes(user.email)) {
+          sendResponse({ error: "Unauthorized" });
+          return;
+        }
+        await deleteComplianceWebhook(msg.webhookId);
+        console.log("[Compliance] Webhook deleted:", msg.webhookId);
+        sendResponse({ ok: true });
+      } catch (e) {
+        console.error("[Compliance] Delete webhook failed:", e.message);
         sendResponse({ error: e.message });
       }
     })();

@@ -834,7 +834,7 @@
       }
     }
     // Wait for setup check before scanning — prevents folder overlay from showing on new docs
-    await maybeSetupDoc();
+    // await maybeSetupDoc();
     runOnDocLoad();
     maybeHideToolbar();
   });
@@ -860,7 +860,7 @@
       }
       _notifiedDocIds.clear(); // reset notification tracking for new doc
       removeFolderOverlay();
-      await maybeSetupDoc();
+      // await maybeSetupDoc();
       runOnDocLoad();
       maybeHideToolbar();
     }
@@ -1759,81 +1759,28 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Rollback dialog inject — adds "Roll to end for all Part Studios" button
-  // inside the Onshape release dialog when it opens.
+  // Drawing sync on release — auto-syncs out-of-date drawings when release dialog opens
   // ---------------------------------------------------------------------------
-  (function initRollbackDialog() {
-    const DIALOG_SEL  = "div.modal.release-dialog.show";
-    const BTN_ID      = "oxt-rollback-btn";
-    const STATUS_ID   = "oxt-rollback-status";
-
-    function injectButton(dialog) {
-      if (dialog.querySelector("#" + BTN_ID)) return; // already injected
-
-      const btn = document.createElement("button");
-      btn.id    = BTN_ID;
-      btn.type  = "button";
-      btn.textContent = "Roll to end for all Part Studios";
-      btn.style.cssText = [
-        "display:inline-flex",
-        "align-items:center",
-        "gap:6px",
-        "margin:8px 0 4px",
-        "padding:5px 12px",
-        "border:1px solid #1565c0",
-        "border-radius:4px",
-        "background:#1a73e8",
-        "color:#fff",
-        "font-size:13px",
-        "cursor:pointer",
-        "white-space:nowrap",
-      ].join(";");
-
-      const status = document.createElement("span");
-      status.id = STATUS_ID;
-      status.style.cssText = "font-size:12px;color:#555;margin-left:6px";
-
-      btn.addEventListener("click", () => {
-        const docId = getDocIdFromUrl();
-        const wid   = getWidFromUrl();
-        if (!docId || !wid) {
-          status.textContent = "Could not read doc/workspace from URL.";
-          return;
-        }
-        btn.disabled = true;
-        status.textContent = "Working…";
-        chrome.runtime.sendMessage({ type: "reset-partstudio-rollbacks", docId, wid }, (resp) => {
-          btn.disabled = false;
-          if (resp?.ok) {
-            status.textContent = `Done — reset ${resp.count} Part Studio(s).`;
-            btn.style.background   = "#198754";
-            btn.style.borderColor  = "#198754";
-          } else {
-            status.textContent = "Failed: " + (resp?.error || "unknown error");
-            btn.style.background   = "#dc3545";
-            btn.style.borderColor  = "#dc3545";
-          }
-        });
-      });
-
-      // Insert at top of the modal body so it's immediately visible
-      const body = dialog.querySelector(".modal-body, .modal-content");
-      if (body) {
-        const wrapper = document.createElement("div");
-        wrapper.style.cssText = "padding:0 16px 4px";
-        wrapper.appendChild(btn);
-        wrapper.appendChild(status);
-        body.insertAdjacentElement("afterbegin", wrapper);
-      }
-    }
+  (function initDrawingsSyncOnRelease() {
+    const DIALOG_SEL = "div.modal.release-dialog.show";
+    let _triggered = false;
 
     const observer = new MutationObserver(() => {
       if (_killSwitchActive || _docDisabled) return;
       const dialog = document.querySelector(DIALOG_SEL);
-      if (dialog) injectButton(dialog);
+      if (dialog && !_triggered) {
+        _triggered = true;
+        const docId = getDocIdFromUrl();
+        const wid   = getWidFromUrl();
+        if (!docId || !wid) return;
+        chrome.runtime.sendMessage({ type: "sync-outdated-drawings", docId, wid });
+      } else if (!dialog) {
+        _triggered = false;
+      }
     });
-    observer.observe(document.body, { childList: true, subtree: true });
-    console.log("[RollbackDialog] Observer started");
+
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    console.log("[DrawingSync] Observer started");
   })();
 
   // Start interceptors

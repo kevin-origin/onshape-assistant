@@ -94,6 +94,24 @@
       margin-top: 3px;
       font-weight: 400;
     }
+    .btn-menu .menu-title {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+    }
+    .os-icon {
+      display: inline-flex;
+      align-items: center;
+      flex-shrink: 0;
+      --os-icon-outline-primary--static: #c0c0c0;
+      --os-icon-outline-primary: #c0c0c0;
+      --os-icon-fill-primary--static: #16213e;
+      --os-icon-fill-secondary--static: #555;
+      --os-icon-fill-tertiary: #888;
+      --os-icon-accent-primary: #5b8dd9;
+    }
+    .os-icon svg { width: 20px; height: 20px; }
+    h3 .os-icon svg { width: 16px; height: 16px; }
     .btn-draw { background: #1b4332; color: #95d5b2; }
     /* .btn-scan removed — no bulk scan */
     .btn-rescan { background: #1a1a40; color: #7ec8e3; border: 1px solid #333; }
@@ -288,20 +306,20 @@
   <div id="sectionMenu" class="section active">
     <h2>Onshape Assistant</h2>
     <button class="btn-menu" id="btnGoDrawing">
-      Drawing Creator
+      <div class="menu-title">Drawing Creator <span class="os-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><g fill-rule="evenodd" clip-rule="evenodd"><path d="M19 2H1v8h5v3h3v5h10V2z" fill="var(--os-icon-outline-primary--static, #333333)"></path><path d="M2 3h16v9h-7v5H9v-4H6v-3H2V3zm10 10h6v4h-6v-4z" fill="var(--os-icon-fill-primary--static, #FFFFFF)"></path><path d="M3 16H0v-2h3v-3h2v3h3v2H5v3H3v-3z" fill="var(--os-icon-accent-primary, #1651B0)"></path></g></svg></span></div>
       <div class="menu-desc">Generate drawings for all parts in a Part Studio</div>
     </button>
     <button class="btn-menu" id="btnGoFolderStructure">
-      Folder Structure
+      <div class="menu-title">Folder Structure <span class="os-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><g fill-rule="evenodd" clip-rule="evenodd"><path d="M10 3h10v1H10V3zm0 3h8v1h-8V6zm10 7H10v1h10v-1zm-10 3h8v1h-8v-1z" fill="var(--os-icon-fill-tertiary, #666666)"></path><path d="M.4444 2C.199 2 0 2.1919 0 2.4286v5.1428C0 7.8081.199 8 .4444 8h7.1112C7.801 8 8 7.8081 8 7.5714V3.2857c0-.2367-.199-.4286-.4444-.4286H3.7778l-.5334-.6857A.4502.4502 0 002.889 2H.4444zm0 10C.199 12 0 12.1919 0 12.4286v5.1428C0 17.8081.199 18 .4444 18h7.1112C7.801 18 8 17.8081 8 17.5714v-4.2857c0-.2367-.199-.4286-.4444-.4286H3.7778l-.5334-.6857A.4502.4502 0 002.889 12H.4444z" fill="var(--os-icon-fill-primary--static, #FFFFFF)"></path><path d="M2.7443 2.75l.6667.8571H7.25V7.25H.75v-4.5h1.9943zm.5001-.5786l.5334.6857h3.7778c.2454 0 .4444.192.4444.4286v4.2857C8 7.8081 7.801 8 7.5556 8H.4444C.199 8 0 7.8081 0 7.5714V2.4286C0 2.1919.199 2 .4444 2H2.889a.4502.4502 0 01.3555.1714zM2.7443 12.75l.6667.8571H7.25V17.25H.75v-4.5h1.9943zm.5001-.5786l.5334.6857h3.7778c.2454 0 .4444.1919.4444.4286v4.2857c0 .2367-.199.4286-.4444.4286H.4444C.199 18 0 17.8081 0 17.5714v-5.1428C0 12.1919.199 12 .4444 12H2.889a.4502.4502 0 01.3555.1714z" fill="var(--os-icon-outline-primary--static, #333333)"></path></g></svg></span></div>
       <div class="menu-desc">Validate and create standard folder structure for a document</div>
     </button>
     <button class="btn-menu" id="btnGoMergePerms">
-      Doc Permissions
+      <div class="menu-title">Document Permissions <span class="os-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill-rule="evenodd" clip-rule="evenodd" d="M0 5c0-2.2052 1.7939-4 4-4s4 1.7948 4 4c0 1.8601-1.2764 3.4283-3 3.8735v4.075c.5684-.2972 1.242-.4486 2-.4485h1.5c.8884 0 1.2699-.3439 1.4263-.8121-.5673-.3616-.9386-1.0007-.926-1.7228.0193-1.1047.9299-1.984 2.0346-1.9648 1.1047.0193 1.9841.9299 1.9648 2.0346-.0138.7924-.4862 1.4688-1.1599 1.7809C11.5093 13.402 10.5994 14.5003 8.5 14.5H7c-.5732 0-1.2788.2428-1.6803.997C5.7368 15.8634 6 16.4009 6 17c0 1.1049-.8951 2-2 2s-2-.8951-2-2c0-.7406.4021-1.3869 1-1.7326v-6.394C1.2764 8.4284 0 6.8602 0 5zm4 2.5c1.3811 0 2.5-1.1189 2.5-2.5S5.3811 2.5 4 2.5 1.5 3.6189 1.5 5 2.6189 7.5 4 7.5z" fill="var(--os-icon-outline-primary, #333333)"></path><g fill="var(--os-icon-fill-tertiary, #666666)"><path d="M20 2H10v2h10V2zM20 7h-6.0069v2H20V7zM13.9931 12H20v2h-6.0069v-2zM20 17H10v2h10v-2z"></path></g></svg></span></div>
       <div class="menu-desc">Manage who can merge into the main branch per document</div>
     </button>
     <button class="btn-menu" id="btnGoExport">
-      Export
-      <div class="menu-desc">Bulk export flat pattern DXFs, drawing PDFs, and URDF</div>
+      <div class="menu-title">Export <span class="os-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill-rule="evenodd" clip-rule="evenodd" d="M1 18h18v-3h-1.5v1.8h-15V15H1v3zm4-8.7778L10.5 15 16 9.2222h-3.9286V2H8.9286v7.2222H5z" fill="var(--os-icon-outline-primary, #333333)"></path></svg></span></div>
+      <div class="menu-desc">Bulk export for sheet metal, 3D prints or URDFs</div>
     </button>
     <!-- Doc whitelist toggle — only rendered for kevin@origin.tech -->
     <div id="docWhitelistSection" style="display:none; border-top:1px solid #3a3a3a; margin-top:10px; padding-top:10px">
@@ -314,7 +332,7 @@
 
   <!-- ============ Drawing Creator ============ -->
   <div id="sectionDrawing" class="section">
-    <h3><button class="btn-back" id="btnBackFromDrawing">Back</button> Drawing Creator</h3>
+    <h3><button class="btn-back" id="btnBackFromDrawing">Back</button> Drawing Creator <span class="os-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><g fill-rule="evenodd" clip-rule="evenodd"><path d="M19 2H1v8h5v3h3v5h10V2z" fill="var(--os-icon-outline-primary--static, #333333)"></path><path d="M2 3h16v9h-7v5H9v-4H6v-3H2V3zm10 10h6v4h-6v-4z" fill="var(--os-icon-fill-primary--static, #FFFFFF)"></path><path d="M3 16H0v-2h3v-3h2v3h3v2H5v3H3v-3z" fill="var(--os-icon-accent-primary, #1651B0)"></path></g></svg></span></h3>
 
     <div class="btn-row">
       <button class="btn-draw" id="btnCreateDrawings">Generate Drawings</button>
@@ -385,7 +403,7 @@
 
   <!-- ============ Folder Structure ============ -->
   <div id="sectionFolderStructure" class="section">
-    <h3><button class="btn-back" id="btnBackFromFolderStructure">Back</button> Folder Structure</h3>
+    <h3><button class="btn-back" id="btnBackFromFolderStructure">Back</button> Folder Structure <span class="os-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><g fill-rule="evenodd" clip-rule="evenodd"><path d="M10 3h10v1H10V3zm0 3h8v1h-8V6zm10 7H10v1h10v-1zm-10 3h8v1h-8v-1z" fill="var(--os-icon-fill-tertiary, #666666)"></path><path d="M.4444 2C.199 2 0 2.1919 0 2.4286v5.1428C0 7.8081.199 8 .4444 8h7.1112C7.801 8 8 7.8081 8 7.5714V3.2857c0-.2367-.199-.4286-.4444-.4286H3.7778l-.5334-.6857A.4502.4502 0 002.889 2H.4444zm0 10C.199 12 0 12.1919 0 12.4286v5.1428C0 17.8081.199 18 .4444 18h7.1112C7.801 18 8 17.8081 8 17.5714v-4.2857c0-.2367-.199-.4286-.4444-.4286H3.7778l-.5334-.6857A.4502.4502 0 002.889 12H.4444z" fill="var(--os-icon-fill-primary--static, #FFFFFF)"></path><path d="M2.7443 2.75l.6667.8571H7.25V7.25H.75v-4.5h1.9943zm.5001-.5786l.5334.6857h3.7778c.2454 0 .4444.192.4444.4286v4.2857C8 7.8081 7.801 8 7.5556 8H.4444C.199 8 0 7.8081 0 7.5714V2.4286C0 2.1919.199 2 .4444 2H2.889a.4502.4502 0 01.3555.1714zM2.7443 12.75l.6667.8571H7.25V17.25H.75v-4.5h1.9943zm.5001-.5786l.5334.6857h3.7778c.2454 0 .4444.1919.4444.4286v4.2857c0 .2367-.199.4286-.4444.4286H.4444C.199 18 0 17.8081 0 17.5714v-5.1428C0 12.1919.199 12 .4444 12H2.889a.4502.4502 0 01.3555.1714z" fill="var(--os-icon-outline-primary--static, #333333)"></path></g></svg></span></h3>
 
     <div class="btn-row">
       <button class="btn-rescan" id="btnRescan">Scan This Doc</button>
@@ -427,7 +445,7 @@
 
   <!-- ============ Doc Permissions ============ -->
   <div id="sectionMergePerms" class="section">
-    <h3><button class="btn-back" id="btnBackFromMergePerms">Back</button> Doc Permissions</h3>
+    <h3><button class="btn-back" id="btnBackFromMergePerms">Back</button> Document Permissions <span class="os-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill-rule="evenodd" clip-rule="evenodd" d="M0 5c0-2.2052 1.7939-4 4-4s4 1.7948 4 4c0 1.8601-1.2764 3.4283-3 3.8735v4.075c.5684-.2972 1.242-.4486 2-.4485h1.5c.8884 0 1.2699-.3439 1.4263-.8121-.5673-.3616-.9386-1.0007-.926-1.7228.0193-1.1047.9299-1.984 2.0346-1.9648 1.1047.0193 1.9841.9299 1.9648 2.0346-.0138.7924-.4862 1.4688-1.1599 1.7809C11.5093 13.402 10.5994 14.5003 8.5 14.5H7c-.5732 0-1.2788.2428-1.6803.997C5.7368 15.8634 6 16.4009 6 17c0 1.1049-.8951 2-2 2s-2-.8951-2-2c0-.7406.4021-1.3869 1-1.7326v-6.394C1.2764 8.4284 0 6.8602 0 5zm4 2.5c1.3811 0 2.5-1.1189 2.5-2.5S5.3811 2.5 4 2.5 1.5 3.6189 1.5 5 2.6189 7.5 4 7.5z" fill="var(--os-icon-outline-primary, #333333)"></path><g fill="var(--os-icon-fill-tertiary, #666666)"><path d="M20 2H10v2h10V2zM20 7h-6.0069v2H20V7zM13.9931 12H20v2h-6.0069v-2zM20 17H10v2h10v-2z"></path></g></svg></span></h3>
     <div class="btn-row">
       <button class="btn-rescan" id="btnSetMergePerms">Set for This Doc</button>
     </div>
@@ -439,7 +457,7 @@
 
   <!-- ============ Export (submenu) ============ -->
   <div id="sectionExport" class="section">
-    <h3><button class="btn-back" id="btnBackFromExport">Back</button> Export</h3>
+    <h3><button class="btn-back" id="btnBackFromExport">Back</button> Export <span class="os-icon"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path fill-rule="evenodd" clip-rule="evenodd" d="M1 18h18v-3h-1.5v1.8h-15V15H1v3zm4-8.7778L10.5 15 16 9.2222h-3.9286V2H8.9286v7.2222H5z" fill="var(--os-icon-outline-primary, #333333)"></path></svg></span></h3>
     <button class="btn-menu" id="btnGoExport3D">
       Export Parts (STEP / STL)
       <div class="menu-desc">Export individual parts as STEP or STL files</div>
@@ -466,6 +484,14 @@
     <div class="btn-row" style="margin-top:4px;">
       <button id="btnFormatStep" style="background:#1b4332;color:#95d5b2;border:none;border-radius:4px;padding:7px 10px;font-size:14px;font-weight:600;cursor:pointer;flex:1;">STEP</button>
       <button id="btnFormatStl" style="background:#1a1a40;color:#7ec8e3;border:1px solid #333;border-radius:4px;padding:7px 10px;font-size:14px;font-weight:600;cursor:pointer;flex:1;">STL</button>
+    </div>
+
+    <div id="export3dConfigPanel" style="display:none;margin-top:10px;border:1px solid #333;border-radius:6px;background:#16213e;padding:10px;">
+      <div style="font-size:12px;color:#aaa;margin-bottom:8px;font-weight:600;">Configuration</div>
+      <div id="export3dConfigList"></div>
+      <div class="btn-row" style="margin-top:8px;">
+        <button class="btn-rescan" id="btnLoadExport3dParts">Load Parts</button>
+      </div>
     </div>
 
     <div id="export3dPartPanel" style="display:none;margin-top:10px;border:1px solid #333;border-radius:6px;background:#16213e;padding:10px;">
@@ -504,11 +530,11 @@
   <div id="sectionUrdf" class="section">
     <h3><button class="btn-back" id="btnBackFromUrdf">Back</button> URDF Export</h3>
 
-    <label>Assembly URL</label>
-    <input type="text" id="urdfAsmUrl" placeholder="https://cad.onshape.com/documents/.../w/.../e/...">
-
-    <div class="btn-row" style="margin-top:10px;">
-      <button class="btn-draw" id="btnGenerateUrdf">Generate URDF</button>
+    <div id="urdfConfigPanel" style="display:none;margin-top:6px;">
+      <div id="urdfConfigList"></div>
+      <div class="btn-row" style="margin-top:10px;">
+        <button class="btn-draw" id="btnGenerateUrdf">Generate URDF</button>
+      </div>
     </div>
 
     <div id="urdfLog" style="margin-top:8px;max-height:220px;overflow-y:auto;font-size:13px;font-family:monospace;color:#aaa;display:none;"></div>
