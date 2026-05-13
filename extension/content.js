@@ -773,9 +773,19 @@
       const docId = getDocIdFromUrl();
       if (!docId) return;
       const docResult = (data.docScanResults || {})[docId];
-      if (!docResult) return;
-      const count = typeof docResult.totalAssemblies === 'number' ? docResult.totalAssemblies : 0;
-      document.documentElement.dataset.oxtAssemblyCount = String(count);
+      if (docResult && typeof docResult.totalAssemblies === 'number') {
+        document.documentElement.dataset.oxtAssemblyCount = String(docResult.totalAssemblies);
+      } else {
+        // No cached result — eagerly pre-fetch so guard is ready before user opens dropdown
+        const wid = getWidFromUrl();
+        if (wid) {
+          chrome.runtime.sendMessage({ type: 'get-assembly-count', docId, wid }, (resp) => {
+            if (resp && typeof resp.count === 'number') {
+              document.documentElement.dataset.oxtAssemblyCount = String(resp.count);
+            }
+          });
+        }
+      }
     });
     if (_killSwitchActive || _docDisabled) return;
     const docId = getDocIdFromUrl();
@@ -871,10 +881,19 @@
     if (_killSwitchActive) return;
     const docId = getDocIdFromUrl();
     if (docId && docId !== _lastDocId) {
-      _docDisabled = false; // reset for new doc; spa-navigated handler will re-check async
       console.log("[Scanner] URL poll detected new doc:", docId);
       removeFolderOverlay();
-      runOnDocLoad();
+      chrome.runtime.sendMessage({ type: "check-doc-disabled", docId }, (resp) => {
+        if (getDocIdFromUrl() !== docId) return; // navigated away before response
+        _docDisabled = !!resp?.disabled;
+        if (_docDisabled) {
+          _lastDocId = docId; // prevent re-triggering every 2s
+          console.log("[Scanner] URL poll: doc whitelist active — extension disabled for this document");
+          return;
+        }
+        runOnDocLoad();
+        maybeHideToolbar();
+      });
     }
   }, 2000);
 
@@ -1781,6 +1800,33 @@
 
     observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
     console.log("[DrawingSync] Observer started");
+  })();
+
+  // ---------------------------------------------------------------------------
+  // Assembly Duplicate blocker — hides "Duplicate" from the tab context menu
+  // when the right-clicked tab is an assembly (data-icon-src="assembly").
+  // ---------------------------------------------------------------------------
+  (function initAssemblyDuplicateBlocker() {
+    const MENU_SEL  = 'ul.context-menu-root';
+    const TAB_SEL   = 'tab-list-item[data-icon-src="assembly"].context-menu-active';
+
+    function hideDuplicate() {
+      const menu = document.querySelector(MENU_SEL);
+      if (!menu) return;
+      if (!document.querySelector(TAB_SEL)) return;  // not an assembly tab
+
+      const items = menu.querySelectorAll('li.context-menu-item');
+      items.forEach(function(li) {
+        const span = li.querySelector('span.context-menu-item-span');
+        if (span && span.textContent.trim() === 'Duplicate') {
+          li.style.display = 'none';
+        }
+      });
+    }
+
+    const observer = new MutationObserver(hideDuplicate);
+    observer.observe(document.body, { childList: true, subtree: true });
+    console.log("[DuplicateBlocker] Observer started");
   })();
 
   // Start interceptors
