@@ -52,20 +52,31 @@ export default {
     if (path === "/api/webhook/onshape" && request.method === "POST") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: true }, corsHeaders); }
-      const { documentId, versionId, event: evt, timestamp } = body;
-      if (documentId && versionId) {
-        // Dedup — each version creation fires N webhooks (one per registered user); process only once
-        const dedupKey = `processed:${versionId}`;
+      const { documentId, versionId, messageId, userId: payloadUserId, event: evt, timestamp } = body;
+
+      if (documentId && (versionId || messageId || payloadUserId)) {
+        // Dedup — each event fires N webhooks (one per registered user); process only once
+        const dedupKey = `processed:${messageId || versionId || (payloadUserId + documentId)}`;
         const alreadyProcessed = await env.MERGE_PERMS.get(dedupKey);
         if (!alreadyProcessed) {
           await env.MERGE_PERMS.put(dedupKey, "1", { expirationTtl: 3600 }); // 1hr TTL
-          const createdBy = await onshapeLookupVersionCreator(documentId, versionId, env);
+
+          // Resolve creator: export/translation events carry userId directly; version events need lookup
+          let createdBy = null;
+          if (payloadUserId) {
+            const storedEmail = await env.MERGE_PERMS.get(`userid:${payloadUserId}`);
+            if (storedEmail) createdBy = { email: storedEmail, id: payloadUserId };
+          }
+          if (!createdBy && versionId) {
+            createdBy = await onshapeLookupVersionCreator(documentId, versionId, env);
+          }
+
           if (createdBy?.email) {
             const record = {
               timestamp: timestamp || new Date().toISOString(),
               event: evt || "unknown",
               documentId,
-              versionId,
+              versionId: versionId || null,
               receivedAt: new Date().toISOString(),
             };
             await env.MERGE_PERMS.put(`active:${createdBy.email}`, JSON.stringify(record), { expirationTtl: 7200 });
@@ -74,17 +85,20 @@ export default {
             const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
             const heartbeat = await env.MERGE_PERMS.get(`heartbeat:${createdBy.email}`);
             if (!heartbeat && !whitelist.includes(documentId)) {
-              const userId = await env.MERGE_PERMS.get(`emailid:${createdBy.email}`);
+              const userId = createdBy.id || await env.MERGE_PERMS.get(`emailid:${createdBy.email}`);
               if (userId) {
-                await demoteUser(userId, createdBy.email, env);
-                await env.MERGE_PERMS.put(`violation:${createdBy.email}`, JSON.stringify({
+                const violationRecord = {
                   email: createdBy.email,
                   userId,
                   documentId,
-                  versionId,
+                  versionId: versionId || null,
+                  event: evt || "unknown",
                   detectedAt: new Date().toISOString(),
                   reason: "no_heartbeat",
-                }));
+                };
+                await demoteUser(userId, createdBy.email, env);
+                await env.MERGE_PERMS.put(`violation:${createdBy.email}`, JSON.stringify(violationRecord));
+                await notifySlack(violationRecord, env);
               }
             }
           }
@@ -145,7 +159,13 @@ export default {
         method: "POST",
         headers: { "Authorization": `Basic ${creds}`, "Accept": "application/json", "Content-Type": "application/json" },
         body: JSON.stringify({
-          events: ["onshape.model.lifecycle.createversion"],
+          events: [
+            "onshape.model.lifecycle.createversion",
+            "onshape.model.lifecycle.createworkspace",
+            "onshape.model.translation.complete",
+            "onshape.model.export",
+            "onshape.model.lifecycle.deleted",
+          ],
           companyId: "6810c247e7c40668c32816a6",
           options: { collapseEvents: false },
           url: "https://onshape-assistant-sync.artilabot.workers.dev/api/webhook/onshape",
@@ -193,6 +213,21 @@ export default {
         return val;
       }));
       return json({ violations }, corsHeaders);
+    }
+
+    // DELETE /api/compliance/violations/:email — clear one user's violation (auth required)
+    const violationUserMatch = path.match(/^\/api\/compliance\/violations\/(.+)$/);
+    if (violationUserMatch && request.method === "DELETE") {
+      const email = decodeURIComponent(violationUserMatch[1]).toLowerCase();
+      await env.MERGE_PERMS.delete(`violation:${email}`);
+      return json({ ok: true, cleared: email }, corsHeaders);
+    }
+
+    // DELETE /api/compliance/violations — clear all violation records (auth required)
+    if (path === "/api/compliance/violations" && request.method === "DELETE") {
+      const list = await env.MERGE_PERMS.list({ prefix: "violation:" });
+      await Promise.all(list.keys.map(({ name }) => env.MERGE_PERMS.delete(name)));
+      return json({ ok: true, cleared: list.keys.length }, corsHeaders);
     }
 
     // GET /api/compliance/heartbeats — list all users with active heartbeats (auth required)
@@ -294,7 +329,7 @@ async function demoteUser(userId, email, env) {
     await fetch(`https://cad.onshape.com/api/v10/companies/${companyId}/users/${userId}`, {
       method: "POST",
       headers: { "Authorization": `Basic ${creds}`, "Accept": "application/json", "Content-Type": "application/json" },
-      body: JSON.stringify({ admin: false, email, companyId }),
+      body: JSON.stringify({ admin: false, light: false, email, companyId }),
     });
   } catch { /* non-critical — violation is already recorded */ }
 }
@@ -327,6 +362,26 @@ async function onshapeLookupVersionCreator(documentId, versionId, env) {
   } catch {
     return null;
   }
+}
+
+async function notifySlack(violation, env) {
+  if (!env.SLACK_WEBHOOK_URL) return;
+  const eventLabel = {
+    "onshape.model.lifecycle.createversion": "created a version",
+    "onshape.model.lifecycle.createworkspace": "created a workspace",
+    "onshape.model.translation.complete": "exported a file",
+    "onshape.model.export": "exported a file",
+    "onshape.model.lifecycle.deleted": "deleted a document",
+  }[violation.event] || violation.event;
+  const docUrl = `https://cad.onshape.com/documents/${violation.documentId}`;
+  const istTime = new Date(new Date(violation.detectedAt).getTime() + 5.5 * 60 * 60 * 1000)
+    .toISOString().replace("T", " ").replace(/\.\d+Z$/, " IST");
+  const text = `:warning: *Compliance violation detected*\n*User:* ${violation.email}\n*Action:* ${eventLabel}\n*Document:* <${docUrl}|${violation.documentId}>\n*Time:* ${istTime}\n*Action taken:* Admin rights revoked`;
+  await fetch(env.SLACK_WEBHOOK_URL, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  }).catch(() => {});
 }
 
 function json(data, corsHeaders, status = 200) {

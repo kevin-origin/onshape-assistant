@@ -1,6 +1,7 @@
 # Sensitive / credentials
 CONTEXT.md
 extension.pem
+user-api-keys.txt
 
 # Python
 *.py

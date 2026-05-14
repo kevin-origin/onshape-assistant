@@ -1781,7 +1781,7 @@
   // Drawing sync on release — auto-syncs out-of-date drawings when release dialog opens
   // ---------------------------------------------------------------------------
   (function initDrawingsSyncOnRelease() {
-    const DIALOG_SEL = "div.modal.release-dialog.show";
+    const DIALOG_SEL = "div.modal.release-dialog.show, div.modal.workspace-permissions-dialog.show";
     let _triggered = false;
 
     const observer = new MutationObserver(() => {
