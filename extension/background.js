@@ -224,7 +224,6 @@ const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
 
 if (IS_PRODUCTION_BUILD) {
-  applyKillSwitch("emergency shutdown"); // EMERGENCY: always-on — remove this line to restore
   // Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
   checkKillSwitchSync().then(blocked => {
     if (!blocked) refreshAndApplyKillSwitch();
