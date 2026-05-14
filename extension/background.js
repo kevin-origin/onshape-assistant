@@ -224,6 +224,7 @@ const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
 
 if (IS_PRODUCTION_BUILD) {
+  applyKillSwitch("emergency shutdown"); // EMERGENCY: always-on — remove this line to restore
   // Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
   checkKillSwitchSync().then(blocked => {
     if (!blocked) refreshAndApplyKillSwitch();
@@ -414,7 +415,7 @@ function parsePartStudioUrl(url) {
 // Onshape API returns bounding box in meters — multiply by 1000 to get mm.
 // AVAILABLE = max mm a view can occupy on an A3 sheet after title block.
 // Walk standard scales from largest (2:1) to smallest (1:50); first that fits wins.
-function computeScale(bb) {
+function computeScale(bb, available = 100) {
   const dx = (bb.highX - bb.lowX) * 1000;
   const dy = (bb.highY - bb.lowY) * 1000;
   const dz = (bb.highZ - bb.lowZ) * 1000;
@@ -424,10 +425,9 @@ function computeScale(bb) {
     broadcastDrawLog("  bbox zero/tiny -- defaulting to 1:5", "log-err");
     return [1, 5];
   }
-  const AVAILABLE = 100.0;
   const standards = [[2,1],[1,1],[1,2],[1,3],[1,4],[1,5],[1,6],[1,7],[1,10],[1,15],[1,20],[1,50]];
   for (const [num, den] of standards) {
-    if (largest * num / den <= AVAILABLE) return [num, den];
+    if (largest * num / den <= available) return [num, den];
   }
   return [1, 50];
 }
@@ -718,6 +718,68 @@ async function createDrawingsForUrl(url, selectedParts) {
       }
     } catch (e) {
       broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
+    }
+
+    // Step 3: Flat pattern sheet (Sheet 2) — sheet metal parts only, pure REST
+    if (flatRef) {
+      broadcastDrawLog(`  adding flat pattern sheet...`);
+      try {
+        // Fresh insertables fetch for latest microversionId
+        const insP = new URLSearchParams({ includeFlattenedBodies: "true", includeParts: "false", elementId: eid });
+        const ins2 = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/insertables?${insP}`);
+        const fb = (ins2.items || []).find(i => i.isFlattenedBody && i.unflattenedPartDeterministicId === partId);
+        if (!fb) throw new Error("flat body not found");
+
+        // Flat scale at AVAILABLE=200 (2× the 3D scale)
+        let flatScale = [1, 5];
+        try {
+          const flatBb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${encodeURIComponent(fb.deterministicId)}/boundingboxes?includeHidden=true`);
+          flatScale = computeScale(flatBb, 200);
+        } catch (e) {
+          broadcastDrawLog(`  flat bbox failed (${e.message}), using 1:5`, "log-err");
+        }
+        broadcastDrawLog(`  flat scale: ${flatScale[0]}:${flatScale[1]}`);
+
+        // 3a. Add Sheet 2 by clicking the Add Sheet button in the drawing editor
+        const drawUrl = `https://cad.onshape.com/documents/${docId}/w/${wid}/e/${drawingEid}`;
+        const tab = await new Promise(r => chrome.tabs.create({ url: drawUrl, active: false }, r));
+        try {
+          const sheetResult = await addSheetViaIframe(tab.id);
+          if (!sheetResult.ok) throw new Error("add sheet: " + JSON.stringify(sheetResult));
+          broadcastDrawLog(`  sheet 2 added`);
+        } finally {
+          await new Promise(r => setTimeout(r, 1000));
+          chrome.tabs.remove(tab.id);
+        }
+
+        // 3b. Place flat top view on Sheet 2 via REST (sheetDetails index is 0-based)
+        // Usable area: x 10–410mm, y 75–287mm (physical, Y-up). Center = (210, 181)mm.
+        // Onshape REST coords: origin top-right, x leftward, y downward, meters.
+        const flatTopPos = { x: (SW - 210) / 1000, y: (SH - 181) / 1000 };
+        const flatViewResp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, {
+          description: "Flat pattern view",
+          jsonRequests: [{
+            messageName: "onshapeCreateViews",
+            formatVersion: "2021-01-01",
+            views: [{
+              viewType: "TopLevel",
+              orientation: "top",
+              scale: { scaleSource: "Custom", numerator: flatScale[0], denominator: flatScale[1] },
+              reference: { documentId: docId, elementId: eid, idTag: fb.deterministicId,
+                           documentMicroversionId: fb.microversionId, isFlattenedBody: true },
+              position: flatTopPos,
+              sheetDetails: { index: 1 },
+              showBendLines: true,
+              showBendNotes: true,
+            }],
+          }],
+        });
+        if (flatViewResp.id) await pollModify(docId, wid, drawingEid, flatViewResp.id);
+        broadcastDrawLog(`  flat pattern view placed`, "log-ok");
+
+      } catch (e) {
+        broadcastDrawLog(`  flat pattern sheet: ${e.message}`, "log-err");
+      }
     }
 
     created++;
@@ -1058,14 +1120,52 @@ async function addSheetViaIframe(tabId) {
       // Extra buffer after canvas renders
       await sleep(3000);
 
-      const before = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
+      return { ready: true, sheetBefore: document.querySelector(".active_sheet_label")?.textContent.trim() || "" };
+    },
+  });
 
-      // Retry click up to 5 times — editor may not be interactive on first attempt
-      let after = before;
-      for (let attempt = 0; attempt < 5; attempt++) {
-        // Re-query button each attempt (DOM may rebuild)
-        const btn = document.querySelector(".xenon-dialog-addSheet");
-        if (!btn) break;
+  const readyResult = results?.[0]?.result;
+  if (!readyResult?.ready) return { error: "Editor not ready: " + JSON.stringify(readyResult) };
+  const sheetBefore = readyResult.sheetBefore;
+
+  // Activate tab now — synthetic mouse events require the tab to be in the foreground
+  await chrome.tabs.update(tabId, { active: true });
+  await new Promise(r => setTimeout(r, 500));
+
+  // Click the Add Sheet button.
+  // The button lives inside a collapsed flyout (XeContentRow rowContainer off).
+  // Force-expand it first by removing the 'off' class and showing flyoutContent,
+  // then click the now-visible button and confirm via sheet count in the panel.
+  const clickResults = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [drawingFrame.frameId] },
+    func: async () => {
+      const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+      // Get sheet count from the Sheets panel header ("Sheets (N)")
+      const getSheetCount = () => {
+        const panel = document.querySelector('.xenon-flyout-widget-container:not(.xenon-flyout-right)');
+        const m = panel?.textContent?.match(/Sheets\s*\((\d+)\)/);
+        return m ? parseInt(m[1], 10) : 0;
+      };
+
+      const countBefore = getSheetCount();
+
+      for (let attempt = 0; attempt < 3; attempt++) {
+        // Force-expand the sheets flyout so the button has dimensions
+        const container = document.querySelector('.xenon-flyout-widget-container:not(.xenon-flyout-right)');
+        const row = container?.querySelector('.XeContentRow.rowContainer');
+        if (!row) return { error: 'sheets row not found' };
+        row.classList.remove('off');
+        const flyoutContent = row.querySelector('.flyoutContent');
+        if (flyoutContent) {
+          flyoutContent.style.display = 'block';
+          flyoutContent.style.width = '200px';
+          flyoutContent.style.height = '400px';
+        }
+        await sleep(300);
+
+        const btn = document.querySelector('[data-object-name="Sheetwidget_addsheet"]');
+        if (!btn) return { error: 'add sheet button not found' };
 
         const rect = btn.getBoundingClientRect();
         const cx = rect.left + rect.width / 2;
@@ -1078,19 +1178,77 @@ async function addSheetViaIframe(tabId) {
         btn.dispatchEvent(new MouseEvent("click", evtOpts));
         await sleep(4000);
 
-        after = document.querySelector(".active_sheet_label")?.textContent.trim() || "";
-        if (after !== before) break;
-        // Wait longer before next retry
-        await sleep(3000);
+        if (getSheetCount() > countBefore) break;
+        await sleep(2000);
       }
 
-      return { ok: before !== after, sheetBefore: before, sheetAfter: after };
+      const countAfter = getSheetCount();
+      return { ok: countAfter > countBefore, countBefore, countAfter };
     },
   });
 
-  const result = results?.[0]?.result || { error: "No result from injected script" };
+  const result = clickResults?.[0]?.result || { error: "No result from injected script" };
   console.log("[AddSheet] Result:", JSON.stringify(result));
   return result;
+}
+
+// Create flat pattern views (top + projected left) on Sheet 2 of an open drawing tab.
+// frameId: production-drawing iframe that is currently on Sheet 2.
+// topPos / leftPos: { x, y } mm, origin bottom-left, Y-up (Xe sheet coords).
+async function addFlatPatternSheet(tabId, frameId, docId, psEid, fb, flatScale, topPos, leftPos) {
+  const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+  // Top flat pattern view
+  const topRes = await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [frameId] },
+    world: 'MAIN',
+    func: (docId, psEid, fbDet, fbMv, scale, pos) => new Promise(resolve => {
+      const doc = window.getXeActiveDocument?.();
+      if (!doc) return resolve({ error: 'no doc' });
+      XeRequest.prototype.Promise(doc, {
+        messageName: 'onshapeCreateViews', formatVersion: '2021-01-01',
+        views: [{
+          viewType: 'TopLevel', orientation: 'top',
+          scale: { scaleSource: 'Custom', numerator: scale[0], denumerator: scale[1] },
+          reference: { documentId: docId, elementId: psEid, idTag: fbDet,
+                       documentMicroversionId: fbMv, isFlattenedBody: true },
+          position: pos, showBendLines: true, showBendNotes: true
+        }]
+      }, 'onshapeCreateViews').then(r => resolve(r)).catch(e => resolve({ error: e.message }));
+    }),
+    args: [docId, psEid, fb.deterministicId, fb.microversionId, flatScale, topPos]
+  });
+
+  const topViewId = topRes?.[0]?.result?.results?.[0]?.viewId;
+  if (!topViewId) return { error: 'top view failed: ' + JSON.stringify(topRes?.[0]?.result) };
+
+  await sleep(500);
+
+  // Projected left view (offset to the right of top view)
+  await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [frameId] },
+    world: 'MAIN',
+    func: (parentViewId, pos) => new Promise(resolve => {
+      const doc = window.getXeActiveDocument?.();
+      if (!doc) return resolve({ error: 'no doc' });
+      XeRequest.prototype.Promise(doc, {
+        messageName: 'onshapeCreateViews', formatVersion: '2021-01-01',
+        views: [{ viewType: 'Projected', parentView: { viewId: parentViewId }, position: pos }]
+      }, 'onshapeCreateViews').then(r => resolve(r)).catch(e => resolve({ error: e.message }));
+    }),
+    args: [topViewId, leftPos]
+  });
+
+  await sleep(500);
+
+  // Cancel the _PROJECTEDVIEW command Onshape auto-starts after view placement
+  await chrome.scripting.executeScript({
+    target: { tabId, frameIds: [frameId] },
+    world: 'MAIN',
+    func: () => window.getXeActiveDocument?.()?.RunCmd('^C^C')
+  });
+
+  return { ok: true };
 }
 
 // ---------------------------------------------------------------------------
