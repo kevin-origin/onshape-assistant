@@ -1,90 +1,84 @@
-## Onshape Assistant — 24 Features
-
-**Automate, enforce, and organize your Onshape workspace.**
+## Onshape Assistant — Features
 
 ---
 
-### Drawing & Export
+### Assisting Features
 
 **1. Automated Drawing Creator**
-Generate drawing tabs for every part in a Part Studio in one click. Automatically reads the active tab — no URL entry needed. Computes scale from bounding box, inserts a title block, places front/top/left/isometric views, and adds overall horizontal and vertical dimensions.
+Generate drawing tabs for every part in a Part Studio in one click. Computes scale, inserts a title block, and places front/top/left/isometric views with overall dimensions.
 
 **2. Drawing Notes**
-Batch-apply custom annotation text to multiple drawings at configurable text heights — no manual clicking required. Good for bulk-applying QC points.
+Batch-apply annotation text to multiple drawings at configurable text heights — no manual clicking required.
 
 **3. Bulk Export (DXF + PDF ZIP)**
-Export all flat-pattern DXFs and drawing PDFs from a document as a single ZIP file. Hierarchical part/drawing selector lets you choose exactly what to include.
+Export all flat-pattern DXFs and drawing PDFs from a document as a single ZIP. Pick exactly what to include from a hierarchical selector.
 
 **4. 3D Export (STEP / STL)**
-Export individual parts from any Part Studio as STEP or STL files. Automatically reads the active tab — no URL entry needed. Toggle format, pick parts, download. Export filenames include the document name.
+Export individual parts from any Part Studio as STEP or STL files. Toggle format, pick parts, download.
 
 **5. URDF Export**
-Generate a ROS-compatible URDF package from any Onshape assembly. Walks the assembly hierarchy, exports each part as STL, resolves mate connectors into joint frames, and downloads everything as a ZIP ready for a ROS workspace.
+Generate a ROS-compatible URDF package from any Onshape assembly. Downloads everything as a ZIP ready for a ROS workspace.
+
+**6. BOM Generator**
+Export a Bill of Materials from any assembly as a CSV. Supports configuration parameters before generating.
+
+**7. Interference Detection**
+Run an interference check across all assemblies in a document and report which part pairs are colliding.
+
+**8. Auto Folder Generator**
+Detects documents with no folder structure and offers to create the standard set automatically.
+
+**9. Tab Sorter**
+Finds root-level tabs that belong in folders and moves them there automatically — no drag-and-drop needed.
+
+**10. Doc Scanner**
+Validates your document's tab/folder structure against organization rules on every page load, with a manual rescan button in the popup.
+
+**11. Part Studio Toolbar Auto-Hide**
+Automatically hides the modeling toolbar when a Part Studio has 250 or more features, keeping the UI uncluttered.
+
+**12. High Feature / Tab Count Warnings**
+Fires a notification when a Part Studio or document is approaching its limits, with a link to the relevant popup section.
 
 ---
 
-### Document Organization
+### Rule Enforcing Features
 
-**6. Auto Folder Generator**
-Detects documents with no folder structure and offers to create the standard set (Part Studios, Assemblies, Drawings, CAD Imports, Feature Studios, Variable Studios) automatically.
+**13. Create Document Interceptor**
+Replaces the default "New Document" dialog with a guided flow that routes the document to the correct company folder.
 
-**7. Tab Sorter**
-Finds root-level tabs that belong in folders and moves them there using Chrome DevTools automation — no drag-and-drop needed. Automatically detects and unpacks illegally-named folders before sorting so no tabs are left stranded.
+**14. Context Creation Guard**
+Blocks "Create new context" when the Part Studio already has one, enforcing the one-context limit.
 
-**8. Doc Scanner**
-Validates your document's tab/folder structure against organization rules on every page load. See a live summary of what's correct and what isn't, with a manual rescan button in the popup.
+**15. Version Description Enforcer**
+Blocks version creation until a description is filled in.
 
-**9. Create Document Interceptor**
-Replaces the default "New Document" dialog with a guided flow that asks whether the document is robot-related and routes it to the correct company folder — so documents never land in the wrong place.
+**16. Export Drawings/DXFs Blocker**
+Disables the drawing export button if the document has no releases.
 
----
+**17. Import Restriction**
+Disables the "Import…" option unless the document lives inside the designated company folder.
 
-### Quality Guardrails
+**18. Parts Materials Guard**
+Blocks release creation if any parts have a default name or are missing a material. Lists every offending part in the warning.
 
-**10. Part Studio Toolbar Auto-Hide**
-Automatically hides the Part Studio modeling toolbar when a Part Studio has 250 or more features, keeping the UI uncluttered on complex parts. The toolbar is hidden via injected CSS so it survives Angular re-renders and updates when switching between elements in the same document.
+**19. Rollback Reset**
+Automatically rolls every Part Studio's feature bar to the end when the release dialog opens, so no part is in a rolled-back state before release.
 
-**11. High Feature / Tab Count Warnings**
-Fires a Chrome notification when a Part Studio is approaching the toolbar-hide threshold (196–245 API features) or when a document is approaching the tab limit (35–39 tabs). Each warning fires once per session per document, and clicking it opens the relevant popup section.
+**20. Drawing Auto-Sync**
+Automatically syncs all out-of-date drawings when the release dialog opens, so drawings are always current before a release is submitted.
 
-**12. Context Creation Guard**
-Blocks "Create new context" in the right-click menu when the Part Studio already has a context, enforcing Onshape's one-context-per-Part-Studio limit. A DOM guard disables the menu item and a fetch intercept acts as a backstop if the menu is bypassed.
+**21. Assembly Duplicate Blocker**
+Hides the "Duplicate" option from the right-click menu on assembly tabs.
 
-**13. Version Description Enforcer**
-Blocks version creation until a description is filled in. The Create button stays disabled and shows a red warning until text is entered.
+**22. Doc Permissions**
+Assign merge owners per document. Anyone not on the list has their merge dialog disabled with a warning naming the document owner.
 
-**14. Export Drawings/DXFs Blocker**
-Intercepts drawing export dialogs and disables the Export button if the document has no releases.
+**23. Release Branch Guard**
+Blocks release candidate creation when the current workspace is not the document's main workspace.
 
-**15. Import Restriction**
-Disables the "Import…" option in the insert-tab dropdown unless the document lives inside the OTS Parts top-level company folder. The folder check walks the parentId chain and caches the result per document for one hour.
+**24. Workspace Protection Guard**
+Restricts the workspace protection toggle to the document creator only.
 
-**16. Parts Materials Guard**
-Blocks release creation if any parts in the active Part Studio have a default "Part N" name or are missing a material assignment. The release dialog is disabled with a warning listing every offending part — release proceeds only after all parts are properly named and have materials set.
-**17. Rollback Reset**
-Automatically rolls every Part Studio's feature bar to the end the moment the release dialog opens, ensuring no part is in a rolled-back state before release. Fires once per dialog open — no interaction needed.
-
-**18. Drawing Auto-Sync**
-Automatically syncs all out-of-date drawings the moment the release dialog opens. Detects which drawings are stale, fires syncApplicationElements for each in parallel, then re-checks immediately — waiting up to 1.5s between passes only if drawings are still processing — so drawings are always current before a release is submitted.
-
-**19. BOM Generator**
-Exports a Bill of Materials from any assembly as a CSV file. Automatically detects the active assembly tab — no URL entry needed. If the assembly has configuration parameters, a panel lets you set each one before generating. Downloads the CSV named after the document.
-
-**20. Interference Detection**
-Runs an interference check across all assemblies in a document and reports which part pairs are colliding.
-
----
-
-### Collaboration & Access Control
-
-**21. Doc Permissions**
-Assign one or more "merge owners" per document. Anyone not on the list who attempts to merge into the main branch sees their merge dialog disabled with a warning that names the document owner — enforced automatically via MutationObserver. Branch merges that do not target main are unaffected.
-
-**22. Release Branch Guard**
-Blocks release candidate creation when the current workspace is not the document's main workspace. A warning banner appears in the release dialog and all action buttons (Save draft, Apply, Submit, Release) are disabled until the user switches to the main workspace.
-
-**23. Workspace Protection Guard**
-Restricts the workspace protection toggle to the document creator only. If a non-creator opens the workspace permissions dialog, the enable-protection checkbox and Apply button are disabled with an explanatory warning.
-
-**24. Per-Document Disable (Admin)**
-Allows an admin to disable the extension for specific documents via a toggle in the popup or a curl command to the Cloudflare Worker. Disabled documents get an immediate early-exit in all content and background logic. Toggling reloads the tab instantly. The whitelist is stored server-side in KV so it applies across all installs without a build.
+**25. Per-Document Disable (Admin)**
+Allows an admin to disable the extension for specific documents via the popup or a remote command.

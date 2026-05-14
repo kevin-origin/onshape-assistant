@@ -753,7 +753,9 @@ async function createDrawingsForUrl(url, selectedParts) {
 //   scale                  — [scaleNum, scaleDen] from computeScale()
 async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {}) {
   const [scaleNum, scaleDen] = scale;
-  const sc = v => v * 1000 * scaleNum / scaleDen;
+  // Text offset in model meters so it appears 5mm outside the geometry on paper.
+  // Formula: paper_mm * (scaleDen / scaleNum) / 1000
+  const off = 5 * scaleDen / (scaleNum * 1000);
   const hA = 1, dA = 2, xA = 0;
 
   // Fetch all views; keep only Sheet 1 non-isometric views
@@ -781,14 +783,6 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
 
   for (const view of targetViews) {
     const vid = view.viewId;
-    // Prefer view.position from this fetch (freshest); fall back to caller-passed viewPosMm.
-    const vp = view.position;
-    const knownPos = viewPosMm[vid] || {};
-    const pos = {
-      x: (vp?.x != null ? vp.x * 1000 : knownPos.x) || 0,
-      y: (vp?.y != null ? vp.y * 1000 : knownPos.y) || 0,
-    };
-
     let lines = [];
     for (let attempt = 1; attempt <= 5; attempt++) {
       try {
@@ -828,7 +822,8 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
       const bottomEdge = botCands[0];
       const topEdge    = topCands[0];
       const maxXval = Math.max(...allGX);
-      const hTextPos = [pos.x + sc(maxXval) + 20, pos.y, 0];
+      const midHval = (minH + maxH) / 2;
+      const hTextPos = [maxXval + off, midHval, 0];
       broadcastDrawLog(`  ${vid} HEIGHT ${((maxH - minH) * 1000).toFixed(1)}mm`);
       annotations.push({
         type: "Onshape::Dimension::LineToLine",
@@ -837,7 +832,7 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
           edge2: { type: "Onshape::Reference::Edge", uniqueId: topEdge.uniqueId,    viewId: vid },
           formatting: { dimdec: 2, dimlim: false, dimpost: "", dimtm: 0, dimtol: false, dimtp: 0, type: "Onshape::Formatting::Dimension" },
           textOverride: "",
-          textPosition: { coordinate: hTextPos, type: "Onshape::Reference::Point" },
+          textPosition: { coordinate: hTextPos, type: "Onshape::Reference::Point", viewId: vid },
         },
       });
     }
@@ -852,7 +847,8 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
     const rightEdge = srcLines.find(e => Math.abs(Math.max(e.data.start[xA], e.data.end[xA]) - maxX) < 0.0001);
     if (leftEdge && rightEdge) {
       const maxHval  = Math.max(...allGH);
-      const wTextPos = [pos.x + sc((minX + maxX) / 2), pos.y + sc(maxHval) + 20, 0];
+      const midXval  = (minX + maxX) / 2;
+      const wTextPos = [midXval, maxHval + off, 0];
       broadcastDrawLog(`  ${vid} WIDTH ${((maxX - minX) * 1000).toFixed(1)}mm`);
       annotations.push({
         type: "Onshape::Dimension::LineToLine",
@@ -861,7 +857,7 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
           edge2: { type: "Onshape::Reference::Edge", uniqueId: rightEdge.uniqueId, viewId: vid },
           formatting: { dimdec: 2, dimlim: false, dimpost: "", dimtm: 0, dimtol: false, dimtp: 0, type: "Onshape::Formatting::Dimension" },
           textOverride: "",
-          textPosition: { coordinate: wTextPos, type: "Onshape::Reference::Point" },
+          textPosition: { coordinate: wTextPos, type: "Onshape::Reference::Point", viewId: vid },
         },
       });
     }
