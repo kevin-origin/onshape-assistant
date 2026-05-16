@@ -132,6 +132,7 @@
         doc_name: getDocName(),
         folders: {},
         root_tabs: [],
+        part_studio_count: 0,
       };
 
       // Step 1: Click "All tabs" to ensure we're at root
@@ -154,6 +155,7 @@
           result.folders[item.text] = { children: [], assemblies: 0 };
         } else {
           result.root_tabs.push(item.text);
+          if (item.tabType === 'partstudio') result.part_studio_count++;
         }
       }
 
@@ -303,6 +305,10 @@
     const multiAssembly = Object.entries(folderData).some(
       ([, data]) => typeof data === "object" && data.assemblies > 1
     );
+    if (result.part_studio_count === 1) {
+      console.log('[Scanner] Notification suppressed — single part studio document');
+      return;
+    }
     if (illegal.length > 0 || multiAssembly || folders.length === 0) {
       // Only send Chrome notification once per doc (avoid spamming every 30s poll)
       if (_notifiedDocIds.has(result.doc_id)) return;

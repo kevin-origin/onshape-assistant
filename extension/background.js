@@ -3128,6 +3128,25 @@ function urdfEscXml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+function mergeBinaryStls(stlBuffers) {
+  // Binary STL: 80-byte header + 4-byte uint32 triangle count + (count * 50 bytes per triangle)
+  const validBufs = stlBuffers.filter(b => b && b.byteLength >= 84);
+  let totalTriangles = 0;
+  for (const buf of validBufs) {
+    totalTriangles += new DataView(buf.buffer, buf.byteOffset, buf.byteLength).getUint32(80, true);
+  }
+  const out = new Uint8Array(84 + totalTriangles * 50);
+  new DataView(out.buffer).setUint32(80, totalTriangles, true);
+  let offset = 84;
+  for (const buf of validBufs) {
+    const view = new DataView(buf.buffer, buf.byteOffset, buf.byteLength);
+    const count = view.getUint32(80, true);
+    out.set(new Uint8Array(buf.buffer, buf.byteOffset + 84, count * 50), offset);
+    offset += count * 50;
+  }
+  return out;
+}
+
 // Row-major 4×4 occurrence transform → [roll, pitch, yaw] (radians)
 // Onshape layout: [r00,r01,r02,tx, r10,r11,r12,ty, r20,r21,r22,tz, 0,0,0,1]
 // R[i,j] = t[i*4+j]
@@ -3231,7 +3250,14 @@ async function generateUrdf(did, wid, eid, configuration) {
     `/api/v9/assemblies/d/${did}/w/${wid}/e/${eid}` +
     `?includeMateFeatures=true&includeMateConnectors=true&includeNonSolids=true${cfgParam}`
   );
-  const robotName = urdfSafeName(asmDef.name || "robot");
+  let elementsName = null;
+  try {
+    const elementsResp = await onshapeFetch(`/api/v9/documents/d/${did}/elements?elementId=${eid}`);
+    elementsName = elementsResp?.[0]?.name ?? null;
+  } catch (e) {
+    bcast(`  NOTE: element name fetch failed — using fallback name (${e.message})`, "log-warn");
+  }
+  const robotName = urdfSafeName(elementsName || asmDef.rootAssembly?.name || "robot");
 
   // Pin to the assembly's microversion so the features fetch is consistent with
   // the occurrences snapshot even if the document is edited during export.
@@ -3305,6 +3331,20 @@ async function generateUrdf(did, wid, eid, configuration) {
   const occLinkName   = new Map(); // occKey → unique link name
   for (const { inst, key } of allPartOccs) {
     let base = urdfSafeName(inst.name || inst.id) || "link";
+    let name = base, suffix = 2;
+    while (usedLinkNames.has(name)) name = `${base}_${suffix++}`;
+    usedLinkNames.add(name);
+    occLinkName.set(key, name);
+  }
+
+  // Collect sub-assembly occurrences and assign link names so they can serve as
+  // structural parent/child nodes in the URDF joint hierarchy (no mesh, no inertial).
+  const allAsmOccs = [];
+  for (const [key, occ] of Object.entries(occByKey)) {
+    const leafInst = allInstById[occ.path[occ.path.length - 1]];
+    if (leafInst?.type !== "Assembly") continue;
+    allAsmOccs.push({ occ, inst: leafInst, key });
+    let base = urdfSafeName(leafInst.name || leafInst.id) || "asm_link";
     let name = base, suffix = 2;
     while (usedLinkNames.has(name)) name = `${base}_${suffix++}`;
     usedLinkNames.add(name);
@@ -3405,7 +3445,7 @@ async function generateUrdf(did, wid, eid, configuration) {
       // Per-part endpoint returns properties at top level (not nested under .bodies)
       if (mp) {
         massPropsMap[pkey] = {
-          mass:     mp.mass?.[0]    ?? 1.0,
+          mass:     (Array.isArray(mp.mass) ? mp.mass[0] : mp.mass) ?? 1.0,
           centroid: mp.centroid     ?? [0, 0, 0],
           inertia:  mp.inertia      ?? Array(12).fill(0),
         };
@@ -3413,6 +3453,23 @@ async function generateUrdf(did, wid, eid, configuration) {
     } catch (e) {
       bcast(`  Mass props failed: ${inst.name}: ${e.message}`, "log-warn");
     }
+  }
+
+  bcast('Fetching assembly mass properties...');
+  let asmMassProps = null;
+  try {
+    const amp = await onshapeFetch(
+      `/api/v6/assemblies/d/${did}/w/${wid}/e/${eid}/massproperties`
+    );
+    if (amp) {
+      asmMassProps = {
+        mass:     (Array.isArray(amp.mass)     ? amp.mass[0]     : amp.mass)     ?? 0,
+        centroid: amp.centroid ?? [0, 0, 0],
+        inertia:  amp.inertia  ?? Array(12).fill(0),
+      };
+    }
+  } catch (e) {
+    bcast(`  NOTE: assembly mass props failed — inertial will be omitted (${e.message})`, 'log-warn');
   }
 
   // ---------------------------------------------------------------------------
@@ -3439,7 +3496,8 @@ async function generateUrdf(did, wid, eid, configuration) {
     const pInst = allInstById[pOcc.path[pOcc.path.length - 1]];
     const cInst = allInstById[cOcc.path[cOcc.path.length - 1]];
     if (!pInst || !cInst) continue;
-    if (pInst.type !== "Part" || cInst.type !== "Part") continue;
+    if ((pInst.type !== "Part" && pInst.type !== "Assembly") ||
+        (cInst.type !== "Part" && cInst.type !== "Assembly")) continue;
 
     const mateType = m.mateType || "FASTENED";
 
@@ -3524,31 +3582,86 @@ async function generateUrdf(did, wid, eid, configuration) {
     childKeys.add(cKey);
   }
 
+  // Determine which part occurrences are "movable" (children of a non-fixed joint)
+  const movableChildKeys = new Set(
+    joints.filter(j => j.type !== 'fixed').map(j => j.cKey)
+  );
+
+  bcast('Merging fixed-part STLs...');
+  const fixedStlBuffers = [];
+  for (const { inst, key } of allPartOccs) {
+    if (movableChildKeys.has(key)) continue;  // movable part — keep individual
+    const mesh = keyToMesh[partKeyOf(inst)];
+    if (!mesh) continue;
+    const fileEntry = stlFiles.find(f => f.name === mesh);
+    if (fileEntry) fixedStlBuffers.push(fileEntry.data);
+  }
+  const mergedStlData = mergeBinaryStls(fixedStlBuffers);
+  const mergedMeshName = 'meshes/merged_visual.stl';
+
+  // Replace stlFiles with: merged STL + only the movable-part STLs
+  const movableStlNames = new Set(
+    allPartOccs
+      .filter(({ key }) => movableChildKeys.has(key))
+      .map(({ inst }) => keyToMesh[partKeyOf(inst)])
+      .filter(Boolean)
+  );
+  const finalStlFiles = [
+    { name: mergedMeshName, data: mergedStlData },
+    ...stlFiles.filter(f => movableStlNames.has(f.name)),
+  ];
+
   // ---------------------------------------------------------------------------
   // Build URDF XML
   // ---------------------------------------------------------------------------
-  bcast("Writing URDF...");
+  bcast('Writing URDF...');
   let xml = `<?xml version="1.0"?>\n<robot name="${urdfEscXml(robotName)}">\n\n`;
   xml += `  <!-- Generated by Onshape Assistant URDF Export -->\n\n`;
   xml += `  <link name="base_link"/>\n\n`;
 
-  // One link per part occurrence — STL in meters, no scale tag needed
+  // ONE merged assembly link for all fixed parts
+  const asmLinkName = urdfSafeName(robotName) || 'assembly_1';
+  const mergedPkg = `package://${urdfEscXml(robotName)}/${urdfEscXml(mergedMeshName)}`;
+  xml += `  <link name="${urdfEscXml(asmLinkName)}">\n`;
+  if (asmMassProps && asmMassProps.mass > 0) {
+    const c = asmMassProps.centroid;
+    const iw = asmMassProps.inertia;
+    const stride = iw.length >= 12 ? 4 : 3;
+    xml += `    <inertial>\n`;
+    xml += `      <origin xyz="${c[0].toFixed(7)} ${c[1].toFixed(7)} ${c[2].toFixed(7)}" rpy="0 0 0"/>\n`;
+    xml += `      <mass value="${asmMassProps.mass.toFixed(5)}"/>\n`;
+    xml += `      <inertia ixx="${iw[0].toFixed(7)}" ixy="${iw[1].toFixed(7)}" ixz="${iw[2].toFixed(7)}" iyy="${iw[stride+1].toFixed(7)}" iyz="${iw[stride+2].toFixed(7)}" izz="${iw[2*stride+2].toFixed(7)}"/>\n`;
+    xml += `    </inertial>\n`;
+  }
+  if (mergedStlData.byteLength > 84) {
+    xml += `    <visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="${mergedPkg}"/></geometry></visual>\n`;
+    xml += `    <collision><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="${mergedPkg}"/></geometry></collision>\n`;
+  }
+  xml += `  </link>\n\n`;
+
+  // Fixed joint: base_link → assembly link at origin
+  xml += `  <joint name="${urdfEscXml(asmLinkName)}_frame" type="fixed">\n`;
+  xml += `    <origin xyz="0 0 0" rpy="0 0 0"/>\n`;
+  xml += `    <parent link="base_link"/>\n`;
+  xml += `    <child link="${urdfEscXml(asmLinkName)}"/>\n`;
+  xml += `  </joint>\n\n`;
+
+  // Individual links for movable parts only
   for (const { inst, occ, key } of allPartOccs) {
+    if (!movableChildKeys.has(key)) continue;
     const lname = occLinkName.get(key);
     const mesh  = keyToMesh[partKeyOf(inst)];
     xml += `  <link name="${urdfEscXml(lname)}">\n`;
     const mp = massPropsMap[partKeyOf(inst)];
     if (mp && mp.mass > 0) {
-      const tr   = occ?.transform;
-      // Centroid is returned in world frame; express it in link-local frame via R^T*(c-t).
+      const tr = occ?.transform;
       const dx = mp.centroid[0] - (tr?.[3]  ?? 0);
       const dy = mp.centroid[1] - (tr?.[7]  ?? 0);
       const dz = mp.centroid[2] - (tr?.[11] ?? 0);
-      const cl  = tr
+      const cl = tr
         ? [tr[0]*dx+tr[4]*dy+tr[8]*dz, tr[1]*dx+tr[5]*dy+tr[9]*dz, tr[2]*dx+tr[6]*dy+tr[10]*dz]
         : mp.centroid;
-      const iner = tr ? transformInertia(mp.inertia, tr)
-                      : { ixx:0, ixy:0, ixz:0, iyy:0, iyz:0, izz:0 };
+      const iner = tr ? transformInertia(mp.inertia, tr) : { ixx:0, ixy:0, ixz:0, iyy:0, iyz:0, izz:0 };
       xml += `    <inertial>\n`;
       xml += `      <origin xyz="${cl[0].toFixed(6)} ${cl[1].toFixed(6)} ${cl[2].toFixed(6)}" rpy="0 0 0"/>\n`;
       xml += `      <mass value="${mp.mass.toFixed(6)}"/>\n`;
@@ -3556,61 +3669,67 @@ async function generateUrdf(did, wid, eid, configuration) {
       xml += `    </inertial>\n`;
     }
     if (mesh) {
-      const pkg = `package://${urdfEscXml(robotName)}/${urdfEscXml(mesh)}`;
-      xml += `    <visual><geometry><mesh filename="${pkg}"/></geometry></visual>\n`;
-      xml += `    <collision><geometry><mesh filename="${pkg}"/></geometry></collision>\n`;
+      const pkg2 = `package://${urdfEscXml(robotName)}/${urdfEscXml(mesh)}`;
+      xml += `    <visual><geometry><mesh filename="${pkg2}"/></geometry></visual>\n`;
+      xml += `    <collision><geometry><mesh filename="${pkg2}"/></geometry></collision>\n`;
     }
     xml += `  </link>\n\n`;
   }
 
-  // Joints from mates — origin encodes both position and orientation of the joint frame
+  // Sub-assembly bare links (from Bug 3 fix — keep these)
+  for (const { key } of allAsmOccs) {
+    const lname = occLinkName.get(key);
+    if (lname) xml += `  <link name="${urdfEscXml(lname)}"/>\n\n`;
+  }
+
+  // Mate joints (non-fixed: parent is individual link, child is individual link)
   for (const j of joints) {
     const pname = occLinkName.get(j.pKey) || j.pKey;
     const cname = occLinkName.get(j.cKey) || j.cKey;
-    const [ox, oy, oz]   = j.origin;
-    const [ro, rp, ry]   = j.rpy;
-    const [ax, ay, az]   = j.axis;
+    const [ox, oy, oz] = j.origin;
+    const [ro, rp, ry] = j.rpy;
+    const [ax, ay, az] = j.axis;
     xml += `  <joint name="${urdfEscXml(j.name)}" type="${j.type}">\n`;
     xml += `    <parent link="${urdfEscXml(pname)}"/>\n`;
     xml += `    <child link="${urdfEscXml(cname)}"/>\n`;
     xml += `    <origin xyz="${ox.toFixed(6)} ${oy.toFixed(6)} ${oz.toFixed(6)}" rpy="${ro.toFixed(6)} ${rp.toFixed(6)} ${ry.toFixed(6)}"/>\n`;
-    if (j.type !== "fixed" && j.type !== "floating") {
+    if (j.type !== 'fixed' && j.type !== 'floating') {
       xml += `    <axis xyz="${ax.toFixed(4)} ${ay.toFixed(4)} ${az.toFixed(4)}"/>\n`;
     }
-    if (j.type === "revolute") {
+    if (j.type === 'revolute') {
       xml += `    <limit lower="${j.limitLower.toFixed(6)}" upper="${j.limitUpper.toFixed(6)}" effort="100" velocity="1"/>\n`;
-    } else if (j.type === "prismatic") {
+    } else if (j.type === 'prismatic') {
       xml += `    <limit lower="${j.limitLower.toFixed(6)}" upper="${j.limitUpper.toFixed(6)}" effort="100" velocity="0.1"/>\n`;
     }
     xml += `  </joint>\n\n`;
   }
 
-  // Occurrences not assigned as children of any mate → fixed to base_link at world pose
-  for (const { inst, occ, key } of allPartOccs) {
-    if (childKeys.has(key)) continue;
-    const lname = occLinkName.get(key);
-    let xyz = "0 0 0", rpy = "0 0 0";
-    if (occ?.transform) {
-      const tr = occ.transform;
-      xyz = `${tr[3].toFixed(6)} ${tr[7].toFixed(6)} ${tr[11].toFixed(6)}`;
-      rpy = urdfRotToRpy(tr).map(n => n.toFixed(6)).join(" ");
-    }
-    xml += `  <joint name="base_to_${urdfEscXml(lname)}" type="fixed">\n`;
-    xml += `    <parent link="base_link"/>\n`;
-    xml += `    <child link="${urdfEscXml(lname)}"/>\n`;
-    xml += `    <origin xyz="${xyz}" rpy="${rpy}"/>\n`;
-    xml += `  </joint>\n\n`;
-  }
-
   xml += `</robot>\n`;
 
-  bcast("Packaging ZIP...");
+  bcast('Packaging ZIP...');
   const enc = new TextEncoder();
-  const zip = makeZip([{ name: "robot.urdf", data: enc.encode(xml) }, ...stlFiles]);
+  const configJson = JSON.stringify({
+    document_id:     did,
+    workspace_id:    wid,
+    element_id:      eid,
+    output_format:   'urdf',
+    package:         'robot_description',
+    output_filename: robotName,
+    assets_dir:      'assets',
+    robot_name:      robotName,
+    merge_stls:      true,
+    simplify_stls:   true,
+    max_stl_size:    10,
+  }, null, 2);
+  const zip = makeZip([
+    { name: 'robot.urdf',   data: enc.encode(xml) },
+    { name: 'config.json',  data: enc.encode(configJson) },
+    ...finalStlFiles,
+  ]);
   const zipBase64 = toBase64(zip);
   const zipName   = `${robotName}_urdf.zip`;
-  bcast(`Done — ${stlFiles.length} STL(s) + robot.urdf`, "log-ok");
-  chrome.runtime.sendMessage({ type: "urdf-done", zipBase64, zipName }).catch(() => {});
+  bcast(`Done — ${finalStlFiles.length} STL(s) + robot.urdf + config.json`, 'log-ok');
+  chrome.runtime.sendMessage({ type: 'urdf-done', zipBase64, zipName }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
