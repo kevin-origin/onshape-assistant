@@ -3766,11 +3766,15 @@ async function generateUrdf(did, wid, eid, configuration) {
   const zipName   = `${robotName}_urdf.zip`;
   chrome.alarms.clear("urdf-keepalive");
   bcast(`Done — ${finalStlFiles.length} STL(s) (incl. merged visual+collision) + robot.urdf + config.json`, 'log-ok');
-  const blob = new Blob([zip], { type: 'application/zip' });
-  const objectURL = URL.createObjectURL(blob);
-  chrome.downloads.download({ url: objectURL, filename: zipName, saveAs: false }, () => {
-    setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
-  });
+  function uint8ToBase64(bytes) {
+    let binary = '';
+    const chunk = 8192;
+    for (let i = 0; i < bytes.length; i += chunk)
+      binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+    return btoa(binary);
+  }
+  const dataUrl = 'data:application/zip;base64,' + uint8ToBase64(zip);
+  chrome.downloads.download({ url: dataUrl, filename: zipName, saveAs: false });
   chrome.runtime.sendMessage({ type: 'urdf-done', zipName }).catch(() => {});
 }
 
