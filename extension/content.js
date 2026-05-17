@@ -115,9 +115,16 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Main scan
+  // Main scan — reads Onshape tab bar DOM, returns folder/tab structure
   // ---------------------------------------------------------------------------
 
+  /**
+   * Read the Onshape tab bar DOM and return a structural snapshot of folders and root tabs.
+   * Clicks "All tabs" breadcrumb first to reset to root view.
+   * NOTE: Folder navigation via DOM clicks is blocked by Onshape (isTrusted check) —
+   * assembly counts per folder are enriched later in background.js storeDocScanResult().
+   * @returns {Promise<{doc_id:string, wid:string, doc_name:string, folders:object, root_tabs:string[], part_studio_count:number}|null>}
+   */
   async function scanTabFolders() {
     if (_scanning) return null; // another scan already running
     _scanning = true;
@@ -188,6 +195,10 @@
       : '';
   }
 
+  /**
+   * Hide the Part Studio element toolbar when the feature count reaches 250+,
+   * and fire a one-time notification when approaching the limit (196–245 features).
+   */
   async function maybeHideToolbar() {
     const docId = getDocIdFromUrl();
     const wid   = getWidFromUrl();
@@ -218,6 +229,10 @@
 
   const _setupTriggeredDocs = new Set();
 
+  /**
+   * Trigger one-time new-document setup (initial version + workspace protection) if not
+   * already done for this document. Delegates to background.js via "check-and-setup-doc".
+   */
   async function maybeSetupDoc() {
     const docId = getDocIdFromUrl();
     const wid   = getWidFromUrl();
@@ -230,6 +245,11 @@
   // Auto-scan logic — runs on every Onshape doc open
   // ---------------------------------------------------------------------------
 
+  /**
+   * Entry point for per-doc scanning: waits for the tab bar, scans folders, optionally
+   * shows the folder-creation overlay, then reports the result to background.js.
+   * Skipped while folder creation or excluded docs (e.g. "OTS Parts") are active.
+   */
   async function autoScan() {
     if (_folderCreationInProgress) {
       console.log("[Scanner] autoScan skipped: folder creation in progress");
@@ -271,6 +291,13 @@
   // Cleared on SPA navigation (new doc = fresh tracking).
   let _notifiedDocIds = new Set();
 
+  /**
+   * Send the scan result to background.js and fire a Chrome notification if the doc
+   * has structural issues (illegal folders, stray root tabs, or no folders at all).
+   * Notification is debounced 10s and suppressed if a folder overlay is showing.
+   * @param {object} result - Scan result from scanTabFolders()
+   * @param {boolean} skipNotification - True when the folder-creation overlay is already visible
+   */
   function sendScanResult(result, skipNotification) {
     chrome.runtime.sendMessage({ type: "tab-folder-result", data: result });
 
@@ -1043,6 +1070,13 @@
   // Only blocks when target branch name matches the main workspace (canDelete===false).
   // applyMergeBlock retries until Angular renders .modal-body and button.submit-button.
 
+  /**
+   * Inject a warning banner and disable the Merge button inside the merge modal.
+   * Retries up to 20x at 50ms intervals because Angular renders the modal body async.
+   * @param {Element} modal - The open merge dialog element
+   * @param {string|null} ownerName - Display name of the doc owner to show in the banner
+   * @param {number} [attempts=0] - Internal retry counter
+   */
   function applyMergeBlock(modal, ownerName, attempts) {
     attempts = attempts || 0;
     const modalBody = modal.querySelector(".modal-body");
@@ -1085,6 +1119,13 @@
   // branch-0/branch-1 classes reflect workspace identity, not merge direction —
   // the first span.workspace-name in the h4 is always the INTO/target branch.
   // Retries up to 20x at 50ms intervals (Angular renders header async).
+  /**
+   * Read the target branch from the merge modal header and check if it's the main workspace.
+   * If so, verify whether the current user has merge permission; block if not.
+   * @param {Element} modal
+   * @param {string} docId
+   * @param {number} [attempts=0] - Internal retry counter (up to 20 × 50ms)
+   */
   function checkMergeTarget(modal, docId, attempts) {
     attempts = attempts || 0;
     const targetEl = modal.querySelector(".modal-header h4 span.workspace-name");
@@ -1145,6 +1186,15 @@
   // Merge owner selection overlay — triggered via popup "Set for This Doc" button
   // ---------------------------------------------------------------------------
 
+  /**
+   * Render a full-screen overlay for selecting (exactly one) merge owner for a document.
+   * Saves the selection to the Cloudflare sync Worker via "save-merge-owners" message.
+   * @param {string} docId
+   * @param {string} docName
+   * @param {{id:string}} currentUser - Session user (used to label "you" in the list)
+   * @param {Array<{name:string, email:string, id:string}>} members - All team members
+   * @param {Array<{email:string, id:string}>} currentOwners - Currently saved owners (pre-checked)
+   */
   function showMergeOwnerOverlay(docId, docName, currentUser, members, currentOwners) {
     // Remove any existing overlay
     const existing = document.getElementById("oxt-merge-owner-overlay");
@@ -1270,6 +1320,11 @@
   // ---------------------------------------------------------------------------
   const COMPANY_NODE_ID = "6810c247e7c40668c32816a6";
 
+  /**
+   * Watch the company homepage create-menu dropdown and disable Document/Folder/Import buttons.
+   * Uses MutationObserver to catch the dropdown opening; restores buttons on close.
+   * Only active on the company homepage URL (contains COMPANY_NODE_ID).
+   */
   function initCreateDropdownGuard() {
     const isHomepage = () => window.location.href.includes(COMPANY_NODE_ID);
 
@@ -1313,6 +1368,10 @@
   // Version Description Enforcer — require description before creating version
   // ---------------------------------------------------------------------------
 
+  /**
+   * Watch for the "Create version" modal and require a non-empty description before
+   * the submit button becomes active. Uses MutationObserver on document.body.
+   */
   function initVersionDescriptionEnforcer() {
     let _lastModal = null;
 
@@ -1334,6 +1393,12 @@
     console.log("[VersionDesc] Enforcer observer started");
   }
 
+  /**
+   * Poll the "Create version" modal until the textarea and submit button exist, then wire
+   * up the description guard. Ignores workspace/edit dialogs (checks modal title).
+   * @param {Element} modal
+   * @param {number} [attempts=0] - Internal retry counter (up to 20 × 50ms)
+   */
   function waitForVersionForm(modal, attempts) {
     attempts = attempts || 0;
 
@@ -1358,6 +1423,13 @@
     attachVersionDescriptionGuard(modal, descField, submitBtn);
   }
 
+  /**
+   * Dim the submit button and intercept form submission until the description textarea
+   * has non-whitespace content. Shows an inline warning on blocked submit attempts.
+   * @param {Element} modal
+   * @param {HTMLTextAreaElement} descField
+   * @param {HTMLButtonElement} submitBtn
+   */
   function attachVersionDescriptionGuard(modal, descField, submitBtn) {
     let warningEl = null;
 
@@ -1615,6 +1687,10 @@
   // Apply:    #workspace-protection-apply (input[type=button])
   // Cancel/X: left enabled
 
+  /**
+   * Watch the workspace-protection settings modal and block non-creator users from
+   * changing the protection checkbox. Checks session user vs. doc creator via background.js.
+   */
   function initProtectionGuard() {
     let _lastModal = null;
 
@@ -1690,6 +1766,10 @@
   //   Drawing:        a#create-drawing-button
   //   Variable Studio: a#create-variable-studio-button
   // ---------------------------------------------------------------------------
+  /**
+   * Disable the Import item in the insert-tab dropdown unless the doc is in the "OTS Parts"
+   * top-level folder. Also enforces a 40-tab limit by disabling create options near that cap.
+   */
   function initInsertTabGuard() {
     function applyGuard() {
       const menu = document.querySelector("ul.dropdown-menu.bottom-up");

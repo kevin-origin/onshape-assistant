@@ -9,6 +9,12 @@ const COMPANY_ID   = "6810c247e7c40668c32816a6";
 const SYNC_SERVER  = "https://onshape-assistant-sync.artilabot.workers.dev";
 const SYNC_API_KEY = "artila-onshape-sync-2026";
 
+/**
+ * Fetch from the Cloudflare sync Worker with a 4-second timeout and auth header.
+ * @param {string} path - Worker-relative path (e.g. "/api/merge-permissions/docId")
+ * @param {object} [options] - fetch options (method, body, etc.)
+ * @returns {Promise<object|null>} Parsed JSON response, or null on network/timeout/non-OK error
+ */
 async function syncFetch(path, options = {}) {
   try {
     const controller = new AbortController();
@@ -40,6 +46,10 @@ const DOC_SCAN_TIMEOUT = 30000;
 
 let _sessionUser = null; // { email, name, id }
 
+/**
+ * Return the signed-in Onshape user, cached for the SW lifetime.
+ * @returns {Promise<{email:string, name:string, id:string}|null>}
+ */
 async function getSessionUser() {
   if (_sessionUser) return _sessionUser;
   try {
@@ -57,6 +67,11 @@ async function getSessionUser() {
 // Top-level folder walk — walks parentId chain up to the root
 // ---------------------------------------------------------------------------
 
+/**
+ * Walk the parentId chain of a doc to find its top-level folder (1-hour cache).
+ * @param {string} docId
+ * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
+ */
 async function getTopLevelFolder(docId) {
   const cacheKey = `topFolder_${docId}`;
   const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
@@ -355,6 +370,10 @@ registerComplianceWebhookIfNeeded();
 
 let _teamMembers = null; // [{ email, name, id }]
 
+/**
+ * Return company team members (name, email, id), cached for the SW lifetime.
+ * @returns {Promise<Array<{name:string, email:string, id:string}>>}
+ */
 async function getTeamMembers() {
   if (_teamMembers) return _teamMembers;
   try {
@@ -382,6 +401,11 @@ async function getTeamMembers() {
 // POST requests additionally need the XSRF-TOKEN cookie sent as a header.
 // This avoids consuming API key quota entirely — all calls are "free".
 
+/**
+ * Authenticated GET to the Onshape API using browser session cookies (no API key quota).
+ * @param {string} path - Onshape-relative path (e.g. "/api/v10/documents/...")
+ * @returns {Promise<object>} Parsed JSON; throws on non-OK status
+ */
 async function onshapeFetch(path) {
   const resp = await fetch(`${ONSHAPE_BASE}${path}`, {
     credentials: "include",
@@ -391,6 +415,10 @@ async function onshapeFetch(path) {
   return resp.json();
 }
 
+/**
+ * Read the XSRF-TOKEN cookie from cad.onshape.com for POST request headers.
+ * @returns {Promise<string>} Token value, or empty string if not present
+ */
 async function getXsrfToken() {
   return new Promise((resolve) => {
     chrome.cookies.get({ url: ONSHAPE_BASE, name: "XSRF-TOKEN" }, (cookie) => {
@@ -399,6 +427,12 @@ async function getXsrfToken() {
   });
 }
 
+/**
+ * Authenticated POST to the Onshape API; injects XSRF token automatically.
+ * @param {string} path - Onshape-relative path
+ * @param {object} body - Request body (JSON-serialized)
+ * @returns {Promise<object>} Parsed JSON; throws on non-OK status
+ */
 async function onshapePost(path, body) {
   const xsrf = await getXsrfToken();
   const headers = { "Accept": "application/json", "Content-Type": "application/json" };
@@ -460,6 +494,15 @@ function computeScale(bb, available = 100) {
 // Quirk: Onshape sometimes deletes the status endpoint after completion,
 // returning 404. Three consecutive 404s = treat as success (modification finished
 // and status was garbage-collected before we could read "DONE").
+/**
+ * Poll a drawing modification request until it reaches DONE, FAILED, or timeout.
+ * @param {string} docId
+ * @param {string} wid - Workspace ID
+ * @param {string} drawingEid - Drawing element ID
+ * @param {string} mid - Modification request ID returned by the modify endpoint
+ * @param {number} [timeoutSec=30]
+ * @returns {Promise<boolean>} true = success/assumed-complete, false = failed/timed-out
+ */
 async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
   const url = `/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modificationstatus/${mid}`;
   const deadline = Date.now() + timeoutSec * 1000;
@@ -493,6 +536,13 @@ async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
 
 let _drawingInProgress = false;
 
+/**
+ * Create an individual drawing for every part in a Part Studio.
+ * Opens a drawing document per part, places three-view + iso view, adds overall
+ * dimensions, then optionally adds a flat-pattern sheet for sheet-metal parts.
+ * @param {string} url - Full URL of the Part Studio (must contain /documents/.../w/.../e/...)
+ * @param {Array<object>|null} selectedParts - Pre-selected part objects (null = fetch all from API)
+ */
 async function createDrawingsForUrl(url, selectedParts) {
   _drawingInProgress = true;
   const parsed = parsePartStudioUrl(url);
@@ -837,6 +887,16 @@ async function createDrawingsForUrl(url, selectedParts) {
 // Parameters:
 //   docId, wid, drawingEid — drawing coordinates
 //   scale                  — [scaleNum, scaleDen] from computeScale()
+/**
+ * Add height and width overall dimensions to every non-isometric view on Sheet 1.
+ * All annotations are batched into one atomic modify call to avoid Onshape's
+ * per-view lock that silently drops width annotations when submitted separately.
+ * @param {string} docId
+ * @param {string} wid
+ * @param {string} drawingEid
+ * @param {[number, number]} scale - Drawing scale as [numerator, denominator] (e.g. [1,2])
+ * @param {object} [viewPosMm] - Optional view position hints in mm (unused currently)
+ */
 async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {}) {
   const [scaleNum, scaleDen] = scale;
   // Text offset in model meters so it appears 5mm outside the geometry on paper.
@@ -970,9 +1030,15 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
 }
 
 // ---------------------------------------------------------------------------
-// Tab navigation helpers
+// Tab navigation helpers — navigate and wait for page load + SPA init
 // ---------------------------------------------------------------------------
 
+/**
+ * Navigate a tab to a URL and wait for it to fully load (status=complete + 2s SPA buffer).
+ * @param {number} tabId
+ * @param {string} url
+ * @returns {Promise<void>}
+ */
 function navigateTab(tabId, url) {
   return new Promise((resolve, reject) => {
     chrome.tabs.update(tabId, { url }, () => {
@@ -984,6 +1050,12 @@ function navigateTab(tabId, url) {
   });
 }
 
+/**
+ * Wait for a tab to reach status=complete, then add a 2s buffer for Onshape's SPA.
+ * Resolves (not rejects) on 15s timeout so CDP callers can still proceed.
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
 function waitForTabLoad(tabId) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -1032,6 +1104,11 @@ const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports"
 // Tracks docs already notified about high tab count this SW session (avoid spamming)
 const _tabCountNotifiedDocs = new Set();
 
+/**
+ * Enrich a scan result with assembly counts from the elements API, then persist to chrome.storage.local.
+ * Also notifies when the document is approaching the 35/40-tab limit.
+ * @param {object} result - Scan result from content.js (doc_id, wid, folders, root_tabs, etc.)
+ */
 async function storeDocScanResult(result) {
   if (!result || !result.doc_id) return;
   console.log("[Scanner] storeDocScanResult called, wid=" + (result.wid || "none") +
@@ -1092,6 +1169,13 @@ async function storeDocScanResult(result) {
 // DOM automation: add drawing sheet via iframe injection
 // ---------------------------------------------------------------------------
 
+/**
+ * Add a new sheet to an open drawing by injecting script into the drawing editor iframe.
+ * Waits for the editor canvas to be interactive before clicking "Add Sheet", then
+ * confirms success by polling the sheet panel for an incremented count.
+ * @param {number} tabId - Chrome tab ID of the drawing document
+ * @returns {Promise<{success:boolean}|{error:string}>}
+ */
 async function addSheetViaIframe(tabId) {
   // Poll for the drawing editor iframe (it loads after the parent page)
   let drawingFrame = null;
@@ -1219,6 +1303,19 @@ async function addSheetViaIframe(tabId) {
 // Create flat pattern views (top + projected left) on Sheet 2 of an open drawing tab.
 // frameId: production-drawing iframe that is currently on Sheet 2.
 // topPos / leftPos: { x, y } mm, origin bottom-left, Y-up (Xe sheet coords).
+/**
+ * Inject flat-pattern views (top + projected left) into Sheet 2 of an open drawing.
+ * Uses XeRequest in the drawing iframe's MAIN world to create views programmatically.
+ * @param {number} tabId - Chrome tab ID
+ * @param {number} frameId - Frame ID of the drawing editor iframe
+ * @param {string} docId
+ * @param {string} psEid - Part Studio element ID
+ * @param {object} fb - Flat body descriptor from the sheet-metal flat API
+ * @param {[number,number]} flatScale - Scale for the flat-pattern view
+ * @param {object} topPos - {x, y} placement for the top-view in drawing coords
+ * @param {object} leftPos - {x, y} placement for the projected left view
+ * @returns {Promise<{ok:boolean}|{error:string}>}
+ */
 async function addFlatPatternSheet(tabId, frameId, docId, psEid, fb, flatScale, topPos, leftPos) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -1325,6 +1422,13 @@ async function addFlatPatternSheet(tabId, frameId, docId, psEid, fb, flatScale, 
 //   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
 // }
 
+/**
+ * Promise wrapper for chrome.debugger.sendCommand.
+ * @param {number} tabId
+ * @param {string} method - CDP method (e.g. "Input.dispatchMouseEvent")
+ * @param {object} [params={}]
+ * @returns {Promise<object>} CDP result
+ */
 function cdpSend(tabId, method, params = {}) {
   return new Promise((resolve, reject) => {
     chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
@@ -1337,6 +1441,12 @@ function cdpSend(tabId, method, params = {}) {
   });
 }
 
+/**
+ * Synthesize a trusted left-click at (x, y) via CDP (move → press → release).
+ * @param {number} tabId
+ * @param {number} x
+ * @param {number} y
+ */
 async function cdpClick(tabId, x, y) {
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved", x, y, buttons: 0,
@@ -1349,6 +1459,12 @@ async function cdpClick(tabId, x, y) {
   });
 }
 
+/**
+ * Synthesize a trusted right-click at (x, y) via CDP (move → press → release).
+ * @param {number} tabId
+ * @param {number} x
+ * @param {number} y
+ */
 async function cdpRightClick(tabId, x, y) {
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved", x, y, buttons: 0,
@@ -1361,6 +1477,11 @@ async function cdpRightClick(tabId, x, y) {
   });
 }
 
+/**
+ * Select-all then insert text into the focused input field via CDP.
+ * @param {number} tabId
+ * @param {string} text
+ */
 async function cdpTypeText(tabId, text) {
   // Select all existing text first (Ctrl+A), then type
   await cdpSend(tabId, "Input.dispatchKeyEvent", {
@@ -1372,6 +1493,12 @@ async function cdpTypeText(tabId, text) {
   await cdpSend(tabId, "Input.insertText", { text });
 }
 
+/**
+ * Dispatch a single keyDown+keyUp pair via CDP.
+ * @param {number} tabId
+ * @param {string} key - Key string (e.g. "Enter")
+ * @param {number} keyCode - Windows virtual key code (e.g. 13 for Enter)
+ */
 async function cdpPressKey(tabId, key, keyCode) {
   await cdpSend(tabId, "Input.dispatchKeyEvent", {
     type: "keyDown", windowsVirtualKeyCode: keyCode, key, code: key,
@@ -1439,6 +1566,13 @@ async function cdpDrag(tabId, fromX, fromY, toX, toY) {
   });
 }
 
+/**
+ * Poll the page until a JS expression returns a truthy value (evaluated in page context via CDP).
+ * @param {number} tabId
+ * @param {string} jsExpr - JavaScript expression to evaluate; must return truthy when element is ready
+ * @param {number} [timeoutMs=3000]
+ * @returns {Promise<*>} The truthy value, or null if timed out
+ */
 async function waitForElement(tabId, jsExpr, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1543,6 +1677,14 @@ async function discoverContextMenu(tabId) {
 // Folder creation orchestrator — creates tab folders via CDP
 // ---------------------------------------------------------------------------
 
+/**
+ * Create named tab folders via CDP automation (right-click → Create folder → rename).
+ * Attaches debugger, creates each folder by clicking the Insert button and the
+ * "Create folder" menu item, then renames it. Reports progress to senderTabId.
+ * @param {number} tabId - Target Onshape tab to operate on
+ * @param {number} senderTabId - Tab to receive progress/done messages
+ * @param {string[]} folderNames - Ordered list of folder names to create
+ */
 async function createTabFolders(tabId, senderTabId, folderNames) {
   console.log("[CDP-Folders] Starting folder creation:", folderNames);
   // showCdpOverlay(senderTabId);
@@ -1857,6 +1999,11 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
 }
 
 // Move default Onshape tabs into their folders after folder creation
+/**
+ * Move Onshape's default auto-created tabs (Part Studio 1, Assembly 1, etc.) into
+ * their matching folders after folder creation. Called once per folder-creation flow.
+ * @param {number} tabId - Tab where the CDP debugger is already attached
+ */
 async function sortDefaultTabs(tabId) {
   const defaults = [
     { name: "Part Studio 1", folder: "Part Studios" },
@@ -1907,6 +2054,12 @@ async function sortDefaultTabs(tabId) {
 // New-doc setup: create initial version + enable workspace protection
 // ---------------------------------------------------------------------------
 
+/**
+ * Create the first version ("V1") in a new document via the Onshape versions API.
+ * @param {string} docId
+ * @param {string} wid - Main workspace ID
+ * @returns {Promise<{ok:boolean, versionId:string}|{error:string}>}
+ */
 async function createInitialVersion(docId, wid) {
   console.log(`[NewDocSetup] Creating initial version for ${docId}`);
   try {
@@ -1923,6 +2076,12 @@ async function createInitialVersion(docId, wid) {
   }
 }
 
+/**
+ * Create a development branch ("B1") forked from the given version.
+ * @param {string} docId
+ * @param {string} versionId - Source version to branch from
+ * @returns {Promise<{ok:boolean, workspaceId:string}|{error:string}>}
+ */
 async function createDevelopmentBranch(docId, versionId) {
   console.log(`[NewDocSetup] Creating Development branch from version ${versionId}`);
   try {
@@ -1938,6 +2097,12 @@ async function createDevelopmentBranch(docId, versionId) {
   }
 }
 
+/**
+ * Enable workspace protection on a document via CDP automation (opens the protection
+ * dialog, checks the checkbox, and clicks Apply). Part of the new-doc setup flow.
+ * @param {number} tabId - Tab to operate on (debugger will be attached)
+ * @param {number} senderTabId - Tab to receive progress messages
+ */
 async function enableWorkspaceProtection(tabId, senderTabId) {
   console.log("[NewDocSetup] Enabling workspace protection via CDP");
   // showCdpOverlay(senderTabId);
@@ -2151,6 +2316,13 @@ async function enableWorkspaceProtection(tabId, senderTabId) {
 
 let _unpackInProgress = false;
 
+/**
+ * Right-click each named folder and select "Unpack" via CDP to dissolve it.
+ * Used to remove non-standard folder names (not in ALLOWED_FOLDERS).
+ * @param {number} tabId
+ * @param {number} senderTabId - Tab to receive unpack-progress / unpack-done messages
+ * @param {string[]} folderNames - Folder names to unpack
+ */
 async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
   if (_unpackInProgress) {
     console.log("[Unpack] Already in progress, skipping");
@@ -2304,6 +2476,15 @@ const TAB_ICON_FOLDER_MAP = {
 
 let _sortingInProgress = false;
 
+/**
+ * Move root-level stray tabs into their matching folders via CDP drag-and-drop.
+ * Uses TAB_ICON_FOLDER_MAP to determine which folder each tab type belongs to.
+ * Pre-checks via executeScript (no debugger) before attaching CDP to avoid unnecessary overhead.
+ * @param {number} tabId
+ * @param {number} senderTabId - Tab to receive tab-sort-progress / tab-sort-done messages
+ * @param {boolean} [alreadyAttached=false] - Skip debugger attach if caller already attached
+ * @returns {Promise<{sorted:number, skipped:number, reason?:string}>}
+ */
 async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
   if (_sortingInProgress) {
     console.log("[TabSort] Already sorting, skipping");
@@ -2566,6 +2747,15 @@ async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
 
 let _interferenceInProgress = false;
 
+/**
+ * Run assembly interference detection via CDP automation.
+ * Opens each assembly element, navigates the Onshape interference UI, and collects results.
+ * Assembly list is sourced from stored scan results (0 extra API calls needed).
+ * @param {number} tabId - Target Onshape tab
+ * @param {number} senderTabId - Tab to receive interference-progress / interference-done messages
+ * @param {string} docId
+ * @param {string} wid
+ */
 async function checkInterference(tabId, senderTabId, docId, wid) {
   if (_interferenceInProgress) {
     console.log("[Interference] Already in progress, skipping");
@@ -2970,6 +3160,14 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
 // Export flat-pattern DXFs for the provided selection.
 // selectedPartStudios: [{ psId, psName, parts: [{partName, deterministicId}] }]
 // Returns array of { name: 'dxf/<safeName>.dxf', data: Uint8Array }.
+/**
+ * Export sheet-metal flat-pattern DXF files for the given Part Studios.
+ * Uses the internal exportinternal endpoint (not the public export API).
+ * @param {string} did - Document ID
+ * @param {string} wid - Workspace ID
+ * @param {Array<{psId:string, psName:string, configuration:string, parts:Array<{partName:string, deterministicId:string}>}>} selectedPartStudios
+ * @returns {Promise<Array<{name:string, data:Uint8Array}>>} Files ready for makeZip()
+ */
 async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
   const enc = new TextEncoder();
 
@@ -3046,6 +3244,13 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
 // Export drawings as PDFs for the provided selection.
 // selectedDrawings: [{ id, name }]
 // Returns array of { name: 'pdf/<safeName>.pdf', data: Uint8Array }.
+/**
+ * Export drawings as PDF files for the given drawing element list.
+ * @param {string} did
+ * @param {string} wid
+ * @param {Array<{id:string, name:string}>} selectedDrawings
+ * @returns {Promise<Array<{name:string, data:Uint8Array}>>} Files ready for makeZip()
+ */
 async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
   console.log("[BulkExport] Drawing elements:", selectedDrawings.map(e => e.name));
   chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `${selectedDrawings.length} drawing(s) to export` }).catch(() => {});
@@ -3100,6 +3305,11 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
 }
 
 // Pure-JS ZIP builder — no dependencies.
+/**
+ * Compute CRC-32 checksum of a byte array (used by makeZip).
+ * @param {Uint8Array} buf
+ * @returns {number} Unsigned 32-bit CRC
+ */
 function crc32(buf) {
   const t = new Uint32Array(256);
   for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[i] = c; }
@@ -3107,6 +3317,11 @@ function crc32(buf) {
   for (let i = 0; i < buf.length; i++) crc = t[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
   return (crc ^ -1) >>> 0;
 }
+/**
+ * Build a ZIP archive from an array of files — pure JS, no dependencies.
+ * @param {Array<{name:string, data:Uint8Array}>} files
+ * @returns {Uint8Array} Raw ZIP bytes
+ */
 function makeZip(files) {
   const enc = new TextEncoder();
   const locals = [], dirs = [];
@@ -3136,6 +3351,11 @@ function makeZip(files) {
   let pos = 0; for (const a of all) { out.set(a, pos); pos += a.length; }
   return out;
 }
+/**
+ * Convert a Uint8Array to a base64 string using 8 KB chunks to avoid call-stack overflow.
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
 function toBase64(bytes) {
   let s = "";
   for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
@@ -3153,6 +3373,11 @@ function urdfEscXml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+/**
+ * Concatenate multiple binary STL buffers into one, summing triangle counts.
+ * @param {Uint8Array[]} stlBuffers - Each must be a valid binary STL (≥84 bytes)
+ * @returns {Uint8Array} Merged binary STL
+ */
 function mergeBinaryStls(stlBuffers) {
   // Binary STL: 80-byte header + 4-byte uint32 triangle count + (count * 50 bytes per triangle)
   const validBufs = stlBuffers.filter(b => b && b.byteLength >= 84);
@@ -3263,6 +3488,16 @@ function extractMateParams(featureMessage) {
   return params;
 }
 
+/**
+ * Generate a complete URDF robot description from an Onshape assembly.
+ * Fetches assembly definition, features, mate values, and STL meshes; resolves
+ * sub-assembly hierarchy; maps Onshape mates to URDF joints; downloads per-link STLs.
+ * @param {string} did - Document ID
+ * @param {string} wid - Workspace ID
+ * @param {string} eid - Assembly element ID
+ * @param {string} [configuration] - Onshape configuration string (optional)
+ * @returns {Promise<void>} Broadcasts urdf-progress messages; sends urdf-done on completion
+ */
 async function generateUrdf(did, wid, eid, configuration) {
   const bcast = (msg, cls) =>
     chrome.runtime.sendMessage({ type: "urdf-progress", message: msg, cls }).catch(() => {});
@@ -5058,6 +5293,11 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 // Storage cleanup — remove entries for deleted/inaccessible documents
 // ---------------------------------------------------------------------------
 
+/**
+ * Remove chrome.storage.local entries for docs that returned 404 from the Onshape API.
+ * Only removes on explicit 404 — never on network errors, 403, or 429 to avoid data loss.
+ * Also deletes orphaned merge-permissions from the sync Worker.
+ */
 async function cleanupDeletedDocs() {
   const keys = ["docScanResults", "mergePermissions", "interferenceResults", "tabCounts"];
   const data = await chrome.storage.local.get(keys);
@@ -5117,6 +5357,11 @@ function isExtensionBusy() {
 
 let _updatePending = false; // true when update detected but waiting for busy ops to finish
 
+/**
+ * Detect if a git pull has updated the unpacked extension and trigger chrome.runtime.reload().
+ * Compares the current manifest.json version on disk against the version loaded at SW start.
+ * Waits until all long-running operations finish before reloading (isExtensionBusy guard).
+ */
 async function checkForLocalUpdate() {
   try {
     const resp = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
