@@ -1310,6 +1310,18 @@ function showSingleResult(result) {
     legalEl.textContent = `Legal tabs: ${legalFolders.join(", ")}`;
     $resultList.appendChild(legalEl);
   }
+
+  // Tab count line
+  if (result.totalElements != null) {
+    const tabEl = document.createElement("div");
+    tabEl.className = "result-item";
+    tabEl.style.paddingLeft = "20px";
+    tabEl.style.color = result.totalElements >= 40 ? "#ff6b6b"
+                      : result.totalElements >= 35 ? "#f0c040"
+                      : "#888";
+    tabEl.textContent = `This document uses ${result.totalElements}/40 allocated tabs.`;
+    $resultList.appendChild(tabEl);
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -120,6 +120,42 @@ Takes effect on all installed instances within 60 minutes (hourly alarm) or on n
 
 ---
 
+## Cloudflare KV write limit monitoring
+
+Free tier: **1,000 KV writes/day**, 10M reads/day. Exceeding writes returns error 10048 from the worker.
+
+**Quick test (is limit hit?):**
+```bash
+cd /mnt/c/users/kevin/Desktop/OnshapeTools/onshape-assistant-sync
+XDG_CONFIG_HOME="/mnt/c/users/kevin/AppData/Roaming/xdg.config" npx wrangler kv key put --binding=MERGE_PERMS --remote --preview false "kv-write-check" "ok"
+```
+If it succeeds → under limit. If it returns 10048 → limit exhausted, resets at midnight UTC.
+
+**Get exact read/write counts for today:**
+The wrangler OAuth token expires but auto-refreshes on any wrangler command. Always read the fresh token AFTER running a wrangler command:
+```bash
+# 1. Run any wrangler command first (refreshes the token):
+cd /mnt/c/users/kevin/Desktop/OnshapeTools/onshape-assistant-sync
+XDG_CONFIG_HOME="/mnt/c/users/kevin/AppData/Roaming/xdg.config" npx wrangler kv key put --binding=MERGE_PERMS --remote --preview false "kv-write-check" "ok"
+
+# 2. Read the fresh token:
+TOKEN=$(cat "/mnt/c/users/kevin/AppData/Roaming/xdg.config/.wrangler/config/default.toml" | grep oauth_token | cut -d'"' -f2)
+ACCOUNT_ID="ab136a8e8c784423b11c15ecce062727"
+TODAY=$(date -u +%Y-%m-%dT00:00:00Z)
+TOMORROW=$(date -u -d '+1 day' +%Y-%m-%dT00:00:00Z)
+
+# 3. Query GraphQL analytics:
+curl -s "https://api.cloudflare.com/client/v4/graphql" \
+  -H "Authorization: Bearer $TOKEN" \
+  -H "Content-Type: application/json" \
+  -d "{\"query\": \"{ viewer { accounts(filter: {accountTag: \\\"$ACCOUNT_ID\\\"}) { kvOperationsAdaptiveGroups(limit: 10, filter: { datetime_geq: \\\"$TODAY\\\", datetime_leq: \\\"$TOMORROW\\\" }, orderBy: [sum_requests_DESC]) { sum { requests } dimensions { actionType } } } } }\"}" | python3 -m json.tool
+```
+Output shows `actionType: "read"` and `actionType: "write"` with request counts.
+
+**If limit is hit:** Emergency kill switch (v2.1.22 pattern) or upgrade to Workers Paid ($5/month → 1M writes/day).
+
+---
+
 ## Task splitting across remote devices
 
 **Kevin's Claude is the planner only — it must never edit code files directly.** All file edits must be delegated to remote devices.
