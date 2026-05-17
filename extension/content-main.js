@@ -11,6 +11,12 @@
     obs.observe(document.body, { childList: true, subtree: true });
   }
 
+  /**
+   * Disables the "Create Assembly" button in the new-tab dropdown when the document
+   * already has an assembly. Reads `document.documentElement.dataset.oxtAssemblyCount`
+   * (written by content.js) and re-applies the guard whenever that attribute or the
+   * dropdown visibility changes.
+   */
   function initAssemblyCreationGuard() {
     waitForEl('ul#document-tabs-create-ul', (ul) => {
       function applyAssemblyGuard() {
@@ -60,6 +66,11 @@
     });
   }
 
+  /**
+   * Backstop guard: patches window.fetch to intercept POST /api/v*/assemblies requests.
+   * Returns a synthetic 400 response and shows a toast if oxtAssemblyCount > 0.
+   * Catches cases where the DOM button guard is bypassed (e.g., keyboard shortcuts, external callers).
+   */
   function initAssemblyFetchGuard() {
     const _fetch = window.fetch;
     window.fetch = async function (...args) {
@@ -97,6 +108,11 @@
     setTimeout(() => toast.remove(), 4000);
   }
 
+  /**
+   * Watches for Angular context menus inserted into the DOM and applies the context
+   * creation guard to each one via applyContextGuard. Observes document.body for
+   * added nodes with class `context-menu-root`.
+   */
   function initContextCreationGuard() {
     new MutationObserver((mutations) => {
       for (const m of mutations) {
@@ -109,6 +125,11 @@
     }).observe(document.body, { childList: true });
   }
 
+  /**
+   * Disables "Create new context" in an Angular context menu when other contexts already exist.
+   * Blocks click events and grays out the item. Also observes the submenu for late-loaded items.
+   * @param {HTMLElement} root - The `.context-menu-root` element just inserted into the DOM.
+   */
   function applyContextGuard(root) {
     // Find the "Edit in context" parent LI (class has hyphenated "context-menu-submenu")
     let editInContextLi = null;
