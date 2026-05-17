@@ -138,9 +138,15 @@ def build_and_sign_firefox(version):
         print("WARNING: Firefox signing failed — continuing without XPI (Chrome-only release)")
         return None
 
-    # Find and rename the signed .xpi (web-ext names it with addon ID)
+    # Find and rename the signed .xpi (web-ext names it with addon ID prefix).
+    # Sort by mtime descending so we always pick the freshly signed file,
+    # not a leftover from a previous release run.
     import glob
-    signed_files = [f for f in glob.glob("*.xpi") if f != XPI_OUTPUT_NAME]
+    signed_files = sorted(
+        [f for f in glob.glob("*.xpi") if f != XPI_OUTPUT_NAME],
+        key=os.path.getmtime,
+        reverse=True,
+    )
     if not signed_files:
         print("ERROR: Signed .xpi not found after web-ext sign")
         sys.exit(1)
