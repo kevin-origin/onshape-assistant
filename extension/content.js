@@ -227,20 +227,6 @@
     }
   }
 
-  const _setupTriggeredDocs = new Set();
-
-  /**
-   * Trigger one-time new-document setup (initial version + workspace protection) if not
-   * already done for this document. Delegates to background.js via "check-and-setup-doc".
-   */
-  async function maybeSetupDoc() {
-    const docId = getDocIdFromUrl();
-    const wid   = getWidFromUrl();
-    if (!docId || !wid) return;
-    const resp = await chrome.runtime.sendMessage({ type: 'check-and-setup-doc', docId, wid }).catch(() => null);
-    if (resp?.triggered) _setupTriggeredDocs.add(docId);
-  }
-
   // ---------------------------------------------------------------------------
   // Auto-scan logic — runs on every Onshape doc open
   // ---------------------------------------------------------------------------
@@ -396,8 +382,6 @@
     if (folders.length > 0) { console.log("[FolderSetup] Skipped: has folders"); return false; }
 
     // Don't show overlay if auto-setup was triggered this session
-    if (_setupTriggeredDocs.has(docId)) { console.log("[FolderSetup] Skipped: auto-setup triggered"); return false; }
-
     // 24-hour throttle: skip if overlay was shown within the last 24 hours
     const stored = await new Promise(resolve => chrome.storage.local.get("folderOverlayLastShown", resolve));
     const lastShown = stored.folderOverlayLastShown || 0;
@@ -723,23 +707,6 @@
         setTimeout(removeProgressToast, 3000);
       } else {
         const toast = showProgressToast(`Error: ${msg.error || "Unknown error"}`);
-        toast.style.background = "#dc2626";
-        setTimeout(removeProgressToast, 5000);
-      }
-
-    } else if (msg.type === "setup-new-doc-progress") {
-      showProgressToast(msg.message);
-
-    } else if (msg.type === "setup-new-doc-done") {
-      if (msg.success) {
-        if (msg.protectionSkipped) {
-          // Already protected, no toast needed
-        } else {
-          showProgressToast("Workspace protection enabled");
-          setTimeout(removeProgressToast, 4000);
-        }
-      } else {
-        const toast = showProgressToast(`Protection error: ${msg.error || "Unknown"}`);
         toast.style.background = "#dc2626";
         setTimeout(removeProgressToast, 5000);
       }
