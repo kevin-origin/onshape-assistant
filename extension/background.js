@@ -4729,7 +4729,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const { url, configuration } = msg;
     if (!url) { sendResponse({ ok: true }); return; }
     sendResponse({ ok: true });
-    (async () => {
+    // Web Lock keeps Chrome from terminating the SW during the long export.
+    // navigator.locks.request holds the lock (and the SW alive) for the
+    // entire duration of the async callback, unlike chrome.alarms which only
+    // wake a new SW instance after termination.
+    navigator.locks.request('urdf-export', async () => {
       try {
         const parsed = parsePartStudioUrl(url);
         if (!parsed) throw new Error("Invalid assembly URL — must contain /documents/{did}/w/{wid}/e/{eid}");
@@ -4738,7 +4742,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         chrome.alarms.clear("urdf-keepalive");
         chrome.runtime.sendMessage({ type: "urdf-done", error: e.message }).catch(() => {});
       }
-    })();
+    });
     return;
 
   } else if (msg.type === "fetch-bom-configs") {
