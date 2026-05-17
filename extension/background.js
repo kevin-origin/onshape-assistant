@@ -288,6 +288,7 @@ chrome.alarms.create("compliance-webhook-refresh", { periodInMinutes: 2 * 24 * 6
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === "compliance-heartbeat") sendComplianceHeartbeat();
   if (alarm.name === "compliance-webhook-refresh") registerComplianceWebhookIfNeeded(true);
+  // "urdf-keepalive" fires during long exports to prevent SW termination — no action needed.
 });
 
 // Also send immediately on SW startup
@@ -3242,6 +3243,10 @@ async function generateUrdf(did, wid, eid, configuration) {
   const bcast = (msg, cls) =>
     chrome.runtime.sendMessage({ type: "urdf-progress", message: msg, cls }).catch(() => {});
 
+  // Keep the MV3 service worker alive for the duration of the export.
+  // Without this, Chrome may terminate the SW between fetch calls.
+  chrome.alarms.create("urdf-keepalive", { periodInMinutes: 0.4 });
+
   const cfgParam = configuration ? `&configuration=${encodeURIComponent(configuration)}` : "";
   bcast("Fetching assembly definition...");
   // includeMateFeatures/includeMateConnectors ensure rootAssembly.features is populated;
@@ -3758,10 +3763,15 @@ async function generateUrdf(did, wid, eid, configuration) {
     { name: 'config.json',  data: enc.encode(configJson) },
     ...finalStlFiles,
   ]);
-  const zipBase64 = toBase64(zip);
   const zipName   = `${robotName}_urdf.zip`;
+  chrome.alarms.clear("urdf-keepalive");
   bcast(`Done — ${finalStlFiles.length} STL(s) (incl. merged visual+collision) + robot.urdf + config.json`, 'log-ok');
-  chrome.runtime.sendMessage({ type: 'urdf-done', zipBase64, zipName }).catch(() => {});
+  const blob = new Blob([zip], { type: 'application/zip' });
+  const objectURL = URL.createObjectURL(blob);
+  chrome.downloads.download({ url: objectURL, filename: zipName, saveAs: false }, () => {
+    setTimeout(() => URL.revokeObjectURL(objectURL), 60000);
+  });
+  chrome.runtime.sendMessage({ type: 'urdf-done', zipName }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -4721,6 +4731,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!parsed) throw new Error("Invalid assembly URL — must contain /documents/{did}/w/{wid}/e/{eid}");
         await generateUrdf(parsed.docId, parsed.wid, parsed.eid, configuration);
       } catch (e) {
+        chrome.alarms.clear("urdf-keepalive");
         chrome.runtime.sendMessage({ type: "urdf-done", error: e.message }).catch(() => {});
       }
     })();

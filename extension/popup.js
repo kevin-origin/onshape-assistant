@@ -1162,7 +1162,6 @@ chrome.runtime.onMessage.addListener((msg) => {
     if (msg.error) {
       appendUrdfLog("Error: " + msg.error, "log-err");
     } else {
-      chrome.downloads.download({ url: "data:application/zip;base64," + msg.zipBase64, filename: msg.zipName || "robot_urdf.zip", saveAs: true });
       appendUrdfLog("Downloaded: " + (msg.zipName || "robot_urdf.zip"), "log-ok");
     }
   } else if (msg.type === "bulk-export-done") {
