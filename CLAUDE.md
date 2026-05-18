@@ -1,5 +1,9 @@
 # Onshape Assistant — CLAUDE.md
 
+## Last stable KV release: v2.1.35
+D1 migration not yet deployed — Worker still uses KV for heartbeats/active/violations/dedup.
+If D1 migration breaks anything, roll back to this release.
+
 ## Reference repo
 onshape-to-robot source is cloned locally at `onshape-to-robot-ref/` (gitignored). Use Grep/Read on it directly — do NOT fetch from GitHub. Key files: `onshape_to_robot/robot.py`, `onshape_to_robot/onshape.py`, `onshape_to_robot/utils.py`.
 
