@@ -759,6 +759,7 @@
   // ---------------------------------------------------------------------------
   chrome.storage.onChanged.addListener(function(changes, area) {
     if (area !== 'local' || !changes.docScanResults) return;
+    if (_docDisabled) { document.documentElement.dataset.oxtAssemblyCount = '0'; return; }
     const docId = getDocIdFromUrl();
     if (!docId) return;
     const docResult = (changes.docScanResults.newValue || {})[docId];
@@ -769,6 +770,11 @@
   });
 
   function runOnDocLoad() {
+    if (_killSwitchActive || _docDisabled) {
+      // Clear any cached assembly count so content-main.js guard is inactive for disabled docs
+      document.documentElement.dataset.oxtAssemblyCount = '0';
+      return;
+    }
     // Pre-populate oxtAssemblyCount from cached scan so content-main.js guard
     // has a value before any new scan completes
     chrome.storage.local.get('docScanResults', function(data) {
@@ -789,7 +795,6 @@
         }
       }
     });
-    if (_killSwitchActive || _docDisabled) return;
     const docId = getDocIdFromUrl();
     if (!docId || docId === _lastDocId) return;
     _lastDocId = docId;
