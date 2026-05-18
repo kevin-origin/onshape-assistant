@@ -67,7 +67,7 @@
   }
 
   /**
-   * Backstop guard: patches window.fetch to intercept POST /api/v*/assemblies requests.
+   * Backstop guard: patches window.fetch to intercept POST /api/vN/assemblies requests.
    * Returns a synthetic 400 response and shows a toast if oxtAssemblyCount > 0.
    * Catches cases where the DOM button guard is bypassed (e.g., keyboard shortcuts, external callers).
    */
