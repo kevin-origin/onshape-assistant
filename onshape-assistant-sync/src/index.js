@@ -76,15 +76,16 @@ export default {
       const { documentId, versionId, messageId, userId: payloadUserId, event: evt, timestamp } = body;
 
       if (documentId && (versionId || messageId || payloadUserId)) {
-        // Dedup — each event fires N webhooks (one per registered user); process only once
-        const dedupId = messageId || versionId || (payloadUserId + documentId);
-        const alreadyProcessed = await env.DB.prepare(
-          "SELECT messageId FROM processed_events WHERE messageId = ?"
-        ).bind(dedupId).first();
-        if (!alreadyProcessed) {
-          await env.DB.prepare(
-            "INSERT OR IGNORE INTO processed_events (messageId, createdAt) VALUES (?, ?)"
-          ).bind(dedupId, new Date().toISOString()).run();
+        // Dedup — each event fires N webhooks (one per registered user); process only once.
+        // INSERT OR IGNORE is atomic in SQLite — exactly one concurrent request wins (meta.changes===1).
+        // Do NOT SELECT first: a SELECT+INSERT pattern is racy under concurrent webhook fan-out.
+        // versionId is consistent across all N webhook deliveries of the same event.
+        // messageId is unique per delivery — never use it as primary dedup key.
+        const dedupId = versionId || (payloadUserId + documentId) || messageId;
+        const { meta: dedupMeta } = await env.DB.prepare(
+          "INSERT OR IGNORE INTO processed_events (messageId, createdAt) VALUES (?, ?)"
+        ).bind(dedupId, new Date().toISOString()).run();
+        if (dedupMeta.changes === 1) {
 
           // Resolve creator: export/translation events carry userId directly; version events need lookup
           let createdBy = null;

@@ -281,8 +281,8 @@ async function sendComplianceHeartbeat() {
   } catch { /* non-critical */ }
 }
 
-// Send heartbeat every 5 minutes while Onshape is open
-chrome.alarms.create("compliance-heartbeat", { periodInMinutes: 5 });
+// Send heartbeat every 10 minutes while Onshape is open
+chrome.alarms.create("compliance-heartbeat", { periodInMinutes: 10 });
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === "compliance-heartbeat") sendComplianceHeartbeat();
 });
