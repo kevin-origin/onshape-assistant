@@ -122,8 +122,8 @@ Edit assigned file only · MV3/addEventListener · session cookies only · never
 
 **Crons (create after all agents briefed):**
 ```
-CronCreate(cron:"7 */2 * * *", prompt:"Hourly usage sweep: /usage every active agent pane, capture %, send Escape. Warn Kevin ≥75%, mark exhausted + reassign if out of usage.")
-CronCreate(cron:"17 * * * *", prompt:"Context sweep: /context on yourself first (compact if <50% free), then each agent pane. Send /compact to any agent <50% free. Report all %s.")
+CronCreate(cron:"7 */4 * * *", prompt:"Usage sweep: /usage every active agent pane, capture %, send Escape. Warn Kevin ≥75%, mark exhausted + reassign if out of usage.")
+CronCreate(cron:"17 */2 * * *", prompt:"Context sweep: /context on yourself first (compact if <50% free), then each agent pane. Send /compact to any agent <50% free. Report all %s.")
 ```
 
 ---
