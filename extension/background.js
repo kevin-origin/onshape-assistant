@@ -224,19 +224,47 @@ async function getDisabledDocs() {
   return disabledDocsCache || [];
 }
 
+async function getDisabledFolderNames() {
+  const { disabledFolderNamesCache, disabledFolderNamesFetchedAt } =
+    await chrome.storage.local.get(["disabledFolderNamesCache", "disabledFolderNamesFetchedAt"]);
+  if (disabledFolderNamesCache && disabledFolderNamesFetchedAt &&
+      Date.now() - disabledFolderNamesFetchedAt < 60 * 60 * 1000) {
+    return disabledFolderNamesCache;
+  }
+  try {
+    const res = await fetch(`${SYNC_SERVER}/api/disabled-folder-names`);
+    if (res.ok) {
+      const data = await res.json();
+      const names = data.disabledFolderNames || [];
+      await chrome.storage.local.set({ disabledFolderNamesCache: names, disabledFolderNamesFetchedAt: Date.now() });
+      return names;
+    }
+  } catch (e) {
+    console.warn("[FolderDisable] fetch failed:", e.message);
+  }
+  return disabledFolderNamesCache || [];
+}
+
 async function isDocDisabled(docId) {
   if (!docId) return false;
   const docs = await getDisabledDocs();
-  return docs.includes(docId);
+  if (docs.includes(docId)) return true;
+  const folderInfo = await getTopLevelFolder(docId);
+  const folderNames = await getDisabledFolderNames();
+  if (folderInfo.topFolderName && folderNames.includes(folderInfo.topFolderName)) return true;
+  return false;
 }
 
 // Kill switch only runs on production builds.
 // dev branch manifest has "dev_build": true — absent on main.
 const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 
-// Always force-refresh the disabled-docs list on every SW startup (both dev and production).
-// Busting the timestamp ensures we never serve a stale empty list after a doc is added.
-chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
+// Always force-refresh the disabled-docs and disabled-folder-names lists on every SW startup.
+// Busting the timestamps ensures we never serve a stale empty list after a doc/folder is added.
+chrome.storage.local.remove(["disabledDocsFetchedAt", "disabledFolderNamesFetchedAt"], () => {
+  getDisabledDocs();
+  getDisabledFolderNames();
+});
 
 if (IS_PRODUCTION_BUILD) {
   // Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
@@ -249,8 +277,11 @@ if (IS_PRODUCTION_BUILD) {
   chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === "kill-switch-refresh") {
       refreshAndApplyKillSwitch();
-      // Force-refresh disabled docs by busting cache timestamp first
-      chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
+      // Force-refresh disabled docs and folder names by busting cache timestamps first
+      chrome.storage.local.remove(["disabledDocsFetchedAt", "disabledFolderNamesFetchedAt"], () => {
+        getDisabledDocs();
+        getDisabledFolderNames();
+      });
     }
   });
 } else {

@@ -44,6 +44,12 @@ export default {
       return json({ disabledDocs: val || [] }, corsHeaders);
     }
 
+    // GET /api/disabled-folder-names — public, no auth; returns list of top-level folder names where extension is disabled
+    if (path === "/api/disabled-folder-names" && request.method === "GET") {
+      const val = await env.MERGE_PERMS.get("__disabled_folder_names__", "json");
+      return json({ disabledFolderNames: val || [] }, corsHeaders);
+    }
+
     // PUT /api/compliance/heartbeat — extension heartbeat (no auth, extension calls directly)
     if (path === "/api/compliance/heartbeat" && request.method === "PUT") {
       let body;
@@ -166,6 +172,17 @@ export default {
       const emails = (body.blocked || []).map(e => e.toLowerCase());
       await env.MERGE_PERMS.put("__blocked_emails__", JSON.stringify(emails));
       return json({ ok: true, blocked: emails }, corsHeaders);
+    }
+
+    // PUT /api/disabled-folder-names — admin only, sets list of top-level folder names where extension is disabled
+    if (path === "/api/disabled-folder-names" && request.method === "PUT") {
+      const body = await request.json();
+      if (!Array.isArray(body.disabledFolderNames)) {
+        return json({ error: "disabledFolderNames must be an array" }, corsHeaders, 400);
+      }
+      const names = body.disabledFolderNames;
+      await env.MERGE_PERMS.put("__disabled_folder_names__", JSON.stringify(names));
+      return json({ ok: true, disabledFolderNames: names }, corsHeaders);
     }
 
     // PUT /api/compliance/user — register a user: store their API keys, resolve their ID→email, register webhook
