@@ -39,16 +39,25 @@ export default {
       try { body = await request.json(); } catch { return json({ ok: true }, corsHeaders); }
       const email = body.email?.toLowerCase();
       if (email) {
-        await env.MERGE_PERMS.put(`heartbeat:${email}`, JSON.stringify({
-          email,
-          timestamp: body.timestamp || new Date().toISOString(),
-          receivedAt: new Date().toISOString(),
-        }), { expirationTtl: 600 }); // 10-min TTL
+        // Skip write if a heartbeat was stored within the last 55 minutes.
+        // Extension pings every 5 min; TTL is 60 min. Only refresh when key is
+        // nearly expired — at most 1 write per 60 min per user (~80 writes/day for 10 users).
+        const existing = await env.MERGE_PERMS.get(`heartbeat:${email}`, "json");
+        const ageMs = existing?.receivedAt ? Date.now() - new Date(existing.receivedAt).getTime() : Infinity;
+        if (!existing || ageMs > 55 * 60 * 1000) {
+          await env.MERGE_PERMS.put(`heartbeat:${email}`, JSON.stringify({
+            email,
+            timestamp: body.timestamp || new Date().toISOString(),
+            receivedAt: new Date().toISOString(),
+          }), { expirationTtl: 3600 }); // 60-min TTL
+        }
       }
       return json({ ok: true }, corsHeaders);
     }
 
     // POST /api/webhook/onshape — Onshape webhook receiver (no auth, Onshape calls this directly)
+    // Deduplicates multi-user webhook fan-out by messageId/versionId, resolves creator email,
+    // records active event, and triggers demotion + Slack alert if no heartbeat was present.
     if (path === "/api/webhook/onshape" && request.method === "POST") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: true }, corsHeaders); }
@@ -122,6 +131,8 @@ export default {
     }
 
     // PUT /api/compliance/user — register a user: store their API keys, resolve their ID→email, register webhook
+    // Deletes any existing webhook for the user before creating a new one (prevents accumulation).
+    // Body: { accessKey, secretKey }. Returns { ok, email, userId, webhookId }.
     if (path === "/api/compliance/user" && request.method === "PUT") {
       const body = await request.json();
       const { accessKey, secretKey } = body;
@@ -322,6 +333,14 @@ export default {
   },
 };
 
+/**
+ * Revokes admin rights for a user as a compliance violation response.
+ * Uses the worker's own ONSHAPE_ACCESS_KEY/SECRET_KEY (not the user's keys).
+ * Non-critical: failure is silently swallowed since the violation is already recorded.
+ * @param {string} userId - Onshape user ID to demote.
+ * @param {string} email - User email (passed to Onshape API body).
+ * @param {object} env - Cloudflare Worker env bindings.
+ */
 async function demoteUser(userId, email, env) {
   try {
     const creds = btoa(`${env.ONSHAPE_ACCESS_KEY}:${env.ONSHAPE_SECRET_KEY}`);
@@ -334,6 +353,16 @@ async function demoteUser(userId, email, env) {
   } catch { /* non-critical — violation is already recorded */ }
 }
 
+/**
+ * Resolves the creator email for an Onshape document version.
+ * First tries the KV `userid:{id}` cache (populated during user registration).
+ * Falls back to GET /api/v10/users/{id} via the worker's admin keys.
+ * Returns null if resolution fails (user not registered, API error, etc.).
+ * @param {string} documentId
+ * @param {string} versionId
+ * @param {object} env - Cloudflare Worker env bindings.
+ * @returns {Promise<{email:string, id:string, name:string}|null>}
+ */
 async function onshapeLookupVersionCreator(documentId, versionId, env) {
   try {
     const creds = btoa(`${env.ONSHAPE_ACCESS_KEY}:${env.ONSHAPE_SECRET_KEY}`);
@@ -364,6 +393,13 @@ async function onshapeLookupVersionCreator(documentId, versionId, env) {
   }
 }
 
+/**
+ * Posts a violation alert to Slack via the SLACK_WEBHOOK_URL env var.
+ * Message includes user email, action type (human-readable), doc link, and IST timestamp.
+ * No-ops silently if SLACK_WEBHOOK_URL is not configured or the POST fails.
+ * @param {object} violation - Violation record (email, event, documentId, detectedAt).
+ * @param {object} env - Cloudflare Worker env bindings.
+ */
 async function notifySlack(violation, env) {
   if (!env.SLACK_WEBHOOK_URL) return;
   const eventLabel = {

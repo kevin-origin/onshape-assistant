@@ -156,6 +156,11 @@ document.getElementById("btnBulkExport").addEventListener("click", () => {
 // Export element loader + renderer
 // ---------------------------------------------------------------------------
 
+/**
+ * Initiates the export elements flow: verifies a release exists (and is not stale)
+ * before requesting part studio + drawing elements from background. Shows an error
+ * in the status element if no release or stale revision is detected.
+ */
 function loadExportElements() {
   const $panel = document.getElementById("exportElementsPanel");
   const $status = document.getElementById("exportStatus");
@@ -448,11 +453,17 @@ chrome.storage.local.get("popupTargetSection", (data) => {
 });
 
 // ---------------------------------------------------------------------------
+// Folder Structure validation — ALLOWED_FOLDERS whitelist and scan result validator
+// ---------------------------------------------------------------------------
 
 const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
-// Returns { ok, badgeClass, badgeText, details[] } for a scan result
-// Flags: illegal tabs (extra folders + root tabs), >1 assembly per folder
+/**
+ * Validates a folder-structure scan result against compliance rules.
+ * @param {object} result - Scan result from content.js (folders, root_tabs, totalAssemblies).
+ * @returns {{ ok: boolean, badgeClass: string, badgeText: string, details: {text,color}[] }}
+ *   ok=false if any illegal tabs, unlabeled root tabs, or >1 assembly per folder exist.
+ */
 function validateFolders(result) {
   const folderData = result.folders || {};
   const folders = Object.keys(folderData);
@@ -633,6 +644,7 @@ document.getElementById("btnRunExport3d").addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 let _urdfUrl = "";
+let _urdfKeepalivePort = null;
 
 function appendUrdfLog(text, cls) {
   const $log = document.getElementById("urdfLog");
@@ -688,6 +700,8 @@ document.getElementById("btnGenerateUrdf").addEventListener("click", () => {
   btn.disabled = true;
   document.getElementById("urdfLog").innerHTML = "";
   appendUrdfLog("Starting URDF export...");
+  // Open a persistent port — Chrome keeps the SW alive for the entire duration.
+  _urdfKeepalivePort = chrome.runtime.connect({ name: "urdf-export-keepalive" });
   chrome.runtime.sendMessage({ type: "export-urdf", url: _urdfUrl, configuration }, (response) => {
     if (!response) {
       appendUrdfLog("No response from background — try reloading extension", "log-err");
@@ -697,7 +711,7 @@ document.getElementById("btnGenerateUrdf").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Drawing Creator elements
+// Drawing Creator elements — state variables and DOM refs for the drawing creation workflow
 let _drawingUrl        = "";
 const $btnCreateDraw   = document.getElementById("btnCreateDrawings");
 const $drawLog         = document.getElementById("drawLog");
@@ -1014,6 +1028,13 @@ function loadBomConfigs() {
   chrome.runtime.sendMessage({ type: "fetch-bom-configs", url: _bomGenUrl });
 }
 
+/**
+ * Renders Part Studio configuration parameter inputs into a container element.
+ * Shared by Export 3D, BOM Generator, and URDF Export config panels.
+ * @param {HTMLElement} $container - DOM element to render inputs into (cleared first).
+ * @param {Array<{name,type,id,values?,defaultValue,unitSpec?}>} params - Config params from background.
+ * @param {string} cssClass - CSS class applied to each input (used to collect values on submit).
+ */
 function renderPsConfigInputs($container, params, cssClass) {
   $container.innerHTML = "";
   params.forEach(param => {
@@ -1097,7 +1118,7 @@ document.getElementById("btnGenerateBomCsv").addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Listen for messages from background.js
+// Listen for messages from background.js — routes progress/done events to UI update handlers
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg) => {
@@ -1140,11 +1161,11 @@ chrome.runtime.onMessage.addListener((msg) => {
   } else if (msg.type === "urdf-progress") {
     appendUrdfLog(msg.message, msg.cls);
   } else if (msg.type === "urdf-done") {
+    if (_urdfKeepalivePort) { _urdfKeepalivePort.disconnect(); _urdfKeepalivePort = null; }
     document.getElementById("btnGenerateUrdf").disabled = false;
     if (msg.error) {
       appendUrdfLog("Error: " + msg.error, "log-err");
     } else {
-      chrome.downloads.download({ url: "data:application/zip;base64," + msg.zipBase64, filename: msg.zipName || "robot_urdf.zip", saveAs: true });
       appendUrdfLog("Downloaded: " + (msg.zipName || "robot_urdf.zip"), "log-ok");
     }
   } else if (msg.type === "bulk-export-done") {
@@ -1220,6 +1241,11 @@ chrome.runtime.onMessage.addListener((msg) => {
 // Load last scan result for current doc (from storage)
 // ---------------------------------------------------------------------------
 
+/**
+ * Reads the cached scan result for the active tab's document from chrome.storage.local
+ * and renders it immediately without re-scanning. Shown when the Folder Structure
+ * section is opened so prior results are visible without a new scan.
+ */
 function loadLastScanForCurrentDoc() {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (tabs.length === 0) return;
@@ -1269,6 +1295,12 @@ $btnRescan.addEventListener("click", () => {
 // Results display
 // ---------------------------------------------------------------------------
 
+/**
+ * Renders a single folder-structure scan result into the results panel.
+ * Shows a validation badge, issue details (illegal tabs, assembly violations),
+ * the list of legal folders, and the tab count usage line.
+ * @param {object} result - Scan result object from content.js or storage cache.
+ */
 function showSingleResult(result) {
   $results.style.display = "block";
   $resultList.innerHTML = "";
@@ -1328,6 +1360,11 @@ function showSingleResult(result) {
 // Doc Permissions display + edit
 // ---------------------------------------------------------------------------
 
+/**
+ * Loads and renders merge owner permissions for the currently active Onshape document.
+ * Fetches session user + doc permissions in parallel; renders owner list with edit controls.
+ * Edit controls are shown only if the session user is an owner of the document.
+ */
 function loadMergePermissions() {
   // Only show merge permissions for the currently open document
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
@@ -1407,6 +1444,11 @@ function loadMergePermissions() {
 // Doc whitelist toggle — only shown for kevin@origin.tech
 // ---------------------------------------------------------------------------
 
+/**
+ * Admin-only: renders a toggle button to disable/re-enable the extension for the active doc.
+ * Only visible when the session user is kevin@10xconstruction.ai or sai@origin.tech.
+ * Sends set-doc-disabled messages to background which updates the Cloudflare KV disabled-docs list.
+ */
 function initDocWhitelistToggle() {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs.length) return;

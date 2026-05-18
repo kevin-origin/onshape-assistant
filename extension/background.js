@@ -9,6 +9,12 @@ const COMPANY_ID   = "6810c247e7c40668c32816a6";
 const SYNC_SERVER  = "https://onshape-assistant-sync.artilabot.workers.dev";
 const SYNC_API_KEY = "artila-onshape-sync-2026";
 
+/**
+ * Fetch from the Cloudflare sync Worker with a 4-second timeout and auth header.
+ * @param {string} path - Worker-relative path (e.g. "/api/merge-permissions/docId")
+ * @param {object} [options] - fetch options (method, body, etc.)
+ * @returns {Promise<object|null>} Parsed JSON response, or null on network/timeout/non-OK error
+ */
 async function syncFetch(path, options = {}) {
   try {
     const controller = new AbortController();
@@ -40,6 +46,10 @@ const DOC_SCAN_TIMEOUT = 30000;
 
 let _sessionUser = null; // { email, name, id }
 
+/**
+ * Return the signed-in Onshape user, cached for the SW lifetime.
+ * @returns {Promise<{email:string, name:string, id:string}|null>}
+ */
 async function getSessionUser() {
   if (_sessionUser) return _sessionUser;
   try {
@@ -57,6 +67,11 @@ async function getSessionUser() {
 // Top-level folder walk — walks parentId chain up to the root
 // ---------------------------------------------------------------------------
 
+/**
+ * Walk the parentId chain of a doc to find its top-level folder (1-hour cache).
+ * @param {string} docId
+ * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
+ */
 async function getTopLevelFolder(docId) {
   const cacheKey = `topFolder_${docId}`;
   const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
@@ -355,6 +370,10 @@ registerComplianceWebhookIfNeeded();
 
 let _teamMembers = null; // [{ email, name, id }]
 
+/**
+ * Return company team members (name, email, id), cached for the SW lifetime.
+ * @returns {Promise<Array<{name:string, email:string, id:string}>>}
+ */
 async function getTeamMembers() {
   if (_teamMembers) return _teamMembers;
   try {
@@ -382,6 +401,11 @@ async function getTeamMembers() {
 // POST requests additionally need the XSRF-TOKEN cookie sent as a header.
 // This avoids consuming API key quota entirely — all calls are "free".
 
+/**
+ * Authenticated GET to the Onshape API using browser session cookies (no API key quota).
+ * @param {string} path - Onshape-relative path (e.g. "/api/v10/documents/...")
+ * @returns {Promise<object>} Parsed JSON; throws on non-OK status
+ */
 async function onshapeFetch(path) {
   const resp = await fetch(`${ONSHAPE_BASE}${path}`, {
     credentials: "include",
@@ -391,6 +415,10 @@ async function onshapeFetch(path) {
   return resp.json();
 }
 
+/**
+ * Read the XSRF-TOKEN cookie from cad.onshape.com for POST request headers.
+ * @returns {Promise<string>} Token value, or empty string if not present
+ */
 async function getXsrfToken() {
   return new Promise((resolve) => {
     chrome.cookies.get({ url: ONSHAPE_BASE, name: "XSRF-TOKEN" }, (cookie) => {
@@ -399,6 +427,12 @@ async function getXsrfToken() {
   });
 }
 
+/**
+ * Authenticated POST to the Onshape API; injects XSRF token automatically.
+ * @param {string} path - Onshape-relative path
+ * @param {object} body - Request body (JSON-serialized)
+ * @returns {Promise<object>} Parsed JSON; throws on non-OK status
+ */
 async function onshapePost(path, body) {
   const xsrf = await getXsrfToken();
   const headers = { "Accept": "application/json", "Content-Type": "application/json" };
@@ -460,6 +494,15 @@ function computeScale(bb, available = 100) {
 // Quirk: Onshape sometimes deletes the status endpoint after completion,
 // returning 404. Three consecutive 404s = treat as success (modification finished
 // and status was garbage-collected before we could read "DONE").
+/**
+ * Poll a drawing modification request until it reaches DONE, FAILED, or timeout.
+ * @param {string} docId
+ * @param {string} wid - Workspace ID
+ * @param {string} drawingEid - Drawing element ID
+ * @param {string} mid - Modification request ID returned by the modify endpoint
+ * @param {number} [timeoutSec=30]
+ * @returns {Promise<boolean>} true = success/assumed-complete, false = failed/timed-out
+ */
 async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
   const url = `/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modificationstatus/${mid}`;
   const deadline = Date.now() + timeoutSec * 1000;
@@ -493,6 +536,13 @@ async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
 
 let _drawingInProgress = false;
 
+/**
+ * Create an individual drawing for every part in a Part Studio.
+ * Opens a drawing document per part, places three-view + iso view, adds overall
+ * dimensions, then optionally adds a flat-pattern sheet for sheet-metal parts.
+ * @param {string} url - Full URL of the Part Studio (must contain /documents/.../w/.../e/...)
+ * @param {Array<object>|null} selectedParts - Pre-selected part objects (null = fetch all from API)
+ */
 async function createDrawingsForUrl(url, selectedParts) {
   _drawingInProgress = true;
   const parsed = parsePartStudioUrl(url);
@@ -837,6 +887,16 @@ async function createDrawingsForUrl(url, selectedParts) {
 // Parameters:
 //   docId, wid, drawingEid — drawing coordinates
 //   scale                  — [scaleNum, scaleDen] from computeScale()
+/**
+ * Add height and width overall dimensions to every non-isometric view on Sheet 1.
+ * All annotations are batched into one atomic modify call to avoid Onshape's
+ * per-view lock that silently drops width annotations when submitted separately.
+ * @param {string} docId
+ * @param {string} wid
+ * @param {string} drawingEid
+ * @param {[number, number]} scale - Drawing scale as [numerator, denominator] (e.g. [1,2])
+ * @param {object} [viewPosMm] - Optional view position hints in mm (unused currently)
+ */
 async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {}) {
   const [scaleNum, scaleDen] = scale;
   // Text offset in model meters so it appears 5mm outside the geometry on paper.
@@ -970,9 +1030,15 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
 }
 
 // ---------------------------------------------------------------------------
-// Tab navigation helpers
+// Tab navigation helpers — navigate and wait for page load + SPA init
 // ---------------------------------------------------------------------------
 
+/**
+ * Navigate a tab to a URL and wait for it to fully load (status=complete + 2s SPA buffer).
+ * @param {number} tabId
+ * @param {string} url
+ * @returns {Promise<void>}
+ */
 function navigateTab(tabId, url) {
   return new Promise((resolve, reject) => {
     chrome.tabs.update(tabId, { url }, () => {
@@ -984,6 +1050,12 @@ function navigateTab(tabId, url) {
   });
 }
 
+/**
+ * Wait for a tab to reach status=complete, then add a 2s buffer for Onshape's SPA.
+ * Resolves (not rejects) on 15s timeout so CDP callers can still proceed.
+ * @param {number} tabId
+ * @returns {Promise<void>}
+ */
 function waitForTabLoad(tabId) {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => {
@@ -1032,6 +1104,11 @@ const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports"
 // Tracks docs already notified about high tab count this SW session (avoid spamming)
 const _tabCountNotifiedDocs = new Set();
 
+/**
+ * Enrich a scan result with assembly counts from the elements API, then persist to chrome.storage.local.
+ * Also notifies when the document is approaching the 35/40-tab limit.
+ * @param {object} result - Scan result from content.js (doc_id, wid, folders, root_tabs, etc.)
+ */
 async function storeDocScanResult(result) {
   if (!result || !result.doc_id) return;
   console.log("[Scanner] storeDocScanResult called, wid=" + (result.wid || "none") +
@@ -1092,6 +1169,13 @@ async function storeDocScanResult(result) {
 // DOM automation: add drawing sheet via iframe injection
 // ---------------------------------------------------------------------------
 
+/**
+ * Add a new sheet to an open drawing by injecting script into the drawing editor iframe.
+ * Waits for the editor canvas to be interactive before clicking "Add Sheet", then
+ * confirms success by polling the sheet panel for an incremented count.
+ * @param {number} tabId - Chrome tab ID of the drawing document
+ * @returns {Promise<{success:boolean}|{error:string}>}
+ */
 async function addSheetViaIframe(tabId) {
   // Poll for the drawing editor iframe (it loads after the parent page)
   let drawingFrame = null;
@@ -1219,6 +1303,19 @@ async function addSheetViaIframe(tabId) {
 // Create flat pattern views (top + projected left) on Sheet 2 of an open drawing tab.
 // frameId: production-drawing iframe that is currently on Sheet 2.
 // topPos / leftPos: { x, y } mm, origin bottom-left, Y-up (Xe sheet coords).
+/**
+ * Inject flat-pattern views (top + projected left) into Sheet 2 of an open drawing.
+ * Uses XeRequest in the drawing iframe's MAIN world to create views programmatically.
+ * @param {number} tabId - Chrome tab ID
+ * @param {number} frameId - Frame ID of the drawing editor iframe
+ * @param {string} docId
+ * @param {string} psEid - Part Studio element ID
+ * @param {object} fb - Flat body descriptor from the sheet-metal flat API
+ * @param {[number,number]} flatScale - Scale for the flat-pattern view
+ * @param {object} topPos - {x, y} placement for the top-view in drawing coords
+ * @param {object} leftPos - {x, y} placement for the projected left view
+ * @returns {Promise<{ok:boolean}|{error:string}>}
+ */
 async function addFlatPatternSheet(tabId, frameId, docId, psEid, fb, flatScale, topPos, leftPos) {
   const sleep = ms => new Promise(r => setTimeout(r, ms));
 
@@ -1325,6 +1422,13 @@ async function addFlatPatternSheet(tabId, frameId, docId, psEid, fb, flatScale, 
 //   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
 // }
 
+/**
+ * Promise wrapper for chrome.debugger.sendCommand.
+ * @param {number} tabId
+ * @param {string} method - CDP method (e.g. "Input.dispatchMouseEvent")
+ * @param {object} [params={}]
+ * @returns {Promise<object>} CDP result
+ */
 function cdpSend(tabId, method, params = {}) {
   return new Promise((resolve, reject) => {
     chrome.debugger.sendCommand({ tabId }, method, params, (result) => {
@@ -1337,6 +1441,12 @@ function cdpSend(tabId, method, params = {}) {
   });
 }
 
+/**
+ * Synthesize a trusted left-click at (x, y) via CDP (move → press → release).
+ * @param {number} tabId
+ * @param {number} x
+ * @param {number} y
+ */
 async function cdpClick(tabId, x, y) {
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved", x, y, buttons: 0,
@@ -1349,6 +1459,12 @@ async function cdpClick(tabId, x, y) {
   });
 }
 
+/**
+ * Synthesize a trusted right-click at (x, y) via CDP (move → press → release).
+ * @param {number} tabId
+ * @param {number} x
+ * @param {number} y
+ */
 async function cdpRightClick(tabId, x, y) {
   await cdpSend(tabId, "Input.dispatchMouseEvent", {
     type: "mouseMoved", x, y, buttons: 0,
@@ -1361,6 +1477,11 @@ async function cdpRightClick(tabId, x, y) {
   });
 }
 
+/**
+ * Select-all then insert text into the focused input field via CDP.
+ * @param {number} tabId
+ * @param {string} text
+ */
 async function cdpTypeText(tabId, text) {
   // Select all existing text first (Ctrl+A), then type
   await cdpSend(tabId, "Input.dispatchKeyEvent", {
@@ -1372,6 +1493,12 @@ async function cdpTypeText(tabId, text) {
   await cdpSend(tabId, "Input.insertText", { text });
 }
 
+/**
+ * Dispatch a single keyDown+keyUp pair via CDP.
+ * @param {number} tabId
+ * @param {string} key - Key string (e.g. "Enter")
+ * @param {number} keyCode - Windows virtual key code (e.g. 13 for Enter)
+ */
 async function cdpPressKey(tabId, key, keyCode) {
   await cdpSend(tabId, "Input.dispatchKeyEvent", {
     type: "keyDown", windowsVirtualKeyCode: keyCode, key, code: key,
@@ -1439,6 +1566,13 @@ async function cdpDrag(tabId, fromX, fromY, toX, toY) {
   });
 }
 
+/**
+ * Poll the page until a JS expression returns a truthy value (evaluated in page context via CDP).
+ * @param {number} tabId
+ * @param {string} jsExpr - JavaScript expression to evaluate; must return truthy when element is ready
+ * @param {number} [timeoutMs=3000]
+ * @returns {Promise<*>} The truthy value, or null if timed out
+ */
 async function waitForElement(tabId, jsExpr, timeoutMs = 3000) {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
@@ -1543,6 +1677,14 @@ async function discoverContextMenu(tabId) {
 // Folder creation orchestrator — creates tab folders via CDP
 // ---------------------------------------------------------------------------
 
+/**
+ * Create named tab folders via CDP automation (right-click → Create folder → rename).
+ * Attaches debugger, creates each folder by clicking the Insert button and the
+ * "Create folder" menu item, then renames it. Reports progress to senderTabId.
+ * @param {number} tabId - Target Onshape tab to operate on
+ * @param {number} senderTabId - Tab to receive progress/done messages
+ * @param {string[]} folderNames - Ordered list of folder names to create
+ */
 async function createTabFolders(tabId, senderTabId, folderNames) {
   console.log("[CDP-Folders] Starting folder creation:", folderNames);
   // showCdpOverlay(senderTabId);
@@ -1857,6 +1999,11 @@ async function createTabFolders(tabId, senderTabId, folderNames) {
 }
 
 // Move default Onshape tabs into their folders after folder creation
+/**
+ * Move Onshape's default auto-created tabs (Part Studio 1, Assembly 1, etc.) into
+ * their matching folders after folder creation. Called once per folder-creation flow.
+ * @param {number} tabId - Tab where the CDP debugger is already attached
+ */
 async function sortDefaultTabs(tabId) {
   const defaults = [
     { name: "Part Studio 1", folder: "Part Studios" },
@@ -1904,253 +2051,18 @@ async function sortDefaultTabs(tabId) {
 }
 
 // ---------------------------------------------------------------------------
-// New-doc setup: create initial version + enable workspace protection
-// ---------------------------------------------------------------------------
-
-async function createInitialVersion(docId, wid) {
-  console.log(`[NewDocSetup] Creating initial version for ${docId}`);
-  try {
-    const result = await onshapePost(`/api/v10/documents/d/${docId}/versions`, {
-      name: "V1",
-      documentId: docId,
-      workspaceId: wid,
-    });
-    console.log(`[NewDocSetup] Version created: ${result.id || result.name || "ok"}`);
-    return { ok: true, versionId: result.id };
-  } catch (e) {
-    console.error(`[NewDocSetup] Version creation failed: ${e.message}`);
-    return { error: e.message };
-  }
-}
-
-async function createDevelopmentBranch(docId, versionId) {
-  console.log(`[NewDocSetup] Creating Development branch from version ${versionId}`);
-  try {
-    const result = await onshapePost(`/api/v10/documents/d/${docId}/workspaces`, {
-      name: "B1",
-      versionId: versionId,
-    });
-    console.log(`[NewDocSetup] Branch created: ${result.id || "ok"}`);
-    return { ok: true, workspaceId: result.id };
-  } catch (e) {
-    console.error(`[NewDocSetup] Branch creation failed: ${e.message}`);
-    return { error: e.message };
-  }
-}
-
-async function enableWorkspaceProtection(tabId, senderTabId) {
-  console.log("[NewDocSetup] Enabling workspace protection via CDP");
-  // showCdpOverlay(senderTabId);
-
-  function sendSetupProgress(message) {
-    chrome.tabs.sendMessage(senderTabId, {
-      type: "setup-new-doc-progress",
-      message,
-    }).catch(() => {});
-  }
-
-  try {
-    await new Promise((resolve, reject) => {
-      chrome.debugger.attach({ tabId }, "1.3", () => {
-        if (chrome.runtime.lastError) reject(new Error(chrome.runtime.lastError.message));
-        else resolve();
-      });
-    });
-    // await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: true });
-
-    // Wait for debugger banner to appear and layout to stabilize
-    await new Promise(r => setTimeout(r, 500));
-
-    // Step 1: Check if workspace is already protected (lock icon visible)
-    const alreadyProtected = await waitForElement(tabId, `(() => {
-      const lock = document.querySelector('svg.branch-lock-icon');
-      return lock && lock.offsetWidth > 0 ? true : null;
-    })()`, 500);
-
-    if (alreadyProtected) {
-      console.log("[NewDocSetup] Workspace already protected, skipping");
-      return { ok: true, skipped: true };
-    }
-
-    sendSetupProgress("Opening versions panel...");
-
-    // Step 2: Click "Versions and history" panel button
-    const vhBtn = await waitForElement(tabId, `(() => {
-      // Search by tooltip
-      const byTooltip = document.querySelector('[data-bs-original-title="Versions and history"], [title="Versions and history"]');
-      if (byTooltip && byTooltip.offsetHeight > 0) {
-        const r = byTooltip.getBoundingClientRect();
-        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-      }
-      // Fallback: search panel selector buttons
-      const btns = document.querySelectorAll('.os-panel-selector-button');
-      for (const btn of btns) {
-        const tip = btn.getAttribute('data-bs-original-title') || btn.getAttribute('title') || '';
-        if (tip.includes('ersion')) {
-          const r = btn.getBoundingClientRect();
-          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-        }
-      }
-      return null;
-    })()`, 5000);
-
-    if (!vhBtn) throw new Error("Versions and history button not found");
-
-    console.log(`[NewDocSetup] Versions button at (${vhBtn.x}, ${vhBtn.y})`);
-    await cdpClick(tabId, vhBtn.x, vhBtn.y);
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Step 3: Right-click on workspace "Main"
-    sendSetupProgress("Right-clicking workspace...");
-
-    const wsMain = await waitForElement(tabId, `(() => {
-      const spans = document.querySelectorAll('span.workspace-name');
-      for (const s of spans) {
-        if (s.offsetHeight > 0 && s.textContent.trim() === 'Main') {
-          const r = s.getBoundingClientRect();
-          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: s.textContent.trim() };
-        }
-      }
-      return null;
-    })()`, 5000);
-
-    if (!wsMain) throw new Error("Workspace name element not found in versions panel");
-
-    console.log(`[NewDocSetup] Workspace "${wsMain.text}" at (${wsMain.x}, ${wsMain.y})`);
-    await cdpRightClick(tabId, wsMain.x, wsMain.y);
-    await new Promise(r => setTimeout(r, 800));
-
-    // Step 4: Click "Workspace protection..." in context menu
-    sendSetupProgress("Opening protection dialog...");
-
-    const protectItem = await waitForElement(tabId, `(() => {
-      const items = document.querySelectorAll('.dropdown-item, [role="menuitem"], .dropdown-menu a, .dropdown-menu li');
-      for (const el of items) {
-        const text = el.textContent.trim().toLowerCase();
-        if (text.includes('workspace protection') || text.includes('protect')) {
-          const r = el.getBoundingClientRect();
-          if (r.width > 20 && r.height > 5) {
-            return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), text: el.textContent.trim() };
-          }
-        }
-      }
-      return null;
-    })()`, 3000);
-
-    if (!protectItem) {
-      await cdpPressKey(tabId, "Escape", 27);
-      throw new Error("'Workspace protection...' menu item not found");
-    }
-
-    console.log(`[NewDocSetup] Protection item "${protectItem.text}" at (${protectItem.x}, ${protectItem.y})`);
-    await cdpClick(tabId, protectItem.x, protectItem.y);
-    await new Promise(r => setTimeout(r, 1000));
-
-    // Step 5: Wait for protection dialog to appear
-    const dialogReady = await waitForElement(tabId, `(() => {
-      const dialog = document.querySelector('.workspace-permissions-dialog, .modal.workspace-permissions-dialog, [class*="workspace-permissions"]');
-      return dialog && dialog.offsetHeight > 0 ? true : null;
-    })()`, 5000);
-
-    if (!dialogReady) throw new Error("Workspace protection dialog did not appear");
-
-    // Step 6: Check the "Enable workspace protection" checkbox
-    sendSetupProgress("Enabling protection...");
-
-    const checkbox = await waitForElement(tabId, `(() => {
-      const cb = document.querySelector('#enable-workspace-protection');
-      if (cb && cb.offsetHeight > 0) {
-        const r = cb.getBoundingClientRect();
-        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2), checked: cb.checked };
-      }
-      return null;
-    })()`, 3000);
-
-    if (!checkbox) throw new Error("Enable workspace protection checkbox not found");
-
-    if (!checkbox.checked) {
-      console.log(`[NewDocSetup] Clicking checkbox at (${checkbox.x}, ${checkbox.y})`);
-      await cdpClick(tabId, checkbox.x, checkbox.y);
-      await new Promise(r => setTimeout(r, 500));
-    } else {
-      console.log("[NewDocSetup] Checkbox already checked");
-    }
-
-    // Step 7: Wait for Apply button to become enabled, then click it
-    const applyBtn = await waitForElement(tabId, `(() => {
-      const btn = document.querySelector('#workspace-protection-apply');
-      if (btn && btn.offsetHeight > 0 && !btn.disabled) {
-        const r = btn.getBoundingClientRect();
-        return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-      }
-      return null;
-    })()`, 3000);
-
-    if (!applyBtn) throw new Error("Apply button not found or still disabled");
-
-    console.log(`[NewDocSetup] Clicking Apply at (${applyBtn.x}, ${applyBtn.y})`);
-    await cdpClick(tabId, applyBtn.x, applyBtn.y);
-    await new Promise(r => setTimeout(r, 1500));
-
-    // Step 8: Verify success — look for success message bubble or lock icon
-    const success = await waitForElement(tabId, `(() => {
-      const bubble = document.querySelector('.osx-message-bubble-inner-container');
-      if (bubble && bubble.textContent.includes('protection settings updated')) return 'bubble';
-      const lock = document.querySelector('svg.branch-lock-icon');
-      if (lock && lock.offsetWidth > 0) return 'lock';
-      return null;
-    })()`, 5000);
-
-    if (success) {
-      console.log(`[NewDocSetup] Workspace protection enabled (confirmed via ${success})`);
-    } else {
-      console.log("[NewDocSetup] Warning: protection confirmation not detected, may still have worked");
-    }
-
-    // Step 9: Close the versions panel by clicking the button again
-    const vhBtnClose = await cdpSend(tabId, "Runtime.evaluate", {
-      expression: `(() => {
-        const byTooltip = document.querySelector('[data-bs-original-title="Versions and history"], [title="Versions and history"]');
-        if (byTooltip && byTooltip.offsetHeight > 0) {
-          const r = byTooltip.getBoundingClientRect();
-          return { x: Math.round(r.left + r.width / 2), y: Math.round(r.top + r.height / 2) };
-        }
-        return null;
-      })()`,
-      returnByValue: true,
-    });
-    const closePos = vhBtnClose.result?.value;
-    if (closePos) {
-      await cdpClick(tabId, closePos.x, closePos.y);
-    }
-
-    sendSetupProgress("Workspace protection enabled");
-    setTimeout(() => {
-      chrome.tabs.sendMessage(senderTabId, { type: "remove-progress-toast" }).catch(() => {});
-    }, 3000);
-    return { ok: true };
-
-  } catch (e) {
-    console.error("[NewDocSetup] Error:", e.message);
-    try { await cdpPressKey(tabId, "Escape", 27); } catch (_) {}
-    sendSetupProgress(`Error: ${e.message}`);
-    setTimeout(() => {
-      chrome.tabs.sendMessage(senderTabId, { type: "remove-progress-toast" }).catch(() => {});
-    }, 5000);
-    return { error: e.message };
-  } finally {
-    // try { await cdpSend(tabId, "Input.setIgnoreInputEvents", { ignore: false }); } catch (_) {}
-    // hideCdpOverlay(senderTabId);
-    chrome.debugger.detach({ tabId }, () => {});
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Unpack Illegal Folders — CDP right-click > Unpack on non-standard folders
 // ---------------------------------------------------------------------------
 
 let _unpackInProgress = false;
 
+/**
+ * Right-click each named folder and select "Unpack" via CDP to dissolve it.
+ * Used to remove non-standard folder names (not in ALLOWED_FOLDERS).
+ * @param {number} tabId
+ * @param {number} senderTabId - Tab to receive unpack-progress / unpack-done messages
+ * @param {string[]} folderNames - Folder names to unpack
+ */
 async function unpackIllegalFolders(tabId, senderTabId, folderNames) {
   if (_unpackInProgress) {
     console.log("[Unpack] Already in progress, skipping");
@@ -2304,6 +2216,15 @@ const TAB_ICON_FOLDER_MAP = {
 
 let _sortingInProgress = false;
 
+/**
+ * Move root-level stray tabs into their matching folders via CDP drag-and-drop.
+ * Uses TAB_ICON_FOLDER_MAP to determine which folder each tab type belongs to.
+ * Pre-checks via executeScript (no debugger) before attaching CDP to avoid unnecessary overhead.
+ * @param {number} tabId
+ * @param {number} senderTabId - Tab to receive tab-sort-progress / tab-sort-done messages
+ * @param {boolean} [alreadyAttached=false] - Skip debugger attach if caller already attached
+ * @returns {Promise<{sorted:number, skipped:number, reason?:string}>}
+ */
 async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
   if (_sortingInProgress) {
     console.log("[TabSort] Already sorting, skipping");
@@ -2566,6 +2487,15 @@ async function sortStrayTabs(tabId, senderTabId, alreadyAttached = false) {
 
 let _interferenceInProgress = false;
 
+/**
+ * Run assembly interference detection via CDP automation.
+ * Opens each assembly element, navigates the Onshape interference UI, and collects results.
+ * Assembly list is sourced from stored scan results (0 extra API calls needed).
+ * @param {number} tabId - Target Onshape tab
+ * @param {number} senderTabId - Tab to receive interference-progress / interference-done messages
+ * @param {string} docId
+ * @param {string} wid
+ */
 async function checkInterference(tabId, senderTabId, docId, wid) {
   if (_interferenceInProgress) {
     console.log("[Interference] Already in progress, skipping");
@@ -2970,6 +2900,14 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
 // Export flat-pattern DXFs for the provided selection.
 // selectedPartStudios: [{ psId, psName, parts: [{partName, deterministicId}] }]
 // Returns array of { name: 'dxf/<safeName>.dxf', data: Uint8Array }.
+/**
+ * Export sheet-metal flat-pattern DXF files for the given Part Studios.
+ * Uses the internal exportinternal endpoint (not the public export API).
+ * @param {string} did - Document ID
+ * @param {string} wid - Workspace ID
+ * @param {Array<{psId:string, psName:string, configuration:string, parts:Array<{partName:string, deterministicId:string}>}>} selectedPartStudios
+ * @returns {Promise<Array<{name:string, data:Uint8Array}>>} Files ready for makeZip()
+ */
 async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
   const enc = new TextEncoder();
 
@@ -3046,6 +2984,13 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
 // Export drawings as PDFs for the provided selection.
 // selectedDrawings: [{ id, name }]
 // Returns array of { name: 'pdf/<safeName>.pdf', data: Uint8Array }.
+/**
+ * Export drawings as PDF files for the given drawing element list.
+ * @param {string} did
+ * @param {string} wid
+ * @param {Array<{id:string, name:string}>} selectedDrawings
+ * @returns {Promise<Array<{name:string, data:Uint8Array}>>} Files ready for makeZip()
+ */
 async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
   console.log("[BulkExport] Drawing elements:", selectedDrawings.map(e => e.name));
   chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `${selectedDrawings.length} drawing(s) to export` }).catch(() => {});
@@ -3100,6 +3045,11 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
 }
 
 // Pure-JS ZIP builder — no dependencies.
+/**
+ * Compute CRC-32 checksum of a byte array (used by makeZip).
+ * @param {Uint8Array} buf
+ * @returns {number} Unsigned 32-bit CRC
+ */
 function crc32(buf) {
   const t = new Uint32Array(256);
   for (let i = 0; i < 256; i++) { let c = i; for (let j = 0; j < 8; j++) c = (c & 1) ? (0xEDB88320 ^ (c >>> 1)) : (c >>> 1); t[i] = c; }
@@ -3107,6 +3057,11 @@ function crc32(buf) {
   for (let i = 0; i < buf.length; i++) crc = t[(crc ^ buf[i]) & 0xFF] ^ (crc >>> 8);
   return (crc ^ -1) >>> 0;
 }
+/**
+ * Build a ZIP archive from an array of files — pure JS, no dependencies.
+ * @param {Array<{name:string, data:Uint8Array}>} files
+ * @returns {Uint8Array} Raw ZIP bytes
+ */
 function makeZip(files) {
   const enc = new TextEncoder();
   const locals = [], dirs = [];
@@ -3136,6 +3091,11 @@ function makeZip(files) {
   let pos = 0; for (const a of all) { out.set(a, pos); pos += a.length; }
   return out;
 }
+/**
+ * Convert a Uint8Array to a base64 string using 8 KB chunks to avoid call-stack overflow.
+ * @param {Uint8Array} bytes
+ * @returns {string}
+ */
 function toBase64(bytes) {
   let s = "";
   for (let i = 0; i < bytes.length; i += 8192) s += String.fromCharCode(...bytes.subarray(i, i + 8192));
@@ -3149,10 +3109,20 @@ function toBase64(bytes) {
 function urdfSafeName(s) {
   return String(s || "link").replace(/\s+/g, "_").replace(/[^a-zA-Z0-9_\-]/g, "");
 }
+// Filename-safe name: strip Onshape instance marker " <N>", lowercase, each non-alnum → _
+function urdfFileName(s) {
+  const base = String(s || "part").replace(/\s*<\d+>\s*$/, '');
+  return base.toLowerCase().replace(/[^a-z0-9]/g, '_').replace(/^_+|_+$/g, '') || 'part';
+}
 function urdfEscXml(s) {
   return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
 }
 
+/**
+ * Concatenate multiple binary STL buffers into one, summing triangle counts.
+ * @param {Uint8Array[]} stlBuffers - Each must be a valid binary STL (≥84 bytes)
+ * @returns {Uint8Array} Merged binary STL
+ */
 function mergeBinaryStls(stlBuffers) {
   // Binary STL: 80-byte header + 4-byte uint32 triangle count + (count * 50 bytes per triangle)
   const validBufs = stlBuffers.filter(b => b && b.byteLength >= 84);
@@ -3168,6 +3138,42 @@ function mergeBinaryStls(stlBuffers) {
     const count = view.getUint32(80, true);
     out.set(new Uint8Array(buf.buffer, buf.byteOffset + 84, count * 50), offset);
     offset += count * 50;
+  }
+  return out;
+}
+
+// Apply a row-major 4×4 occurrence transform (12- or 16-element Onshape format) to every
+// vertex and normal in a binary STL, then subtract comOffset from each vertex.
+// Returns a new Uint8Array with the same triangle count.
+function transformStl(stlData, T, comOffset) {
+  const view = new DataView(stlData.buffer, stlData.byteOffset, stlData.byteLength);
+  const triCount = view.getUint32(80, true);
+  const out = new Uint8Array(84 + triCount * 50);
+  out.set(stlData.subarray(0, 80)); // preserve header
+  const outView = new DataView(out.buffer);
+  outView.setUint32(80, triCount, true);
+  const cx = comOffset[0], cy = comOffset[1], cz = comOffset[2];
+  for (let i = 0; i < triCount; i++) {
+    const ib = 84 + i * 50, ob = 84 + i * 50;
+    // Normal — rotate only (no translation)
+    const nx = view.getFloat32(ib,     true);
+    const ny = view.getFloat32(ib + 4, true);
+    const nz = view.getFloat32(ib + 8, true);
+    outView.setFloat32(ob,     T[0]*nx + T[1]*ny + T[2]*nz,  true);
+    outView.setFloat32(ob + 4, T[4]*nx + T[5]*ny + T[6]*nz,  true);
+    outView.setFloat32(ob + 8, T[8]*nx + T[9]*ny + T[10]*nz, true);
+    // 3 vertices — rotate + translate, then subtract COM so mesh is in link COM frame
+    for (let v = 0; v < 3; v++) {
+      const vi = ib + 12 + v * 12, vo = ob + 12 + v * 12;
+      const x = view.getFloat32(vi,     true);
+      const y = view.getFloat32(vi + 4, true);
+      const z = view.getFloat32(vi + 8, true);
+      outView.setFloat32(vo,     T[0]*x + T[1]*y + T[2]*z + T[3]   - cx, true);
+      outView.setFloat32(vo + 4, T[4]*x + T[5]*y + T[6]*z + T[7]   - cy, true);
+      outView.setFloat32(vo + 8, T[8]*x + T[9]*y + T[10]*z + T[11] - cz, true);
+    }
+    // Attribute bytes — copy verbatim
+    outView.setUint16(ob + 48, view.getUint16(ib + 48, true), true);
   }
   return out;
 }
@@ -3263,6 +3269,16 @@ function extractMateParams(featureMessage) {
   return params;
 }
 
+/**
+ * Generate a complete URDF robot description from an Onshape assembly.
+ * Fetches assembly definition, features, mate values, and STL meshes; resolves
+ * sub-assembly hierarchy; maps Onshape mates to URDF joints; downloads per-link STLs.
+ * @param {string} did - Document ID
+ * @param {string} wid - Workspace ID
+ * @param {string} eid - Assembly element ID
+ * @param {string} [configuration] - Onshape configuration string (optional)
+ * @returns {Promise<void>} Broadcasts urdf-progress messages; sends urdf-done on completion
+ */
 async function generateUrdf(did, wid, eid, configuration) {
   const bcast = (msg, cls) =>
     chrome.runtime.sendMessage({ type: "urdf-progress", message: msg, cls }).catch(() => {});
@@ -3277,12 +3293,13 @@ async function generateUrdf(did, wid, eid, configuration) {
   );
   let elementsName = null;
   try {
-    const elementsResp = await onshapeFetch(`/api/v9/documents/d/${did}/elements?elementId=${eid}`);
-    elementsName = elementsResp?.[0]?.name ?? null;
+    const elementsResp = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements?elementId=${eid}`);
+    elementsName = (Array.isArray(elementsResp) ? elementsResp : elementsResp?.items)?.[0]?.name ?? null;
   } catch (e) {
     bcast(`  NOTE: element name fetch failed — using fallback name (${e.message})`, "log-warn");
   }
-  const robotName = urdfSafeName(elementsName || asmDef.rootAssembly?.name || "robot");
+  const robotName   = urdfFileName(elementsName || asmDef.rootAssembly?.name || "robot");
+  const asmLinkName = urdfFileName(asmDef.rootAssembly?.name || 'assembly_1') || 'assembly_1';
 
   // Pin to the assembly's microversion so the features fetch is consistent with
   // the occurrences snapshot even if the document is edited during export.
@@ -3380,6 +3397,7 @@ async function generateUrdf(did, wid, eid, configuration) {
   const partKeyOf = inst => `${inst.partId}|${inst.elementId}|${inst.documentId || did}`;
   const uniquePartMap = {};
   for (const { inst } of allPartOccs) {
+    if (inst.suppressed) continue;
     const k = partKeyOf(inst);
     if (!uniquePartMap[k]) uniquePartMap[k] = inst;
   }
@@ -3389,18 +3407,23 @@ async function generateUrdf(did, wid, eid, configuration) {
   // STL export — direct /parts/.../stl endpoint (no translation job polling)
   // ---------------------------------------------------------------------------
   const STL_WARN = 40;
-  const keyToMesh = {};
-  const stlFiles  = [];
-  const wvidCache = {}; // docId → workspace id for external docs (shared with mass props)
+  const keyToMesh  = {};
+  const keyToColor = {}; // partKey → [r, g, b, a] (0-1 range)
+  const stlFiles   = [];
+  const wvidCache  = {}; // docId → workspace id for external docs (shared with mass props)
 
   if (uniqueKeys.length > STL_WARN) {
     bcast(`NOTE: ${uniqueKeys.length} unique parts — export may take several minutes.`, "log-warn");
   }
   bcast(`Exporting ${uniqueKeys.length} STL mesh(es)...`);
+  const stlNameCount = {};
   for (const key of uniqueKeys) {
-    const inst  = uniquePartMap[key];
-    const safe  = urdfSafeName(inst.name || inst.partId || "part");
-    const fname = `meshes/${safe}.stl`;
+    const inst     = uniquePartMap[key];
+    const baseName = urdfFileName(inst.name || inst.partId || "part");
+    stlNameCount[baseName] = (stlNameCount[baseName] || 0) + 1;
+    const n    = stlNameCount[baseName];
+    const safe = n === 1 ? baseName : `${baseName}__${n}`;
+    const fname = `assets/${safe}.stl`;
     bcast(`  ${inst.name || inst.partId}...`);
     try {
       const exportDid = inst.documentId || did;
@@ -3420,18 +3443,52 @@ async function generateUrdf(did, wid, eid, configuration) {
       }
       const resp = await fetch(
         `${ONSHAPE_BASE}/api/v6/parts/d/${exportDid}/${wvm}/e/${inst.elementId}` +
-        `/partid/${encodeURIComponent(inst.partId)}/stl?mode=binary&units=meter`,
+        `/partid/${encodeURIComponent(inst.partId)}/stl?mode=binary&units=meter&angleTolerance=0.3`,
         { credentials: "include" }
       );
       if (!resp.ok) throw new Error(`STL ${resp.status}`);
       const data = new Uint8Array(await resp.arrayBuffer());
       stlFiles.push({ name: fname, data });
       keyToMesh[key] = fname;
+      const partJson = JSON.stringify({
+        configuration:        inst.configuration || 'default',
+        documentId:           inst.documentId || did,
+        documentMicroversion: inst.documentMicroversion || '',
+        documentVersion:      inst.documentVersion || '',
+        elementId:            inst.elementId,
+        fullConfiguration:    inst.fullConfiguration || inst.configuration || 'default',
+        id:                   inst.id,
+        isStandardContent:    inst.isStandardContent || false,
+        name:                 inst.name || '',
+        partId:               inst.partId,
+        suppressed:           inst.suppressed || false,
+        type:                 inst.type || 'Part',
+      }, null, 4);
+      stlFiles.push({ name: `assets/${safe}.part`, data: new TextEncoder().encode(partJson) });
       bcast(`  OK: ${safe}.stl`, "log-ok");
     } catch (e) {
       bcast(`  ERROR: ${inst.name}: ${e.message}`, "log-err");
       keyToMesh[key] = null;
     }
+
+    // Fetch part color from Onshape metadata (same wvm already resolved above)
+    try {
+      const exportDid = inst.documentId || did;
+      const wvm = exportDid === did          ? `w/${wid}` :
+                  inst.documentVersion       ? `v/${inst.documentVersion}` :
+                  wvidCache[exportDid]       ? `w/${wvidCache[exportDid]}` : `w/${wid}`;
+      const meta = await onshapeFetch(
+        `/api/metadata/d/${exportDid}/${wvm}/e/${inst.elementId}/p/${encodeURIComponent(inst.partId)}`
+      );
+      for (const entry of (meta?.properties ?? [])) {
+        if (entry.value && typeof entry.value === 'object' && entry.value.color) {
+          const { red, green, blue } = entry.value.color;
+          const a = entry.value.opacity ?? 255;
+          keyToColor[key] = [red / 255, green / 255, blue / 255, a / 255];
+          break;
+        }
+      }
+    } catch (_) { /* color fetch failed — will use default grey */ }
   }
 
   // ---------------------------------------------------------------------------
@@ -3441,12 +3498,12 @@ async function generateUrdf(did, wid, eid, configuration) {
   const massPropsMap = {}; // partKey → { mass, centroid, inertia }
 
   // 3×3 inertia change-of-basis: I_local = R^T * I_world * R
-  // Onshape may return inertia as 9 or 12 elements (12 = 3×4 with zero padding per row)
+  // Onshape returns inertia as 9 or 12 elements in row-major 3×3 order (stride=3);
+  // elements 9–11 are unused padding when length=12 — stride is always 3.
   function transformInertia(iw, linkTr) {
-    const stride = iw.length >= 12 ? 4 : 3;
     const I  = [[iw[0], iw[1], iw[2]],
-                [iw[stride], iw[stride+1], iw[stride+2]],
-                [iw[2*stride], iw[2*stride+1], iw[2*stride+2]]];
+                [iw[3], iw[4], iw[5]],
+                [iw[6], iw[7], iw[8]]];
     const R  = [[linkTr[0],linkTr[1],linkTr[2]],
                 [linkTr[4],linkTr[5],linkTr[6]],
                 [linkTr[8],linkTr[9],linkTr[10]]];
@@ -3467,12 +3524,15 @@ async function generateUrdf(did, wid, eid, configuration) {
         `/api/v6/parts/d/${exportDid}/${wvm}/e/${inst.elementId}` +
         `/partid/${encodeURIComponent(inst.partId)}/massproperties?useMassPropertyOverrides=true`
       );
-      // Per-part endpoint returns properties at top level (not nested under .bodies)
+      // Per-part endpoint returns data nested under mp.bodies[partId]
+      // (mass/centroid/inertia are each arrays of 3 values: min/nominal/max tolerance)
       if (mp) {
+        const body = (mp.bodies && mp.bodies[inst.partId]) ||
+                     Object.values(mp.bodies || {})[0] || {};
         massPropsMap[pkey] = {
-          mass:     (Array.isArray(mp.mass) ? mp.mass[0] : mp.mass) ?? 1.0,
-          centroid: mp.centroid     ?? [0, 0, 0],
-          inertia:  mp.inertia      ?? Array(12).fill(0),
+          mass:     (Array.isArray(body.mass) ? body.mass[0] : body.mass) ?? 1.0,
+          centroid: body.centroid ?? [0, 0, 0],
+          inertia:  body.inertia  ?? Array(9).fill(0),
         };
       }
     } catch (e) {
@@ -3607,34 +3667,106 @@ async function generateUrdf(did, wid, eid, configuration) {
     childKeys.add(cKey);
   }
 
+  // ---------------------------------------------------------------------------
+  // Collect frame mate connectors (mateConnectors named "frame_*" become
+  // dummy URDF links, matching onshape-to-robot behaviour).
+  // Assembly definition features use top-level featureType (not wrapped in .message).
+  // ---------------------------------------------------------------------------
+  const frames = []; // { name, origin: [x,y,z], rpy: [r,p,y] }
+  for (const feat of (asmDef.rootAssembly?.features || [])) {
+    if (feat.featureType !== "mateConnector" || feat.suppressed) continue;
+    const fd    = feat.featureData || {};
+    const fname = fd.name || "";
+    if (!fname.startsWith("frame_")) continue;
+    const frameName = fname.slice("frame_".length);
+    if (!frameName) continue;
+
+    // Look up the world transform of the occurrence the connector is attached to
+    const occPath = fd.matedOccurrence || [];
+    const occKey  = occPath.join("/");
+    const occ     = occByKey[occKey];
+
+    // Normalise mateConnectorCS: Onshape may return arrays or {x,y,z} objects
+    const rawCS = fd.mateConnectorCS || {};
+    const toVec = (v, def) => Array.isArray(v) ? v : (v ? [v.x ?? def[0], v.y ?? def[1], v.z ?? def[2]] : def);
+    const cs = {
+      xAxis:  toVec(rawCS.xAxis,  [1, 0, 0]),
+      yAxis:  toVec(rawCS.yAxis,  [0, 1, 0]),
+      zAxis:  toVec(rawCS.zAxis,  [0, 0, 1]),
+      origin: toVec(rawCS.origin, [0, 0, 0]),
+    };
+
+    const T_occ_frame   = urdfMatedCSToMat4(cs);
+    const T_world_frame = occ?.transform
+      ? urdfMat4Mul(occ.transform, T_occ_frame)
+      : T_occ_frame;
+    // Root link has identity world transform → T_root_frame = T_world_frame
+    const frameOrigin = [T_world_frame[3], T_world_frame[7], T_world_frame[11]];
+    const frameRpy    = urdfRotToRpy(T_world_frame);
+    frames.push({ name: urdfSafeName(frameName), origin: frameOrigin, rpy: frameRpy });
+  }
+  bcast(`  ${frames.length} frame connector(s) detected.`);
+
   // Determine which part occurrences are "movable" (children of a non-fixed joint)
   const movableChildKeys = new Set(
     joints.filter(j => j.type !== 'fixed').map(j => j.cKey)
   );
 
-  bcast('Merging fixed-part STLs...');
-  const fixedStlBuffers = [];
-  for (const { inst, key } of allPartOccs) {
-    if (movableChildKeys.has(key)) continue;  // movable part — keep individual
-    const mesh = keyToMesh[partKeyOf(inst)];
-    if (!mesh) continue;
-    const fileEntry = stlFiles.find(f => f.name === mesh);
-    if (fileEntry) fixedStlBuffers.push(fileEntry.data);
-  }
-  const mergedStlData = mergeBinaryStls(fixedStlBuffers);
-  const mergedMeshName = 'meshes/merged_visual.stl';
+  bcast('Building merged assembly STL (client-side)...');
+  let mergedStlData;
+  try {
+    // Index the already-downloaded per-part STL binaries by partKey.
+    // stlFiles contains both .stl and .part entries; keyToMesh maps partKey → .stl filename.
+    const stlByName = {};
+    for (const f of stlFiles) stlByName[f.name] = f.data;
+    const stlDataByKey = {};
+    for (const [k, fname] of Object.entries(keyToMesh)) {
+      if (fname && stlByName[fname]) stlDataByKey[k] = stlByName[fname];
+    }
+    bcast(`  DBG: allPartOccs=${allPartOccs.length} stlFiles=${stlFiles.length} keyToMesh=${Object.keys(keyToMesh).length} stlByName=${Object.keys(stlByName).length} stlDataByKey=${Object.keys(stlDataByKey).length}`);
+    if (allPartOccs.length > 0) {
+      const sampleInst = allPartOccs[0].inst;
+      const samplePkey = partKeyOf(sampleInst);
+      const stlKeys = Object.keys(stlDataByKey);
+      bcast(`  DBG sample pkey="${samplePkey}" stlDataByKey[0]="${stlKeys[0] || '(empty)'}" match=${stlDataByKey[samplePkey] ? 'YES' : 'NO'}`);
+    }
 
-  // Replace stlFiles with: merged STL + only the movable-part STLs
-  const movableStlNames = new Set(
-    allPartOccs
-      .filter(({ key }) => movableChildKeys.has(key))
-      .map(({ inst }) => keyToMesh[partKeyOf(inst)])
-      .filter(Boolean)
-  );
+    // Merge only the fixed (non-movable, non-suppressed) part occurrences.
+    // Each mesh is transformed from part-local → world frame via occ.transform, then shifted
+    // to the assembly COM frame by subtracting asmMassProps.centroid — matching onshape-to-robot.
+    const comOffset = asmMassProps ? asmMassProps.centroid : [0, 0, 0];
+    const fixedStls = [];
+    let nMovable = 0, nSuppressed = 0, nMissing = 0, nTooSmall = 0;
+    for (const { occ, inst, key } of allPartOccs) {
+      if (movableChildKeys.has(key)) { nMovable++; continue; }
+      if (inst.suppressed) { nSuppressed++; continue; }
+      const pkey = partKeyOf(inst);
+      const stlData = stlDataByKey[pkey];
+      if (!stlData) { nMissing++; continue; }
+      if (stlData.byteLength <= 84) { nTooSmall++; continue; }
+      // Identity fallback for occurrences with no transform (part at assembly origin)
+      const T = occ.transform || [1,0,0,0, 0,1,0,0, 0,0,1,0];
+      fixedStls.push(transformStl(stlData, T, comOffset));
+    }
+    bcast(`  DBG: movable=${nMovable} suppressed=${nSuppressed} missing=${nMissing} tooSmall=${nTooSmall} fixed=${fixedStls.length}`);
+    if (fixedStls.length === 0) throw new Error('no fixed-part STLs available to merge');
+    mergedStlData = mergeBinaryStls(fixedStls);
+    bcast(`  Merged ${fixedStls.length} fixed-part STL(s) (${mergedStlData.byteLength} bytes).`, 'log-ok');
+  } catch (e) {
+    bcast(`  NOTE: merged STL failed — ${e.message}`, 'log-warn');
+    mergedStlData = new Uint8Array(84); // minimal valid binary STL (zero triangles)
+  }
+  const mergedVisualName    = `assets/merged/${asmLinkName}_visual.stl`;
+  const mergedCollisionName = `assets/merged/${asmLinkName}_collision.stl`;
+
+  // ZIP contains: merged visual+collision STLs + all individual per-part STLs
   const finalStlFiles = [
-    { name: mergedMeshName, data: mergedStlData },
-    ...stlFiles.filter(f => movableStlNames.has(f.name)),
+    { name: mergedVisualName,    data: mergedStlData },
+    { name: mergedCollisionName, data: mergedStlData },
+    ...stlFiles,
   ];
+
+  const mergedColor = [0.5, 0.5, 0.5, 1.0];
 
   // ---------------------------------------------------------------------------
   // Build URDF XML
@@ -3642,34 +3774,42 @@ async function generateUrdf(did, wid, eid, configuration) {
   bcast('Writing URDF...');
   let xml = `<?xml version="1.0"?>\n<robot name="${urdfEscXml(robotName)}">\n\n`;
   xml += `  <!-- Generated by Onshape Assistant URDF Export -->\n\n`;
-  xml += `  <link name="base_link"/>\n\n`;
 
-  // ONE merged assembly link for all fixed parts
-  const asmLinkName = urdfSafeName(robotName) || 'assembly_1';
-  const mergedPkg = `package://${urdfEscXml(robotName)}/${urdfEscXml(mergedMeshName)}`;
+  // ONE merged assembly link for all fixed parts — this is the root link (no parent)
+  const mergedVisualPkg    = `package://assets/merged/${urdfEscXml(asmLinkName)}_visual.stl`;
+  const mergedCollisionPkg = `package://assets/merged/${urdfEscXml(asmLinkName)}_collision.stl`;
+  xml += `  <!-- Link ${urdfEscXml(asmLinkName)} -->\n`;
   xml += `  <link name="${urdfEscXml(asmLinkName)}">\n`;
   if (asmMassProps && asmMassProps.mass > 0) {
     const c = asmMassProps.centroid;
     const iw = asmMassProps.inertia;
-    const stride = iw.length >= 12 ? 4 : 3;
+    bcast(`  DBG inertia raw (${iw.length} elem): [${Array.from(iw).map(v=>v.toFixed(6)).join(', ')}]`);
     xml += `    <inertial>\n`;
     xml += `      <origin xyz="${c[0].toFixed(7)} ${c[1].toFixed(7)} ${c[2].toFixed(7)}" rpy="0 0 0"/>\n`;
     xml += `      <mass value="${asmMassProps.mass.toFixed(5)}"/>\n`;
-    xml += `      <inertia ixx="${iw[0].toFixed(7)}" ixy="${iw[1].toFixed(7)}" ixz="${iw[2].toFixed(7)}" iyy="${iw[stride+1].toFixed(7)}" iyz="${iw[stride+2].toFixed(7)}" izz="${iw[2*stride+2].toFixed(7)}"/>\n`;
+    xml += `      <inertia ixx="${iw[0].toFixed(7)}" ixy="${iw[1].toFixed(7)}" ixz="${iw[2].toFixed(7)}" iyy="${iw[4].toFixed(7)}" iyz="${iw[5].toFixed(7)}" izz="${iw[8].toFixed(7)}"/>\n`;
     xml += `    </inertial>\n`;
   }
   if (mergedStlData.byteLength > 84) {
-    xml += `    <visual><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="${mergedPkg}"/></geometry></visual>\n`;
-    xml += `    <collision><origin xyz="0 0 0" rpy="0 0 0"/><geometry><mesh filename="${mergedPkg}"/></geometry></collision>\n`;
+    const cx = asmMassProps ? asmMassProps.centroid[0] : 0;
+    const cy = asmMassProps ? asmMassProps.centroid[1] : 0;
+    const cz = asmMassProps ? asmMassProps.centroid[2] : 0;
+    xml += `    <!-- Part ${urdfEscXml(asmLinkName)}_parts -->\n`;
+    xml += `    <visual>\n`;
+    xml += `      <origin xyz="${cx.toFixed(7)} ${cy.toFixed(7)} ${cz.toFixed(7)}" rpy="0 0 0"/>\n`;
+    xml += `      <geometry>\n`;
+    xml += `        <mesh filename="${mergedVisualPkg}"/>\n`;
+    xml += `      </geometry>\n`;
+    xml += `      <material name="${urdfEscXml(asmLinkName)}_material"><color rgba="${mergedColor[0]} ${mergedColor[1]} ${mergedColor[2]} ${mergedColor[3]}"/></material>\n`;
+    xml += `    </visual>\n`;
+    xml += `    <collision>\n`;
+    xml += `      <origin xyz="${cx.toFixed(7)} ${cy.toFixed(7)} ${cz.toFixed(7)}" rpy="0 0 0"/>\n`;
+    xml += `      <geometry>\n`;
+    xml += `        <mesh filename="${mergedCollisionPkg}"/>\n`;
+    xml += `      </geometry>\n`;
+    xml += `    </collision>\n`;
   }
   xml += `  </link>\n\n`;
-
-  // Fixed joint: base_link → assembly link at origin
-  xml += `  <joint name="${urdfEscXml(asmLinkName)}_frame" type="fixed">\n`;
-  xml += `    <origin xyz="0 0 0" rpy="0 0 0"/>\n`;
-  xml += `    <parent link="base_link"/>\n`;
-  xml += `    <child link="${urdfEscXml(asmLinkName)}"/>\n`;
-  xml += `  </joint>\n\n`;
 
   // Individual links for movable parts only
   for (const { inst, occ, key } of allPartOccs) {
@@ -3694,17 +3834,36 @@ async function generateUrdf(did, wid, eid, configuration) {
       xml += `    </inertial>\n`;
     }
     if (mesh) {
-      const pkg2 = `package://${urdfEscXml(robotName)}/${urdfEscXml(mesh)}`;
-      xml += `    <visual><geometry><mesh filename="${pkg2}"/></geometry></visual>\n`;
+      const pkg2 = `package://${urdfEscXml(mesh)}`;
+      const pc = keyToColor[partKeyOf(inst)] || [0.7, 0.7, 0.7, 1.0];
+      xml += `    <visual>\n`;
+      xml += `      <geometry><mesh filename="${pkg2}"/></geometry>\n`;
+      xml += `      <material name="${urdfEscXml(lname)}_material"><color rgba="${pc[0]} ${pc[1]} ${pc[2]} ${pc[3]}"/></material>\n`;
+      xml += `    </visual>\n`;
       xml += `    <collision><geometry><mesh filename="${pkg2}"/></geometry></collision>\n`;
     }
     xml += `  </link>\n\n`;
   }
 
-  // Sub-assembly bare links (from Bug 3 fix — keep these)
-  for (const { key } of allAsmOccs) {
-    const lname = occLinkName.get(key);
-    if (lname) xml += `  <link name="${urdfEscXml(lname)}"/>\n\n`;
+  // Frame links + joints (dummy fixed links for mate connectors named "frame_*")
+  for (const fr of frames) {
+    const [ox, oy, oz] = fr.origin;
+    const [ro, rp, ry] = fr.rpy;
+    xml += `  <!-- Frame ${urdfEscXml(fr.name)} (dummy link + fixed joint) -->\n`;
+    xml += `  <link name="${urdfEscXml(fr.name)}">\n`;
+    xml += `    <origin xyz="0 0 0" rpy="0 0 0"/>\n`;
+    xml += `    <inertial>\n`;
+    xml += `      <origin xyz="0 0 0" rpy="0 0 0"/>\n`;
+    xml += `      <mass value="1e-9"/>\n`;
+    xml += `      <inertia ixx="0" ixy="0" ixz="0" iyy="0" iyz="0" izz="0"/>\n`;
+    xml += `    </inertial>\n`;
+    xml += `  </link>\n`;
+    xml += `  <joint name="${urdfEscXml(fr.name)}_frame" type="fixed">\n`;
+    xml += `    <origin xyz="${ox.toFixed(6)} ${oy.toFixed(6)} ${oz.toFixed(6)}" rpy="${ro.toFixed(6)} ${rp.toFixed(6)} ${ry.toFixed(6)}"/>\n`;
+    xml += `    <parent link="${urdfEscXml(asmLinkName)}"/>\n`;
+    xml += `    <child link="${urdfEscXml(fr.name)}"/>\n`;
+    xml += `    <axis xyz="0 0 0"/>\n`;
+    xml += `  </joint>\n\n`;
   }
 
   // Mate joints (non-fixed: parent is individual link, child is individual link)
@@ -3747,14 +3906,16 @@ async function generateUrdf(did, wid, eid, configuration) {
     max_stl_size:    10,
   }, null, 2);
   const zip = makeZip([
-    { name: 'robot.urdf',   data: enc.encode(xml) },
+    { name: `${robotName}.urdf`,   data: enc.encode(xml) },
     { name: 'config.json',  data: enc.encode(configJson) },
     ...finalStlFiles,
   ]);
-  const zipBase64 = toBase64(zip);
   const zipName   = `${robotName}_urdf.zip`;
-  bcast(`Done — ${finalStlFiles.length} STL(s) + robot.urdf + config.json`, 'log-ok');
-  chrome.runtime.sendMessage({ type: 'urdf-done', zipBase64, zipName }).catch(() => {});
+  bcast(`Done — ${finalStlFiles.length} STL(s) (incl. merged visual+collision) + ${robotName}.urdf + config.json`, 'log-ok');
+  const zipBlob = new Blob([zip], { type: 'application/zip' });
+  const zipBlobUrl = URL.createObjectURL(zipBlob);
+  chrome.downloads.download({ url: zipBlobUrl, filename: zipName, saveAs: false }, () => URL.revokeObjectURL(zipBlobUrl));
+  chrome.runtime.sendMessage({ type: 'urdf-done', zipName }).catch(() => {});
 }
 
 // ---------------------------------------------------------------------------
@@ -4695,7 +4856,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         if (!files.length) throw new Error("No files exported");
         for (const file of files) {
-          chrome.downloads.download({ url: "data:application/octet-stream;base64," + toBase64(file.data), filename: file.name, saveAs: true });
+          const blob = new Blob([file.data], { type: 'application/octet-stream' });
+          const blobUrl = URL.createObjectURL(blob);
+          chrome.downloads.download({ url: blobUrl, filename: file.name, saveAs: true }, () => URL.revokeObjectURL(blobUrl));
         }
         chrome.runtime.sendMessage({ type: "export-3d-done", count: files.length }).catch(() => {});
       } catch (e) {
@@ -4708,7 +4871,11 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     const { url, configuration } = msg;
     if (!url) { sendResponse({ ok: true }); return; }
     sendResponse({ ok: true });
-    (async () => {
+    // Web Lock keeps Chrome from terminating the SW during the long export.
+    // navigator.locks.request holds the lock (and the SW alive) for the
+    // entire duration of the async callback, unlike chrome.alarms which only
+    // wake a new SW instance after termination.
+    navigator.locks.request('urdf-export', async () => {
       try {
         const parsed = parsePartStudioUrl(url);
         if (!parsed) throw new Error("Invalid assembly URL — must contain /documents/{did}/w/{wid}/e/{eid}");
@@ -4716,7 +4883,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (e) {
         chrome.runtime.sendMessage({ type: "urdf-done", error: e.message }).catch(() => {});
       }
-    })();
+    });
     return;
 
   } else if (msg.type === "fetch-bom-configs") {
@@ -4870,82 +5037,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
 
-  } else if (msg.type === "check-and-setup-doc") {
-    const { docId, wid } = msg;
-    const tabId = sender.tab?.id;
-    if (!docId || !wid || !tabId) { sendResponse({ skipped: true }); return; }
-    (async () => {
-      try {
-        // Already done for this doc?
-        const stored = await new Promise(r => chrome.storage.local.get(`docSetupDone_${docId}`, r));
-        if (stored[`docSetupDone_${docId}`]) { sendResponse({ skipped: true }); return; }
-
-        // Doc already set up if it has more than 1 version ("Start" is the default)
-        const versions = await onshapeFetch(`/api/v10/documents/d/${docId}/versions`).catch(() => []);
-        const versionList = Array.isArray(versions) ? versions : (versions.items || []);
-        if (versionList.length > 1) {
-          chrome.storage.local.set({ [`docSetupDone_${docId}`]: true });
-          sendResponse({ skipped: true });
-          return;
-        }
-
-        // Fetch all elements once
-        const elements = await onshapeFetch(`/api/v10/documents/d/${docId}/w/${wid}/elements`).catch(() => []);
-        const items = Array.isArray(elements) ? elements : (elements.items || []);
-        const partStudios = items.filter(e => e.elementType === "PARTSTUDIO");
-        const assemblies  = items.filter(e => e.elementType === "ASSEMBLY");
-
-        // Check PS feature counts (stop at first hit)
-        let shouldTrigger = false;
-        for (const ps of partStudios) {
-          const resp = await onshapeFetch(`/api/v10/partstudios/d/${docId}/w/${wid}/e/${ps.id}/features`).catch(() => null);
-          const count = Array.isArray(resp?.features) ? resp.features.length : 0;
-          if (count >= 25) { shouldTrigger = true; break; }
-        }
-
-        // Check assembly instance counts (stop at first hit)
-        if (!shouldTrigger) {
-          for (const asm of assemblies) {
-            const resp = await onshapeFetch(`/api/v10/assemblies/d/${docId}/w/${wid}/e/${asm.id}`).catch(() => null);
-            const count = resp?.rootAssembly?.instances?.length ?? 0;
-            if (count >= 5) { shouldTrigger = true; break; }
-          }
-        }
-
-        if (!shouldTrigger) { sendResponse({ triggered: false }); return; }
-
-        // Mark done before running setup (prevent double-trigger on concurrent calls)
-        chrome.storage.local.set({ [`docSetupDone_${docId}`]: true });
-        sendResponse({ triggered: true });
-
-        // Run setup sequence
-        const vResult = await createInitialVersion(docId, wid);
-        if (!vResult.ok) {
-          chrome.tabs.sendMessage(tabId, { type: "setup-new-doc-done", success: false, error: "Version creation failed" }).catch(() => {});
-          return;
-        }
-
-        const bResult = await createDevelopmentBranch(docId, vResult.versionId);
-        if (!bResult.ok) {
-          chrome.tabs.sendMessage(tabId, { type: "setup-new-doc-done", success: false, error: "Branch creation failed" }).catch(() => {});
-          return;
-        }
-
-        const pResult = await enableWorkspaceProtection(tabId, tabId);
-        chrome.tabs.sendMessage(tabId, {
-          type: "setup-new-doc-done",
-          success: !!pResult?.ok,
-          protectionSkipped: pResult?.skipped,
-          error: pResult?.error,
-        }).catch(() => {});
-
-      } catch (e) {
-        console.error("[NewDocSetup] check-and-setup-doc error:", e.message);
-        sendResponse({ error: e.message });
-      }
-    })();
-    return true;
-
   } else if (msg.type === "register-compliance-webhook") {
     (async () => {
       try {
@@ -5058,6 +5149,11 @@ chrome.notifications.onClicked.addListener((notificationId) => {
 // Storage cleanup — remove entries for deleted/inaccessible documents
 // ---------------------------------------------------------------------------
 
+/**
+ * Remove chrome.storage.local entries for docs that returned 404 from the Onshape API.
+ * Only removes on explicit 404 — never on network errors, 403, or 429 to avoid data loss.
+ * Also deletes orphaned merge-permissions from the sync Worker.
+ */
 async function cleanupDeletedDocs() {
   const keys = ["docScanResults", "mergePermissions", "interferenceResults", "tabCounts"];
   const data = await chrome.storage.local.get(keys);
@@ -5117,6 +5213,11 @@ function isExtensionBusy() {
 
 let _updatePending = false; // true when update detected but waiting for busy ops to finish
 
+/**
+ * Detect if a git pull has updated the unpacked extension and trigger chrome.runtime.reload().
+ * Compares the current manifest.json version on disk against the version loaded at SW start.
+ * Waits until all long-running operations finish before reloading (isExtensionBusy guard).
+ */
 async function checkForLocalUpdate() {
   try {
     const resp = await fetch(chrome.runtime.getURL("manifest.json"), { cache: "no-store" });
