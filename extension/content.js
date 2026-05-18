@@ -123,7 +123,7 @@
    * Clicks "All tabs" breadcrumb first to reset to root view.
    * NOTE: Folder navigation via DOM clicks is blocked by Onshape (isTrusted check) —
    * assembly counts per folder are enriched later in background.js storeDocScanResult().
-   * @returns {Promise<{doc_id:string, wid:string, doc_name:string, folders:object, root_tabs:string[], part_studio_count:number}|null>}
+   * @returns {Promise<{doc_id:string, wid:string, doc_name:string, folders:object, root_tabs:string[], part_studio_count:number, assembly_count:number}|null>}
    */
   async function scanTabFolders() {
     if (_scanning) return null; // another scan already running
@@ -140,6 +140,7 @@
         folders: {},
         root_tabs: [],
         part_studio_count: 0,
+        assembly_count: 0,
       };
 
       // Step 1: Click "All tabs" to ensure we're at root
@@ -163,6 +164,7 @@
         } else {
           result.root_tabs.push(item.text);
           if (item.tabType === 'partstudio') result.part_studio_count++;
+          if (item.tabType === 'assembly') result.assembly_count++;
         }
       }
 
@@ -318,8 +320,8 @@
     const multiAssembly = Object.entries(folderData).some(
       ([, data]) => typeof data === "object" && data.assemblies > 1
     );
-    if (result.part_studio_count === 1) {
-      console.log('[Scanner] Notification suppressed — single part studio document');
+    if (result.part_studio_count === 1 || result.assembly_count === 1) {
+      console.log('[Scanner] Notification suppressed — single part studio or single assembly document');
       return;
     }
     if (illegal.length > 0 || multiAssembly || folders.length === 0) {

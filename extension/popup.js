@@ -644,6 +644,7 @@ document.getElementById("btnRunExport3d").addEventListener("click", () => {
 // ---------------------------------------------------------------------------
 
 let _urdfUrl = "";
+let _urdfKeepalivePort = null;
 
 function appendUrdfLog(text, cls) {
   const $log = document.getElementById("urdfLog");
@@ -699,6 +700,8 @@ document.getElementById("btnGenerateUrdf").addEventListener("click", () => {
   btn.disabled = true;
   document.getElementById("urdfLog").innerHTML = "";
   appendUrdfLog("Starting URDF export...");
+  // Open a persistent port — Chrome keeps the SW alive for the entire duration.
+  _urdfKeepalivePort = chrome.runtime.connect({ name: "urdf-export-keepalive" });
   chrome.runtime.sendMessage({ type: "export-urdf", url: _urdfUrl, configuration }, (response) => {
     if (!response) {
       appendUrdfLog("No response from background — try reloading extension", "log-err");
@@ -1158,6 +1161,7 @@ chrome.runtime.onMessage.addListener((msg) => {
   } else if (msg.type === "urdf-progress") {
     appendUrdfLog(msg.message, msg.cls);
   } else if (msg.type === "urdf-done") {
+    if (_urdfKeepalivePort) { _urdfKeepalivePort.disconnect(); _urdfKeepalivePort = null; }
     document.getElementById("btnGenerateUrdf").disabled = false;
     if (msg.error) {
       appendUrdfLog("Error: " + msg.error, "log-err");

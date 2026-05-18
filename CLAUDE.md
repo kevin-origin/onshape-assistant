@@ -1,5 +1,8 @@
 # Onshape Assistant — CLAUDE.md
 
+## Reference repo
+onshape-to-robot source is cloned locally at `onshape-to-robot-ref/` (gitignored). Use Grep/Read on it directly — do NOT fetch from GitHub. Key files: `onshape_to_robot/robot.py`, `onshape_to_robot/onshape.py`, `onshape_to_robot/utils.py`.
+
 ## File map
 ```
 extension/
@@ -115,8 +118,8 @@ Edit assigned file only · MV3/addEventListener · session cookies only · never
 
 **Crons (create after all agents briefed):**
 ```
-CronCreate(cron:"7 * * * *", prompt:"Hourly usage sweep: /usage every active agent pane, capture %, send Escape. Warn Kevin ≥75%, mark exhausted + reassign if out of usage.")
-CronCreate(cron:"17,47 * * * *", prompt:"Context sweep: /context on yourself first (compact if <50% free), then each agent pane. Send /compact to any agent <50% free. Report all %s.")
+CronCreate(cron:"7 */2 * * *", prompt:"Hourly usage sweep: /usage every active agent pane, capture %, send Escape. Warn Kevin ≥75%, mark exhausted + reassign if out of usage.")
+CronCreate(cron:"17 * * * *", prompt:"Context sweep: /context on yourself first (compact if <50% free), then each agent pane. Send /compact to any agent <50% free. Report all %s.")
 ```
 
 ---
