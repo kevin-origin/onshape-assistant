@@ -1,6 +1,17 @@
 // Cloudflare Worker — Onshape Assistant merge permissions sync
 // Stores per-document merge owner data in KV so all extension instances share it.
 
+const COMPANY_ID = "6810c247e7c40668c32816a6";
+const SYNC_SERVER = "https://onshape-assistant-sync.artilabot.workers.dev";
+const ONSHAPE_BASE = "https://cad.onshape.com";
+const WEBHOOK_EVENTS = [
+  "onshape.model.lifecycle.createversion",
+  "onshape.model.lifecycle.createworkspace",
+  "onshape.model.translation.complete",
+  "onshape.model.export",
+  "onshape.model.lifecycle.deleted",
+];
+
 export default {
   async fetch(request, env) {
     const corsHeaders = {
@@ -40,16 +51,17 @@ export default {
       const email = body.email?.toLowerCase();
       if (email) {
         // Skip write if a heartbeat was stored within the last 55 minutes.
-        // Extension pings every 5 min; TTL is 60 min. Only refresh when key is
-        // nearly expired — at most 1 write per 60 min per user (~80 writes/day for 10 users).
-        const existing = await env.MERGE_PERMS.get(`heartbeat:${email}`, "json");
-        const ageMs = existing?.receivedAt ? Date.now() - new Date(existing.receivedAt).getTime() : Infinity;
+        // Extension pings every 5 min; only refresh when nearly expired (~1 write/60min/user).
+        const existing = await env.DB.prepare(
+          "SELECT receivedAt FROM heartbeats WHERE email = ?"
+        ).bind(email).first();
+        const ageMs = existing?.receivedAt
+          ? Date.now() - new Date(existing.receivedAt).getTime()
+          : Infinity;
         if (!existing || ageMs > 55 * 60 * 1000) {
-          await env.MERGE_PERMS.put(`heartbeat:${email}`, JSON.stringify({
-            email,
-            timestamp: body.timestamp || new Date().toISOString(),
-            receivedAt: new Date().toISOString(),
-          }), { expirationTtl: 3600 }); // 60-min TTL
+          await env.DB.prepare(
+            "INSERT OR REPLACE INTO heartbeats (email, timestamp, receivedAt) VALUES (?, ?, ?)"
+          ).bind(email, body.timestamp || new Date().toISOString(), new Date().toISOString()).run();
         }
       }
       return json({ ok: true }, corsHeaders);
@@ -65,10 +77,14 @@ export default {
 
       if (documentId && (versionId || messageId || payloadUserId)) {
         // Dedup — each event fires N webhooks (one per registered user); process only once
-        const dedupKey = `processed:${messageId || versionId || (payloadUserId + documentId)}`;
-        const alreadyProcessed = await env.MERGE_PERMS.get(dedupKey);
+        const dedupId = messageId || versionId || (payloadUserId + documentId);
+        const alreadyProcessed = await env.DB.prepare(
+          "SELECT messageId FROM processed_events WHERE messageId = ?"
+        ).bind(dedupId).first();
         if (!alreadyProcessed) {
-          await env.MERGE_PERMS.put(dedupKey, "1", { expirationTtl: 3600 }); // 1hr TTL
+          await env.DB.prepare(
+            "INSERT OR IGNORE INTO processed_events (messageId, createdAt) VALUES (?, ?)"
+          ).bind(dedupId, new Date().toISOString()).run();
 
           // Resolve creator: export/translation events carry userId directly; version events need lookup
           let createdBy = null;
@@ -88,11 +104,22 @@ export default {
               versionId: versionId || null,
               receivedAt: new Date().toISOString(),
             };
-            await env.MERGE_PERMS.put(`active:${createdBy.email}`, JSON.stringify(record), { expirationTtl: 7200 });
+            await env.DB.prepare(
+              "INSERT OR REPLACE INTO active_users (email, event, documentId, versionId, timestamp, receivedAt) VALUES (?, ?, ?, ?, ?, ?)"
+            ).bind(
+              createdBy.email,
+              record.event,
+              record.documentId,
+              record.versionId || null,
+              record.timestamp,
+              record.receivedAt
+            ).run();
 
             // Violation check — no heartbeat means extension wasn't running
             const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
-            const heartbeat = await env.MERGE_PERMS.get(`heartbeat:${createdBy.email}`);
+            const heartbeat = await env.DB.prepare(
+              "SELECT receivedAt FROM heartbeats WHERE email = ? AND receivedAt > datetime('now', '-70 minutes')"
+            ).bind(createdBy.email).first();
             if (!heartbeat && !whitelist.includes(documentId)) {
               const userId = createdBy.id || await env.MERGE_PERMS.get(`emailid:${createdBy.email}`);
               if (userId) {
@@ -106,7 +133,17 @@ export default {
                   reason: "no_heartbeat",
                 };
                 await demoteUser(userId, createdBy.email, env);
-                await env.MERGE_PERMS.put(`violation:${createdBy.email}`, JSON.stringify(violationRecord));
+                await env.DB.prepare(
+                  "INSERT OR REPLACE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                ).bind(
+                  violationRecord.email,
+                  violationRecord.userId,
+                  violationRecord.documentId,
+                  violationRecord.versionId || null,
+                  violationRecord.event,
+                  violationRecord.detectedAt,
+                  violationRecord.reason
+                ).run();
                 await notifySlack(violationRecord, env);
               }
             }
@@ -156,40 +193,8 @@ export default {
       // Store API keys for this user (for future use / webhook re-registration)
       await env.MERGE_PERMS.put(`userkeys:${email}`, JSON.stringify({ accessKey, secretKey }));
 
-      // Delete existing webhook if any (prevent accumulation on re-registration)
-      const existingWebhookId = await env.MERGE_PERMS.get(`webhookid:${email}`);
-      if (existingWebhookId) {
-        await fetch(`https://cad.onshape.com/api/v10/webhooks/${existingWebhookId}`, {
-          method: "DELETE",
-          headers: { "Authorization": `Basic ${creds}`, "Accept": "application/json" },
-        }).catch(() => {});
-      }
-
-      // Register webhook for this user using their own keys
-      const whResp = await fetch("https://cad.onshape.com/api/v10/webhooks", {
-        method: "POST",
-        headers: { "Authorization": `Basic ${creds}`, "Accept": "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          events: [
-            "onshape.model.lifecycle.createversion",
-            "onshape.model.lifecycle.createworkspace",
-            "onshape.model.translation.complete",
-            "onshape.model.export",
-            "onshape.model.lifecycle.deleted",
-          ],
-          companyId: "6810c247e7c40668c32816a6",
-          options: { collapseEvents: false },
-          url: "https://onshape-assistant-sync.artilabot.workers.dev/api/webhook/onshape",
-          clientData: "compliance-monitor",
-          isTransient: false,
-        }),
-      });
-      const wh = await whResp.json();
-      if (wh.id) {
-        await env.MERGE_PERMS.put(`webhookid:${email}`, wh.id);
-      }
-
-      return json({ ok: true, email, userId, webhookId: wh.id || null }, corsHeaders);
+      const webhookId = await reRegisterWebhookForUser(email, { accessKey, secretKey }, env);
+      return json({ ok: true, email, userId, webhookId: webhookId || null }, corsHeaders);
     }
 
     // GET /api/compliance/whitelist — list whitelisted docs (auth required)
@@ -218,62 +223,52 @@ export default {
 
     // GET /api/compliance/violations — list all violation records (auth required)
     if (path === "/api/compliance/violations" && request.method === "GET") {
-      const list = await env.MERGE_PERMS.list({ prefix: "violation:" });
-      const violations = await Promise.all(list.keys.map(async ({ name }) => {
-        const val = await env.MERGE_PERMS.get(name, "json");
-        return val;
-      }));
-      return json({ violations }, corsHeaders);
+      const { results } = await env.DB.prepare("SELECT * FROM violations").all();
+      return json({ violations: results }, corsHeaders);
     }
 
     // DELETE /api/compliance/violations/:email — clear one user's violation (auth required)
     const violationUserMatch = path.match(/^\/api\/compliance\/violations\/(.+)$/);
     if (violationUserMatch && request.method === "DELETE") {
       const email = decodeURIComponent(violationUserMatch[1]).toLowerCase();
-      await env.MERGE_PERMS.delete(`violation:${email}`);
+      await env.DB.prepare("DELETE FROM violations WHERE email = ?").bind(email).run();
       return json({ ok: true, cleared: email }, corsHeaders);
     }
 
     // DELETE /api/compliance/violations — clear all violation records (auth required)
     if (path === "/api/compliance/violations" && request.method === "DELETE") {
-      const list = await env.MERGE_PERMS.list({ prefix: "violation:" });
-      await Promise.all(list.keys.map(({ name }) => env.MERGE_PERMS.delete(name)));
-      return json({ ok: true, cleared: list.keys.length }, corsHeaders);
+      const { meta } = await env.DB.prepare("DELETE FROM violations").run();
+      return json({ ok: true, cleared: meta.changes }, corsHeaders);
     }
 
     // GET /api/compliance/heartbeats — list all users with active heartbeats (auth required)
     if (path === "/api/compliance/heartbeats" && request.method === "GET") {
-      const list = await env.MERGE_PERMS.list({ prefix: "heartbeat:" });
-      const users = await Promise.all(list.keys.map(async ({ name }) => {
-        const val = await env.MERGE_PERMS.get(name, "json");
-        return { email: name.slice("heartbeat:".length), ...val };
-      }));
-      return json({ users }, corsHeaders);
+      const { results } = await env.DB.prepare("SELECT * FROM heartbeats").all();
+      return json({ users: results }, corsHeaders);
     }
 
     // GET /api/compliance/active — list all recently active users (auth required)
     if (path === "/api/compliance/active" && request.method === "GET") {
-      const list = await env.MERGE_PERMS.list({ prefix: "active:" });
-      const users = await Promise.all(list.keys.map(async ({ name }) => {
-        const val = await env.MERGE_PERMS.get(name, "json");
-        return { email: name.slice("active:".length), ...val };
-      }));
-      return json({ users }, corsHeaders);
+      const { results } = await env.DB.prepare(
+        "SELECT * FROM active_users WHERE receivedAt > datetime('now', '-2 hours')"
+      ).all();
+      return json({ users: results }, corsHeaders);
     }
 
     // DELETE /api/compliance/active — clear all active entries (auth required)
     if (path === "/api/compliance/active" && request.method === "DELETE") {
-      const list = await env.MERGE_PERMS.list({ prefix: "active:" });
-      await Promise.all(list.keys.map(({ name }) => env.MERGE_PERMS.delete(name)));
-      return json({ ok: true, cleared: list.keys.length }, corsHeaders);
+      const { meta } = await env.DB.prepare("DELETE FROM active_users").run();
+      return json({ ok: true, cleared: meta.changes }, corsHeaders);
     }
 
     // GET /api/compliance/active/:email — check specific user (auth required)
     const activeMatch = path.match(/^\/api\/compliance\/active\/(.+)$/);
     if (activeMatch && request.method === "GET") {
       const email = decodeURIComponent(activeMatch[1]);
-      const val = await env.MERGE_PERMS.get(`active:${email}`, "json");
-      return json({ email, active: val !== null, data: val }, corsHeaders);
+      const val = await env.DB.prepare(
+        "SELECT * FROM active_users WHERE email = ?"
+      ).bind(email).first();
+      return json({ email, active: val !== null, data: val || null }, corsHeaders);
     }
 
     // PUT /api/disabled-docs/:docId — admin only, adds exactly one doc to the disabled list
@@ -331,7 +326,83 @@ export default {
 
     return json({ error: "Not found" }, corsHeaders, 404);
   },
+
+  async scheduled(event, env, ctx) {
+    // --- D1 cleanup (stale row expiry, replacing KV TTLs) ---
+    await env.DB.prepare(
+      "DELETE FROM processed_events WHERE createdAt < datetime('now', '-2 hours')"
+    ).run();
+    await env.DB.prepare(
+      "DELETE FROM active_users WHERE receivedAt < datetime('now', '-3 hours')"
+    ).run();
+    await env.DB.prepare(
+      "DELETE FROM heartbeats WHERE receivedAt < datetime('now', '-70 minutes')"
+    ).run();
+    // Violations: keep indefinitely — only manual delete clears them
+
+    // --- Daily webhook re-registration for all enrolled users ---
+    const { keys } = await env.MERGE_PERMS.list({ prefix: "userkeys:" });
+    for (const { name } of keys) {
+      const email = name.slice("userkeys:".length);
+      const userKeys = await env.MERGE_PERMS.get(name, "json");
+      if (userKeys) {
+        try {
+          await reRegisterWebhookForUser(email, userKeys, env);
+        } catch (e) {
+          console.error(`[webhook-refresh] failed for ${email}: ${e.message}`);
+        }
+      }
+    }
+  },
 };
+
+/**
+ * Deletes the user's existing webhook (if any) and registers a fresh one.
+ * Used by PUT /api/compliance/user and the daily scheduled cron.
+ */
+async function reRegisterWebhookForUser(email, keys, env) {
+  // Delete old webhook if we have its ID
+  const oldId = await env.MERGE_PERMS.get(`webhookid:${email}`);
+  if (oldId) {
+    try {
+      await onshapeApiRequest("DELETE", `/api/v10/webhooks/${oldId}`, null, keys);
+    } catch { /* non-critical — may already be gone */ }
+    await env.MERGE_PERMS.delete(`webhookid:${email}`);
+  }
+
+  // Register fresh webhook
+  const data = await onshapeApiRequest("POST", "/api/v10/webhooks", {
+    events: WEBHOOK_EVENTS,
+    companyId: COMPANY_ID,
+    options: { collapseEvents: false },
+    url: `${SYNC_SERVER}/api/webhook/onshape`,
+    clientData: "compliance-monitor",
+    description: "Onshape Assistant compliance monitor",
+    isTransient: false,
+  }, keys);
+
+  if (data?.id) {
+    await env.MERGE_PERMS.put(`webhookid:${email}`, data.id);
+  }
+  return data?.id || null;
+}
+
+/**
+ * Makes an Onshape API request using Basic auth (accessKey:secretKey).
+ */
+async function onshapeApiRequest(method, path, body, keys) {
+  const creds = btoa(`${keys.accessKey}:${keys.secretKey}`);
+  const headers = { "Authorization": `Basic ${creds}`, "Accept": "application/json" };
+  const init = { method, headers };
+  if (body) {
+    headers["Content-Type"] = "application/json";
+    init.body = JSON.stringify(body);
+  }
+  const resp = await fetch(`${ONSHAPE_BASE}${path}`, init);
+  if (!resp.ok && method !== "DELETE") throw new Error(`Onshape API ${method} ${path} → ${resp.status}`);
+  if (method === "DELETE") return null;
+  return resp.json();
+}
 
 /**
  * Revokes admin rights for a user as a compliance violation response.

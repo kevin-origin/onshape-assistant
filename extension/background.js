@@ -283,86 +283,12 @@ async function sendComplianceHeartbeat() {
 
 // Send heartbeat every 5 minutes while Onshape is open
 chrome.alarms.create("compliance-heartbeat", { periodInMinutes: 5 });
-// Refresh webhook every 2 days to prevent Onshape from expiring it
-chrome.alarms.create("compliance-webhook-refresh", { periodInMinutes: 2 * 24 * 60 });
 chrome.alarms.onAlarm.addListener(alarm => {
   if (alarm.name === "compliance-heartbeat") sendComplianceHeartbeat();
-  if (alarm.name === "compliance-webhook-refresh") registerComplianceWebhookIfNeeded(true);
 });
 
 // Also send immediately on SW startup
 sendComplianceHeartbeat();
-
-// ---------------------------------------------------------------------------
-// Compliance Monitor — auto-register per-user webhook on SW startup
-// ---------------------------------------------------------------------------
-
-const COMPLIANCE_WEBHOOK_EVENTS = [
-  "onshape.model.lifecycle.createversion",
-  "onshape.model.lifecycle.createworkspace",
-  "onshape.model.translation.complete",
-  "onshape.model.export",
-  "onshape.model.lifecycle.deleted",
-];
-
-async function registerComplianceWebhookIfNeeded(forceRefresh = false) {
-  try {
-    const user = await getSessionUser();
-    if (!user) return;
-
-    const stored = await chrome.storage.local.get("complianceWebhookId");
-    if (!forceRefresh && stored.complianceWebhookId) {
-      // Verify it still exists on Onshape's side
-      try {
-        await onshapeFetch(`/api/v10/webhooks/${stored.complianceWebhookId}`);
-        return; // still valid, no refresh needed
-      } catch {
-        // Webhook gone — fall through to re-register
-        await chrome.storage.local.remove("complianceWebhookId");
-      }
-    }
-
-    // Delete old webhook before registering a new one (avoid accumulation)
-    if (stored.complianceWebhookId) {
-      try {
-        const xsrf = await getXsrfToken();
-        const delHeaders = { "Accept": "application/json" };
-        if (xsrf) delHeaders["X-XSRF-TOKEN"] = xsrf;
-        await fetch(`${ONSHAPE_BASE}/api/v10/webhooks/${stored.complianceWebhookId}`, {
-          method: "DELETE", credentials: "include", headers: delHeaders,
-        });
-      } catch { /* non-critical — old webhook may already be gone */ }
-      await chrome.storage.local.remove("complianceWebhookId");
-    }
-
-    // Register a fresh webhook with all monitored event types
-    const xsrf = await getXsrfToken();
-    const headers = { "Accept": "application/json", "Content-Type": "application/json" };
-    if (xsrf) headers["X-XSRF-TOKEN"] = xsrf;
-    const resp = await fetch(`${ONSHAPE_BASE}/api/v10/webhooks`, {
-      method: "POST",
-      credentials: "include",
-      headers,
-      body: JSON.stringify({
-        events: COMPLIANCE_WEBHOOK_EVENTS,
-        companyId: COMPANY_ID,
-        options: { collapseEvents: false },
-        url: `${SYNC_SERVER}/api/webhook/onshape`,
-        clientData: "compliance-monitor",
-        isTransient: false,
-      }),
-    });
-    if (resp.ok) {
-      const data = await resp.json();
-      await chrome.storage.local.set({ complianceWebhookId: data.id });
-      console.log(`[Compliance] Webhook registered: ${data.id} for ${user.email}`);
-    }
-  } catch (e) {
-    console.log("[Compliance] Webhook auto-register failed:", e.message);
-  }
-}
-
-registerComplianceWebhookIfNeeded();
 
 // ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
