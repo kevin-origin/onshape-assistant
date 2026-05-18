@@ -10,3 +10,11 @@ compatibility_date = "2026-03-01"
 binding = "MERGE_PERMS"
 id = "253b9336e6c64478a5f7e282c17e9cf7"
 preview_id = "c76001f1e21c407ab4a334a7a38901b8"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "onshape-compliance"
+database_id = "72425074-7db7-42ec-8d4c-ef58a55874b7"
+
+[triggers]
+crons = ["0 2 * * *"]
