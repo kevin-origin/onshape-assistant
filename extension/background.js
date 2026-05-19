@@ -73,7 +73,7 @@ async function getSessionUser() {
  * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
  */
 async function getTopLevelFolder(docId) {
-  const cacheKey = `topFolder_${docId}`;
+  const cacheKey = `topFolder2_${docId}`;
   const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
   if (cached[cacheKey] && (Date.now() - cached[cacheKey].ts < 3600000)) {
     console.log(`[TopFolder] Cache hit: ${docId} → ${cached[cacheKey].topFolderName}`);
@@ -83,12 +83,18 @@ async function getTopLevelFolder(docId) {
   const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
   let currentId = doc.parentId;
   let topFolder = null;
+  let prevFolder = null;
   let depth = 0;
 
   while (currentId && depth < 10) {
     const folder = await onshapeFetch(`/api/v10/folders/${currentId}`);
+    if (!folder.parentId || folder.jsonType !== "folder") {
+      // This is the workspace root — the user-visible top folder is prevFolder (if any)
+      topFolder = prevFolder || folder;
+      break;
+    }
+    prevFolder = folder;
     topFolder = folder;
-    if (!folder.parentId || folder.jsonType !== "folder") break;
     currentId = folder.parentId;
     depth++;
   }
