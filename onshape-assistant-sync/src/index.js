@@ -44,6 +44,28 @@ export default {
       return json({ disabledDocs: val || [] }, corsHeaders);
     }
 
+    // GET /api/disabled-folder-names — public, no auth; returns list of top-level folder names where extension is disabled
+    if (path === "/api/disabled-folder-names" && request.method === "GET") {
+      const val = await env.MERGE_PERMS.get("__disabled_folder_names__", "json");
+      return json({ disabledFolderNames: val || [] }, corsHeaders);
+    }
+
+    // POST /api/compliance/extension-event — extension event record (no auth, extension calls directly)
+    // Body: { email, event, documentId, timestamp }
+    if (path === "/api/compliance/extension-event" && request.method === "POST") {
+      let body;
+      try { body = await request.json(); } catch { return json({ ok: true }, corsHeaders); }
+      const email = body.email?.toLowerCase();
+      const event = body.event;
+      const documentId = body.documentId;
+      if (email && event && documentId) {
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO extension_events (email, event, documentId, recordedAt) VALUES (?, ?, ?, datetime('now'))"
+        ).bind(email, event, documentId).run();
+      }
+      return json({ ok: true }, corsHeaders);
+    }
+
     // PUT /api/compliance/heartbeat — extension heartbeat (no auth, extension calls directly)
     if (path === "/api/compliance/heartbeat" && request.method === "PUT") {
       let body;
@@ -116,12 +138,12 @@ export default {
               record.receivedAt
             ).run();
 
-            // Violation check — no heartbeat means extension wasn't running
+            // Violation check — no extension event means extension wasn't running
             const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
-            const heartbeat = await env.DB.prepare(
-              "SELECT receivedAt FROM heartbeats WHERE email = ? AND receivedAt > datetime('now', '-70 minutes')"
-            ).bind(createdBy.email).first();
-            if (!heartbeat && !whitelist.includes(documentId)) {
+            const extEvent = await env.DB.prepare(
+              "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-5 minutes')"
+            ).bind(createdBy.email, evt, documentId).first();
+            if (!extEvent && !whitelist.includes(documentId)) {
               const userId = createdBy.id || await env.MERGE_PERMS.get(`emailid:${createdBy.email}`);
               if (userId) {
                 const violationRecord = {
@@ -131,7 +153,7 @@ export default {
                   versionId: versionId || null,
                   event: evt || "unknown",
                   detectedAt: new Date().toISOString(),
-                  reason: "no_heartbeat",
+                  reason: "no_extension_event",
                 };
                 await demoteUser(userId, createdBy.email, env);
                 await env.DB.prepare(
@@ -166,6 +188,17 @@ export default {
       const emails = (body.blocked || []).map(e => e.toLowerCase());
       await env.MERGE_PERMS.put("__blocked_emails__", JSON.stringify(emails));
       return json({ ok: true, blocked: emails }, corsHeaders);
+    }
+
+    // PUT /api/disabled-folder-names — admin only, sets list of top-level folder names where extension is disabled
+    if (path === "/api/disabled-folder-names" && request.method === "PUT") {
+      const body = await request.json();
+      if (!Array.isArray(body.disabledFolderNames)) {
+        return json({ error: "disabledFolderNames must be an array" }, corsHeaders, 400);
+      }
+      const names = body.disabledFolderNames;
+      await env.MERGE_PERMS.put("__disabled_folder_names__", JSON.stringify(names));
+      return json({ ok: true, disabledFolderNames: names }, corsHeaders);
     }
 
     // PUT /api/compliance/user — register a user: store their API keys, resolve their ID→email, register webhook
@@ -337,7 +370,7 @@ export default {
       "DELETE FROM active_users WHERE receivedAt < datetime('now', '-3 hours')"
     ).run();
     await env.DB.prepare(
-      "DELETE FROM heartbeats WHERE receivedAt < datetime('now', '-70 minutes')"
+      "DELETE FROM extension_events WHERE recordedAt < datetime('now', '-10 minutes')"
     ).run();
     // Violations: keep indefinitely — only manual delete clears them
 

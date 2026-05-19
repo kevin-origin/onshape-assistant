@@ -1905,4 +1905,15 @@
   }
   connectKeepalive();
 
+  // Relay compliance events from MAIN world (window.postMessage) to the background service worker.
+  // content-main.js cannot use chrome.* (MAIN world restriction), so it posts here and we relay.
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data || e.data.type !== 'oxt-compliance-event') return;
+    chrome.runtime.sendMessage({
+      type: 'compliance-event',
+      event: e.data.event,
+      documentId: e.data.documentId,
+    }).catch(() => {});
+  });
+
 })();

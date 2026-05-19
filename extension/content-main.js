@@ -70,6 +70,9 @@
    * Backstop guard: patches window.fetch to intercept POST /api/vN/assemblies requests.
    * Returns a synthetic 400 response and shows a toast if oxtAssemblyCount > 0.
    * Catches cases where the DOM button guard is bypassed (e.g., keyboard shortcuts, external callers).
+   *
+   * Also detects compliance events (version/workspace/translation POSTs) and notifies
+   * the extension service worker via window.postMessage → content.js relay (MAIN→ISOLATED).
    */
   function initAssemblyFetchGuard() {
     const _fetch = window.fetch;
@@ -89,7 +92,39 @@
           );
         }
       }
-      return _fetch.apply(this, args);
+
+      const promise = _fetch.apply(this, args);
+
+      // Compliance event detection — fire-and-forget after fetch resolves.
+      // Uses window.postMessage (MAIN→ISOLATED) since chrome.* is unavailable in MAIN world.
+      if (typeof url === 'string' && opts?.method === 'POST') {
+        promise.then(resp => {
+          if (!resp.ok) return;
+          let event = null, did = null;
+
+          // createversion: POST .../documents/d/{did}/w/{wid}/workspaces/{wsid}/versions
+          const verMatch = url.match(/\/api\/v\d+\/documents\/d\/([a-f0-9]+)\/w\/[a-f0-9]+\/workspaces\/[a-f0-9]+\/versions/);
+          if (verMatch) { event = 'onshape.model.lifecycle.createversion'; did = verMatch[1]; }
+
+          // createworkspace: POST .../documents/d/{did}/w/{wid}/workspaces (no further segments)
+          if (!event) {
+            const wsMatch = url.match(/\/api\/v\d+\/documents\/d\/([a-f0-9]+)\/w\/[a-f0-9]+\/workspaces($|\?)/);
+            if (wsMatch) { event = 'onshape.model.lifecycle.createworkspace'; did = wsMatch[1]; }
+          }
+
+          // translation: POST .../partstudios/d/{did}/... or .../assemblies/d/{did}/... + /translations
+          if (!event) {
+            const transMatch = url.match(/\/api\/v\d+\/(?:partstudios|assemblies)\/d\/([a-f0-9]+)\/.*\/translations/);
+            if (transMatch) { event = 'onshape.model.translation.complete'; did = transMatch[1]; }
+          }
+
+          if (event && did) {
+            window.postMessage({ type: 'oxt-compliance-event', event, documentId: did }, '*');
+          }
+        }).catch(() => {});
+      }
+
+      return promise;
     };
   }
 

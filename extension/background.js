@@ -73,7 +73,7 @@ async function getSessionUser() {
  * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
  */
 async function getTopLevelFolder(docId) {
-  const cacheKey = `topFolder_${docId}`;
+  const cacheKey = `topFolder2_${docId}`;
   const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
   if (cached[cacheKey] && (Date.now() - cached[cacheKey].ts < 3600000)) {
     console.log(`[TopFolder] Cache hit: ${docId} → ${cached[cacheKey].topFolderName}`);
@@ -83,12 +83,18 @@ async function getTopLevelFolder(docId) {
   const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
   let currentId = doc.parentId;
   let topFolder = null;
+  let prevFolder = null;
   let depth = 0;
 
   while (currentId && depth < 10) {
     const folder = await onshapeFetch(`/api/v10/folders/${currentId}`);
+    if (!folder.parentId || folder.jsonType !== "folder") {
+      // This is the workspace root — the user-visible top folder is prevFolder (if any)
+      topFolder = prevFolder || folder;
+      break;
+    }
+    prevFolder = folder;
     topFolder = folder;
-    if (!folder.parentId || folder.jsonType !== "folder") break;
     currentId = folder.parentId;
     depth++;
   }
@@ -224,19 +230,47 @@ async function getDisabledDocs() {
   return disabledDocsCache || [];
 }
 
+async function getDisabledFolderNames() {
+  const { disabledFolderNamesCache, disabledFolderNamesFetchedAt } =
+    await chrome.storage.local.get(["disabledFolderNamesCache", "disabledFolderNamesFetchedAt"]);
+  if (disabledFolderNamesCache && disabledFolderNamesFetchedAt &&
+      Date.now() - disabledFolderNamesFetchedAt < 60 * 60 * 1000) {
+    return disabledFolderNamesCache;
+  }
+  try {
+    const res = await fetch(`${SYNC_SERVER}/api/disabled-folder-names`);
+    if (res.ok) {
+      const data = await res.json();
+      const names = data.disabledFolderNames || [];
+      await chrome.storage.local.set({ disabledFolderNamesCache: names, disabledFolderNamesFetchedAt: Date.now() });
+      return names;
+    }
+  } catch (e) {
+    console.warn("[FolderDisable] fetch failed:", e.message);
+  }
+  return disabledFolderNamesCache || [];
+}
+
 async function isDocDisabled(docId) {
   if (!docId) return false;
   const docs = await getDisabledDocs();
-  return docs.includes(docId);
+  if (docs.includes(docId)) return true;
+  const folderInfo = await getTopLevelFolder(docId);
+  const folderNames = await getDisabledFolderNames();
+  if (folderInfo.topFolderName && folderNames.includes(folderInfo.topFolderName)) return true;
+  return false;
 }
 
 // Kill switch only runs on production builds.
 // dev branch manifest has "dev_build": true — absent on main.
 const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 
-// Always force-refresh the disabled-docs list on every SW startup (both dev and production).
-// Busting the timestamp ensures we never serve a stale empty list after a doc is added.
-chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
+// Always force-refresh the disabled-docs and disabled-folder-names lists on every SW startup.
+// Busting the timestamps ensures we never serve a stale empty list after a doc/folder is added.
+chrome.storage.local.remove(["disabledDocsFetchedAt", "disabledFolderNamesFetchedAt"], () => {
+  getDisabledDocs();
+  getDisabledFolderNames();
+});
 
 if (IS_PRODUCTION_BUILD) {
   // Startup: Layer 1 (instant, sync) → async Layer 3 (remote, non-blocking)
@@ -249,8 +283,11 @@ if (IS_PRODUCTION_BUILD) {
   chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === "kill-switch-refresh") {
       refreshAndApplyKillSwitch();
-      // Force-refresh disabled docs by busting cache timestamp first
-      chrome.storage.local.remove("disabledDocsFetchedAt", () => getDisabledDocs());
+      // Force-refresh disabled docs and folder names by busting cache timestamps first
+      chrome.storage.local.remove(["disabledDocsFetchedAt", "disabledFolderNamesFetchedAt"], () => {
+        getDisabledDocs();
+        getDisabledFolderNames();
+      });
     }
   });
 } else {
@@ -263,32 +300,9 @@ if (IS_PRODUCTION_BUILD) {
 }
 
 // ---------------------------------------------------------------------------
-// Compliance Monitor — heartbeat
+// Compliance Monitor — extension events
+// Handled via message handler below ('compliance-event' from content.js relay).
 // ---------------------------------------------------------------------------
-
-async function sendComplianceHeartbeat() {
-  try {
-    // Only send if an Onshape tab is open
-    const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
-    if (!tabs.length) return;
-    const user = await getSessionUser();
-    if (!user) return;
-    await fetch(`${SYNC_SERVER}/api/compliance/heartbeat`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: user.email, timestamp: new Date().toISOString() }),
-    });
-  } catch { /* non-critical */ }
-}
-
-// Send heartbeat every 10 minutes while Onshape is open
-chrome.alarms.create("compliance-heartbeat", { periodInMinutes: 10 });
-chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === "compliance-heartbeat") sendComplianceHeartbeat();
-});
-
-// Also send immediately on SW startup
-sendComplianceHeartbeat();
 
 // ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
@@ -3915,6 +3929,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (_extensionDisabled) return; // kill switch active — ignore all messages
+
+  if (msg.type === "compliance-event") {
+    (async () => {
+      try {
+        const user = await getSessionUser();
+        if (!user) return;
+        await fetch(`${SYNC_SERVER}/api/compliance/extension-event`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: user.email,
+            event: msg.event,
+            documentId: msg.documentId,
+            timestamp: new Date().toISOString(),
+          }),
+        });
+      } catch { /* non-critical */ }
+    })();
+    return;
+  }
 
   if (msg.type === "fetch-ps-configs") {
     const { url, did: msgDid, wid: msgWid, eid: msgEid } = msg;
