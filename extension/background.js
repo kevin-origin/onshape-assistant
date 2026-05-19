@@ -300,32 +300,9 @@ if (IS_PRODUCTION_BUILD) {
 }
 
 // ---------------------------------------------------------------------------
-// Compliance Monitor — heartbeat
+// Compliance Monitor — extension events
+// Handled via message handler below ('compliance-event' from content.js relay).
 // ---------------------------------------------------------------------------
-
-async function sendComplianceHeartbeat() {
-  try {
-    // Only send if an Onshape tab is open
-    const tabs = await chrome.tabs.query({ url: "https://cad.onshape.com/*" });
-    if (!tabs.length) return;
-    const user = await getSessionUser();
-    if (!user) return;
-    await fetch(`${SYNC_SERVER}/api/compliance/heartbeat`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email: user.email, timestamp: new Date().toISOString() }),
-    });
-  } catch { /* non-critical */ }
-}
-
-// Send heartbeat every 10 minutes while Onshape is open
-chrome.alarms.create("compliance-heartbeat", { periodInMinutes: 10 });
-chrome.alarms.onAlarm.addListener(alarm => {
-  if (alarm.name === "compliance-heartbeat") sendComplianceHeartbeat();
-});
-
-// Also send immediately on SW startup
-sendComplianceHeartbeat();
 
 // ---------------------------------------------------------------------------
 // Team members cache (fetched once per service worker lifetime)
@@ -3952,6 +3929,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (_extensionDisabled) return; // kill switch active — ignore all messages
+
+  if (msg.type === "compliance-event") {
+    (async () => {
+      try {
+        const user = await getSessionUser();
+        if (!user) return;
+        await fetch(`${SYNC_SERVER}/api/compliance/extension-event`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            email: user.email,
+            event: msg.event,
+            documentId: msg.documentId,
+            timestamp: new Date().toISOString(),
+          }),
+        });
+      } catch { /* non-critical */ }
+    })();
+    return;
+  }
 
   if (msg.type === "fetch-ps-configs") {
     const { url, did: msgDid, wid: msgWid, eid: msgEid } = msg;
