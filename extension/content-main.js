@@ -95,36 +95,49 @@
 
       const promise = _fetch.apply(this, args);
 
-      // Compliance event detection — fire-and-forget after fetch resolves.
-      // Uses window.postMessage (MAIN→ISOLATED) since chrome.* is unavailable in MAIN world.
-      if (typeof url === 'string' && opts?.method === 'POST') {
-        promise.then(resp => {
-          if (!resp.ok) return;
-          let event = null, did = null;
-
-          // createversion: POST .../documents/d/{did}/w/{wid}/workspaces/{wsid}/versions
-          const verMatch = url.match(/\/api\/v\d+\/documents\/d\/([a-f0-9]+)\/w\/[a-f0-9]+\/workspaces\/[a-f0-9]+\/versions/);
-          if (verMatch) { event = 'onshape.model.lifecycle.createversion'; did = verMatch[1]; }
-
-          // createworkspace: POST .../documents/d/{did}/w/{wid}/workspaces (no further segments)
-          if (!event) {
-            const wsMatch = url.match(/\/api\/v\d+\/documents\/d\/([a-f0-9]+)\/w\/[a-f0-9]+\/workspaces($|\?)/);
-            if (wsMatch) { event = 'onshape.model.lifecycle.createworkspace'; did = wsMatch[1]; }
-          }
-
-          // translation: POST .../partstudios/d/{did}/... or .../assemblies/d/{did}/... + /translations
-          if (!event) {
-            const transMatch = url.match(/\/api\/v\d+\/(?:partstudios|assemblies)\/d\/([a-f0-9]+)\/.*\/translations/);
-            if (transMatch) { event = 'onshape.model.translation.complete'; did = transMatch[1]; }
-          }
-
-          if (event && did) {
-            window.postMessage({ type: 'oxt-compliance-event', event, documentId: did }, '*');
-          }
-        }).catch(() => {});
-      }
-
       return promise;
+    };
+  }
+
+  /**
+   * Patches XMLHttpRequest to detect export calls.
+   * Onshape routes exports via XHR POST to /api/vN/documents/d/{did}/w/{wid}/translate,
+   * which bypasses the window.fetch intercept above.
+   */
+  function initXhrComplianceGuard() {
+    const _origOpen = XMLHttpRequest.prototype.open;
+    const _origSend = XMLHttpRequest.prototype.send;
+
+    XMLHttpRequest.prototype.open = function (method, url, ...rest) {
+      this._oxtMethod = method;
+      this._oxtUrl = url;
+      return _origOpen.apply(this, [method, url, ...rest]);
+    };
+
+    XMLHttpRequest.prototype.send = function (...args) {
+      if (this._oxtMethod === 'POST' && typeof this._oxtUrl === 'string') {
+        const url = this._oxtUrl;
+        let event = null, did = null;
+
+        // createversion: POST /api/vN/documents/d/{did}/versions
+        const verMatch = url.match(/\/api\/v\d+\/documents\/d\/([a-f0-9]+)\/versions($|\?)/);
+        if (verMatch) { event = 'onshape.model.lifecycle.createversion'; did = verMatch[1]; }
+
+        // translation/export: POST /api/vN/documents/d/{did}/w/{wid}/translate
+        if (!event) {
+          const expMatch = url.match(/\/api\/v\d+\/documents\/d\/([a-f0-9]+)\/[wv]\/[a-f0-9]+\/translate/);
+          if (expMatch) { event = 'onshape.model.translation.complete'; did = expMatch[1]; }
+        }
+
+        if (event && did) {
+          this.addEventListener('load', () => {
+            if (this.status >= 200 && this.status < 300) {
+              window.postMessage({ type: 'oxt-compliance-event', event, documentId: did }, '*');
+            }
+          });
+        }
+      }
+      return _origSend.apply(this, args);
     };
   }
 
@@ -226,5 +239,6 @@
 
   initAssemblyCreationGuard();
   initAssemblyFetchGuard();
+  initXhrComplianceGuard();
   initContextCreationGuard();
 })();
