@@ -44,12 +44,6 @@ export default {
       return json({ disabledDocs: val || [] }, corsHeaders);
     }
 
-    // GET /api/disabled-folder-names — public, no auth; returns list of top-level folder names where extension is disabled
-    if (path === "/api/disabled-folder-names" && request.method === "GET") {
-      const val = await env.MERGE_PERMS.get("__disabled_folder_names__", "json");
-      return json({ disabledFolderNames: val || [] }, corsHeaders);
-    }
-
     // POST /api/compliance/extension-event — extension event record (no auth, extension calls directly)
     // Body: { email, event, documentId, timestamp }
     if (path === "/api/compliance/extension-event" && request.method === "POST") {
@@ -66,32 +60,9 @@ export default {
       return json({ ok: true }, corsHeaders);
     }
 
-    // PUT /api/compliance/heartbeat — extension heartbeat (no auth, extension calls directly)
-    if (path === "/api/compliance/heartbeat" && request.method === "PUT") {
-      let body;
-      try { body = await request.json(); } catch { return json({ ok: true }, corsHeaders); }
-      const email = body.email?.toLowerCase();
-      if (email) {
-        // Skip write if a heartbeat was stored within the last 55 minutes.
-        // Extension pings every 5 min; only refresh when nearly expired (~1 write/60min/user).
-        const existing = await env.DB.prepare(
-          "SELECT receivedAt FROM heartbeats WHERE email = ?"
-        ).bind(email).first();
-        const ageMs = existing?.receivedAt
-          ? Date.now() - new Date(existing.receivedAt).getTime()
-          : Infinity;
-        if (!existing || ageMs > 55 * 60 * 1000) {
-          await env.DB.prepare(
-            "INSERT OR REPLACE INTO heartbeats (email, timestamp, receivedAt) VALUES (?, ?, ?)"
-          ).bind(email, body.timestamp || new Date().toISOString(), new Date().toISOString()).run();
-        }
-      }
-      return json({ ok: true }, corsHeaders);
-    }
-
     // POST /api/webhook/onshape — Onshape webhook receiver (no auth, Onshape calls this directly)
     // Deduplicates multi-user webhook fan-out by messageId/versionId, resolves creator email,
-    // records active event, and triggers demotion + Slack alert if no heartbeat was present.
+    // records active event, and flags a violation if no extension event was recorded.
     if (path === "/api/webhook/onshape" && request.method === "POST") {
       let body;
       try { body = await request.json(); } catch { return json({ ok: true }, corsHeaders); }
@@ -103,7 +74,10 @@ export default {
         // Do NOT SELECT first: a SELECT+INSERT pattern is racy under concurrent webhook fan-out.
         // versionId is consistent across all N webhook deliveries of the same event.
         // messageId is unique per delivery — never use it as primary dedup key.
-        const dedupId = versionId || (payloadUserId + documentId) || messageId;
+        // versionId is consistent across all fan-out deliveries of version events.
+        // For translation/export events (no versionId), use composite key so all fan-out
+        // deliveries dedup correctly. messageId is unique per delivery — last resort only.
+        const dedupId = versionId || ((payloadUserId || '') + documentId + (evt || '')) || messageId;
         const { meta: dedupMeta } = await env.DB.prepare(
           "INSERT OR IGNORE INTO processed_events (messageId, createdAt) VALUES (?, ?)"
         ).bind(dedupId, new Date().toISOString()).run();
@@ -138,10 +112,18 @@ export default {
               record.receivedAt
             ).run();
 
-            // Violation check — no extension event means extension wasn't running
+            if (evt === 'onshape.model.lifecycle.deleted') {
+              // Deletion events are informational — extension cannot intercept DELETE requests.
+              return json({ ok: true }, corsHeaders);
+            }
+
+            // Violation check — no extension event means extension wasn't running.
+            // Wait 5s before checking: the webhook can arrive before the extension has had time
+            // to POST its compliance event (fetch interceptor → postMessage → sendMessage → SW → server).
+            await new Promise(r => setTimeout(r, 15000));
             const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
             const extEvent = await env.DB.prepare(
-              "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-5 minutes')"
+              "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-30 minutes')"
             ).bind(createdBy.email, evt, documentId).first();
             if (!extEvent && !whitelist.includes(documentId)) {
               const userId = createdBy.id || await env.MERGE_PERMS.get(`emailid:${createdBy.email}`);
@@ -188,17 +170,6 @@ export default {
       const emails = (body.blocked || []).map(e => e.toLowerCase());
       await env.MERGE_PERMS.put("__blocked_emails__", JSON.stringify(emails));
       return json({ ok: true, blocked: emails }, corsHeaders);
-    }
-
-    // PUT /api/disabled-folder-names — admin only, sets list of top-level folder names where extension is disabled
-    if (path === "/api/disabled-folder-names" && request.method === "PUT") {
-      const body = await request.json();
-      if (!Array.isArray(body.disabledFolderNames)) {
-        return json({ error: "disabledFolderNames must be an array" }, corsHeaders, 400);
-      }
-      const names = body.disabledFolderNames;
-      await env.MERGE_PERMS.put("__disabled_folder_names__", JSON.stringify(names));
-      return json({ ok: true, disabledFolderNames: names }, corsHeaders);
     }
 
     // PUT /api/compliance/user — register a user: store their API keys, resolve their ID→email, register webhook
@@ -273,12 +244,6 @@ export default {
     if (path === "/api/compliance/violations" && request.method === "DELETE") {
       const { meta } = await env.DB.prepare("DELETE FROM violations").run();
       return json({ ok: true, cleared: meta.changes }, corsHeaders);
-    }
-
-    // GET /api/compliance/heartbeats — list all users with active heartbeats (auth required)
-    if (path === "/api/compliance/heartbeats" && request.method === "GET") {
-      const { results } = await env.DB.prepare("SELECT * FROM heartbeats").all();
-      return json({ users: results }, corsHeaders);
     }
 
     // GET /api/compliance/active — list all recently active users (auth required)
@@ -370,7 +335,7 @@ export default {
       "DELETE FROM active_users WHERE receivedAt < datetime('now', '-3 hours')"
     ).run();
     await env.DB.prepare(
-      "DELETE FROM extension_events WHERE recordedAt < datetime('now', '-10 minutes')"
+      "DELETE FROM extension_events WHERE recordedAt < datetime('now', '-35 minutes')"
     ).run();
     // Violations: keep indefinitely — only manual delete clears them
 

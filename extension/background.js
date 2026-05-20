@@ -67,48 +67,6 @@ async function getSessionUser() {
 // Top-level folder walk — walks parentId chain up to the root
 // ---------------------------------------------------------------------------
 
-/**
- * Walk the parentId chain of a doc to find its top-level folder (1-hour cache).
- * @param {string} docId
- * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
- */
-async function getTopLevelFolder(docId) {
-  const cacheKey = `topFolder2_${docId}`;
-  const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
-  if (cached[cacheKey] && (Date.now() - cached[cacheKey].ts < 3600000)) {
-    console.log(`[TopFolder] Cache hit: ${docId} → ${cached[cacheKey].topFolderName}`);
-    return cached[cacheKey];
-  }
-
-  const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
-  let currentId = doc.parentId;
-  let topFolder = null;
-  let prevFolder = null;
-  let depth = 0;
-
-  while (currentId && depth < 10) {
-    const folder = await onshapeFetch(`/api/v10/folders/${currentId}`);
-    if (!folder.parentId || folder.jsonType !== "folder") {
-      // This is the workspace root — the user-visible top folder is prevFolder (if any)
-      topFolder = prevFolder || folder;
-      break;
-    }
-    prevFolder = folder;
-    topFolder = folder;
-    currentId = folder.parentId;
-    depth++;
-  }
-
-  const result = {
-    topFolderName: topFolder?.name || null,
-    topFolderId: topFolder?.id || null,
-    ts: Date.now()
-  };
-  chrome.storage.local.set({ [cacheKey]: result });
-  console.log(`[TopFolder] ${docId} → ${result.topFolderName} (${depth} hops)`);
-  return result;
-}
-
 // ---------------------------------------------------------------------------
 // Kill switch — deactivate extension for specific user accounts
 // ---------------------------------------------------------------------------
@@ -230,34 +188,10 @@ async function getDisabledDocs() {
   return disabledDocsCache || [];
 }
 
-async function getDisabledFolderNames() {
-  const { disabledFolderNamesCache, disabledFolderNamesFetchedAt } =
-    await chrome.storage.local.get(["disabledFolderNamesCache", "disabledFolderNamesFetchedAt"]);
-  if (disabledFolderNamesCache && disabledFolderNamesFetchedAt &&
-      Date.now() - disabledFolderNamesFetchedAt < 60 * 60 * 1000) {
-    return disabledFolderNamesCache;
-  }
-  try {
-    const res = await fetch(`${SYNC_SERVER}/api/disabled-folder-names`);
-    if (res.ok) {
-      const data = await res.json();
-      const names = data.disabledFolderNames || [];
-      await chrome.storage.local.set({ disabledFolderNamesCache: names, disabledFolderNamesFetchedAt: Date.now() });
-      return names;
-    }
-  } catch (e) {
-    console.warn("[FolderDisable] fetch failed:", e.message);
-  }
-  return disabledFolderNamesCache || [];
-}
-
 async function isDocDisabled(docId) {
   if (!docId) return false;
   const docs = await getDisabledDocs();
   if (docs.includes(docId)) return true;
-  const folderInfo = await getTopLevelFolder(docId);
-  const folderNames = await getDisabledFolderNames();
-  if (folderInfo.topFolderName && folderNames.includes(folderInfo.topFolderName)) return true;
   return false;
 }
 
@@ -265,11 +199,10 @@ async function isDocDisabled(docId) {
 // dev branch manifest has "dev_build": true — absent on main.
 const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 
-// Always force-refresh the disabled-docs and disabled-folder-names lists on every SW startup.
-// Busting the timestamps ensures we never serve a stale empty list after a doc/folder is added.
-chrome.storage.local.remove(["disabledDocsFetchedAt", "disabledFolderNamesFetchedAt"], () => {
+// Always force-refresh the disabled-docs list on every SW startup.
+// Busting the timestamp ensures we never serve a stale empty list after a doc is added.
+chrome.storage.local.remove(["disabledDocsFetchedAt"], () => {
   getDisabledDocs();
-  getDisabledFolderNames();
 });
 
 if (IS_PRODUCTION_BUILD) {
@@ -283,10 +216,9 @@ if (IS_PRODUCTION_BUILD) {
   chrome.alarms.onAlarm.addListener(alarm => {
     if (alarm.name === "kill-switch-refresh") {
       refreshAndApplyKillSwitch();
-      // Force-refresh disabled docs and folder names by busting cache timestamps first
-      chrome.storage.local.remove(["disabledDocsFetchedAt", "disabledFolderNamesFetchedAt"], () => {
+      // Force-refresh disabled docs by busting cache timestamp first
+      chrome.storage.local.remove(["disabledDocsFetchedAt"], () => {
         getDisabledDocs();
-        getDisabledFolderNames();
       });
     }
   });
@@ -4498,17 +4430,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const doc = await onshapeFetch(`/api/v10/documents/${msg.docId}`);
         sendResponse({ creator: doc.createdBy });
-      } catch (e) {
-        sendResponse({ error: e.message });
-      }
-    })();
-    return true;
-
-  } else if (msg.type === "get-top-folder") {
-    (async () => {
-      try {
-        const result = await getTopLevelFolder(msg.docId);
-        sendResponse(result);
       } catch (e) {
         sendResponse({ error: e.message });
       }
