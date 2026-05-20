@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Onshape Assistant",
-  "version": "3.0.6",
+  "version": "3.0.7",
   "update_url": "https://raw.githubusercontent.com/kevin-origin/onshape-assistant/main/updates.xml",
   "description": "Onshape assistant \u2014 drawing creator, doc scanner, violations & interference checker",
   "permissions": [
