@@ -13,7 +13,7 @@ const WEBHOOK_EVENTS = [
 ];
 
 export default {
-  async fetch(request, env) {
+  async fetch(request, env, ctx) {
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
@@ -68,92 +68,87 @@ export default {
       try { body = await request.json(); } catch { return json({ ok: true }, corsHeaders); }
       const { documentId, versionId, messageId, userId: payloadUserId, event: evt, timestamp } = body;
 
+      // Acknowledge immediately so Onshape isn't waiting on our violation check.
+      // All processing runs in the background via ctx.waitUntil().
       if (documentId && (versionId || messageId || payloadUserId)) {
-        // Dedup — each event fires N webhooks (one per registered user); process only once.
-        // INSERT OR IGNORE is atomic in SQLite — exactly one concurrent request wins (meta.changes===1).
-        // Do NOT SELECT first: a SELECT+INSERT pattern is racy under concurrent webhook fan-out.
-        // versionId is consistent across all N webhook deliveries of the same event.
-        // messageId is unique per delivery — never use it as primary dedup key.
-        // versionId is consistent across all fan-out deliveries of version events.
-        // For translation/export events (no versionId), use composite key so all fan-out
-        // deliveries dedup correctly. messageId is unique per delivery — last resort only.
-        const dedupId = versionId || ((payloadUserId || '') + documentId + (evt || '')) || messageId;
-        const { meta: dedupMeta } = await env.DB.prepare(
-          "INSERT OR IGNORE INTO processed_events (messageId, createdAt) VALUES (?, ?)"
-        ).bind(dedupId, new Date().toISOString()).run();
-        if (dedupMeta.changes === 1) {
+        ctx.waitUntil((async () => {
+          // Dedup — each event fires N webhooks (one per registered user); process only once.
+          // INSERT OR IGNORE is atomic in SQLite — exactly one concurrent request wins (meta.changes===1).
+          // Do NOT SELECT first: a SELECT+INSERT pattern is racy under concurrent webhook fan-out.
+          // versionId is consistent across all N webhook deliveries of the same event.
+          // For translation/export events (no versionId), Onshape stamps each fan-out delivery with
+          // a slightly different millisecond timestamp — truncate to seconds so all N deliveries of
+          // the same event share one dedupId, while distinct events (seconds apart) remain separate.
+          // messageId is unique per delivery — last resort only.
+          const timestampSec = timestamp ? timestamp.slice(0, 19) : null;
+          const dedupId = versionId || (documentId && evt && timestampSec ? documentId + evt + timestampSec : null) || messageId;
+          const { meta: dedupMeta } = await env.DB.prepare(
+            "INSERT OR IGNORE INTO processed_events (messageId, createdAt) VALUES (?, ?)"
+          ).bind(dedupId, new Date().toISOString()).run();
+          if (dedupMeta.changes === 1) {
 
-          // Resolve creator: export/translation events carry userId directly; version events need lookup
-          let createdBy = null;
-          if (payloadUserId) {
-            const storedEmail = await env.MERGE_PERMS.get(`userid:${payloadUserId}`);
-            if (storedEmail) createdBy = { email: storedEmail, id: payloadUserId };
-          }
-          if (!createdBy && versionId) {
-            createdBy = await onshapeLookupVersionCreator(documentId, versionId, env);
-          }
-
-          if (createdBy?.email) {
-            const record = {
-              timestamp: timestamp || new Date().toISOString(),
-              event: evt || "unknown",
-              documentId,
-              versionId: versionId || null,
-              receivedAt: new Date().toISOString(),
-            };
-            await env.DB.prepare(
-              "INSERT OR REPLACE INTO active_users (email, event, documentId, versionId, timestamp, receivedAt) VALUES (?, ?, ?, ?, ?, ?)"
-            ).bind(
-              createdBy.email,
-              record.event,
-              record.documentId,
-              record.versionId || null,
-              record.timestamp,
-              record.receivedAt
-            ).run();
-
-            if (evt === 'onshape.model.lifecycle.deleted') {
-              // Deletion events are informational — extension cannot intercept DELETE requests.
-              return json({ ok: true }, corsHeaders);
+            // Resolve creator: export/translation events carry userId directly; version events need lookup
+            let createdBy = null;
+            if (payloadUserId) {
+              const storedEmail = await env.MERGE_PERMS.get(`userid:${payloadUserId}`);
+              if (storedEmail) createdBy = { email: storedEmail, id: payloadUserId };
+            }
+            if (!createdBy && versionId) {
+              createdBy = await onshapeLookupVersionCreator(documentId, versionId, env);
             }
 
-            // Violation check — no extension event means extension wasn't running.
-            // Wait 5s before checking: the webhook can arrive before the extension has had time
-            // to POST its compliance event (fetch interceptor → postMessage → sendMessage → SW → server).
-            await new Promise(r => setTimeout(r, 15000));
-            const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
-            const extEvent = await env.DB.prepare(
-              "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-30 minutes')"
-            ).bind(createdBy.email, evt, documentId).first();
-            if (!extEvent && !whitelist.includes(documentId)) {
-              const userId = createdBy.id || await env.MERGE_PERMS.get(`emailid:${createdBy.email}`);
-              if (userId) {
-                const violationRecord = {
-                  email: createdBy.email,
-                  userId,
-                  documentId,
-                  versionId: versionId || null,
-                  event: evt || "unknown",
-                  detectedAt: new Date().toISOString(),
-                  reason: "no_extension_event",
-                };
-                await demoteUser(userId, createdBy.email, env);
-                await env.DB.prepare(
-                  "INSERT OR REPLACE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
-                ).bind(
-                  violationRecord.email,
-                  violationRecord.userId,
-                  violationRecord.documentId,
-                  violationRecord.versionId || null,
-                  violationRecord.event,
-                  violationRecord.detectedAt,
-                  violationRecord.reason
-                ).run();
-                await notifySlack(violationRecord, env);
+            if (createdBy?.email) {
+              const receivedAt = new Date().toISOString();
+              await env.DB.prepare(
+                "INSERT OR REPLACE INTO active_users (email, event, documentId, versionId, timestamp, receivedAt) VALUES (?, ?, ?, ?, ?, ?)"
+              ).bind(
+                createdBy.email,
+                evt || "unknown",
+                documentId,
+                versionId || null,
+                timestamp || receivedAt,
+                receivedAt
+              ).run();
+
+              if (evt === 'onshape.model.lifecycle.deleted') return;
+
+              // Wait 45s before checking: gives the extension pipeline plenty of time to deliver
+              // the compliance event even if the SW needs to wake from idle.
+              await new Promise(r => setTimeout(r, 45000));
+              const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
+              const extEvent = await env.DB.prepare(
+                "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-30 minutes')"
+              ).bind(createdBy.email, evt, documentId).first();
+              if (!extEvent && !whitelist.includes(documentId)) {
+                const userId = createdBy.id || await env.MERGE_PERMS.get(`emailid:${createdBy.email}`);
+                if (userId) {
+                  const violationRecord = {
+                    email: createdBy.email,
+                    userId,
+                    documentId,
+                    versionId: versionId || null,
+                    event: evt || "unknown",
+                    detectedAt: new Date().toISOString(),
+                    reason: "no_extension_event",
+                  };
+                  await demoteUser(userId, createdBy.email, env);
+                  await env.DB.prepare(
+                    "INSERT OR REPLACE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
+                  ).bind(
+                    violationRecord.email,
+                    violationRecord.userId,
+                    violationRecord.documentId,
+                    violationRecord.versionId || null,
+                    violationRecord.event,
+                    violationRecord.detectedAt,
+                    violationRecord.reason
+                  ).run();
+                  await notifySlack(violationRecord, env);
+                }
               }
             }
           }
-        }
+        })());
       }
       return json({ ok: true }, corsHeaders);
     }

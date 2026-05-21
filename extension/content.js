@@ -1314,6 +1314,25 @@
         btn.style.pointerEvents = "none";
         btn.style.cursor = "not-allowed";
       });
+
+      // Re-enable import if browsing inside OTS Parts folder (or subfolder)
+      if (importBtn && importBtn.dataset.oxtCreateGuarded) {
+        const params = new URLSearchParams(window.location.search);
+        const nodeId = params.get("nodeId");
+        if (nodeId && nodeId !== COMPANY_NODE_ID) {
+          chrome.runtime.sendMessage({ type: "get-folder-top", folderId: nodeId }, (resp) => {
+            if (resp?.topFolderName === "OTS Parts") {
+              importBtn.style.opacity = "";
+              importBtn.style.pointerEvents = "";
+              importBtn.style.cursor = "";
+              delete importBtn.dataset.oxtCreateGuarded;
+              console.log("[CreateDropdownGuard] Import re-enabled — OTS Parts folder");
+            } else {
+              console.log("[CreateDropdownGuard] Import stays disabled — folder: " + resp?.topFolderName);
+            }
+          });
+        }
+      }
     }
 
     let _lastDropdown = null;
@@ -1440,6 +1459,16 @@
         e.stopImmediatePropagation();
         showWarning();
         descField.focus();
+      } else {
+        // Valid submit — fire compliance event before XHR starts, well ahead of webhook arrival.
+        const did = window.location.pathname.match(/\/documents\/([a-f0-9]+)/)?.[1];
+        if (did) {
+          chrome.runtime.sendMessage({
+            type: "compliance-event",
+            event: "onshape.model.lifecycle.createversion",
+            documentId: did,
+          }).catch(() => {});
+        }
       }
     }, true);
 
