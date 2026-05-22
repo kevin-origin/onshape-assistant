@@ -188,10 +188,119 @@ async function getDisabledDocs() {
   return disabledDocsCache || [];
 }
 
+async function getDisabledFolderNames() {
+  const { disabledFolderNamesCache, disabledFolderNamesFetchedAt } =
+    await chrome.storage.local.get(["disabledFolderNamesCache", "disabledFolderNamesFetchedAt"]);
+  if (disabledFolderNamesCache && disabledFolderNamesFetchedAt &&
+      Date.now() - disabledFolderNamesFetchedAt < 60 * 60 * 1000) {
+    return disabledFolderNamesCache;
+  }
+  try {
+    const res = await fetch(`${SYNC_SERVER}/api/disabled-folder-names`);
+    if (res.ok) {
+      const data = await res.json();
+      const names = data.disabledFolderNames || [];
+      await chrome.storage.local.set({ disabledFolderNamesCache: names, disabledFolderNamesFetchedAt: Date.now() });
+      return names;
+    }
+  } catch (e) {
+    console.warn("[FolderDisable] fetch failed:", e.message);
+  }
+  return disabledFolderNamesCache || [];
+}
+
+/**
+ * Walk the parentId chain of a doc to find its top-level folder (1-hour cache).
+ * @param {string} docId
+ * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
+ */
+async function getTopLevelFolder(docId) {
+  const cacheKey = `topFolder3_${docId}`;
+  const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
+  if (cached[cacheKey] && (Date.now() - cached[cacheKey].ts < 3600000)) {
+    console.log(`[TopFolder] Cache hit: ${docId} → ${cached[cacheKey].topFolderName}`);
+    return cached[cacheKey];
+  }
+
+  const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
+  let currentId = doc.parentId;
+  let topFolder = null;
+  let prevFolder = null;
+  let depth = 0;
+
+  while (currentId && depth < 10) {
+    const folder = await onshapeFetch(`/api/v10/folders/${currentId}`);
+    if (folder.jsonType !== "folder") {
+      // Non-folder node (workspace root) — top-level user folder is prevFolder
+      topFolder = prevFolder || folder;
+      break;
+    }
+    // Real folder: treat it as the current top candidate
+    topFolder = folder;
+    if (!folder.parentId) break; // parentId=null → this IS the top-level user folder
+    prevFolder = folder;
+    currentId = folder.parentId;
+    depth++;
+  }
+
+  const result = {
+    topFolderName: topFolder?.name || null,
+    topFolderId: topFolder?.id || null,
+    ts: Date.now()
+  };
+  chrome.storage.local.set({ [cacheKey]: result });
+  console.log(`[TopFolder] ${docId} → ${result.topFolderName} (${depth} hops)`);
+  return result;
+}
+
+/**
+ * Walk the parentId chain starting from a folder to find its top-level folder (1-hour cache).
+ * Used for company homepage folder navigation (vs getTopLevelFolder which starts from a doc).
+ * @param {string} folderId
+ * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
+ */
+async function getTopLevelFolderFromFolder(folderId) {
+  const cacheKey = `topFolder3_folder_${folderId}`;
+  const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
+  if (cached[cacheKey] && (Date.now() - cached[cacheKey].ts < 3600000)) {
+    return cached[cacheKey];
+  }
+
+  let currentId = folderId;
+  let topFolder = null;
+  let prevFolder = null;
+  let depth = 0;
+
+  while (currentId && depth < 10) {
+    const folder = await onshapeFetch(`/api/v10/folders/${currentId}`);
+    if (folder.jsonType !== "folder") {
+      topFolder = prevFolder || folder;
+      break;
+    }
+    topFolder = folder;
+    if (!folder.parentId) break;
+    prevFolder = folder;
+    currentId = folder.parentId;
+    depth++;
+  }
+
+  const result = {
+    topFolderName: topFolder?.name || null,
+    topFolderId: topFolder?.id || null,
+    ts: Date.now()
+  };
+  chrome.storage.local.set({ [cacheKey]: result });
+  console.log(`[TopFolder] folder:${folderId} → ${result.topFolderName} (${depth} hops)`);
+  return result;
+}
+
 async function isDocDisabled(docId) {
   if (!docId) return false;
   const docs = await getDisabledDocs();
   if (docs.includes(docId)) return true;
+  const folderInfo = await getTopLevelFolder(docId);
+  const folderNames = await getDisabledFolderNames();
+  if (folderInfo.topFolderName && folderNames.includes(folderInfo.topFolderName)) return true;
   return false;
 }
 
@@ -199,10 +308,11 @@ async function isDocDisabled(docId) {
 // dev branch manifest has "dev_build": true — absent on main.
 const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 
-// Always force-refresh the disabled-docs list on every SW startup.
-// Busting the timestamp ensures we never serve a stale empty list after a doc is added.
-chrome.storage.local.remove(["disabledDocsFetchedAt"], () => {
+// Always force-refresh the disabled-docs and disabled-folder-names lists on every SW startup.
+// Busting the timestamps ensures we never serve a stale empty list after a doc/folder is added.
+chrome.storage.local.remove(["disabledDocsFetchedAt", "disabledFolderNamesFetchedAt"], () => {
   getDisabledDocs();
+  getDisabledFolderNames();
 });
 
 if (IS_PRODUCTION_BUILD) {
@@ -4134,43 +4244,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true;
 
-  } else if (msg.type === "sync-outdated-drawings") {
-    // Fetch out-of-date drawings and sync them in a loop until none remain.
-    // syncApplicationElements returns 204 (empty body) — cannot use onshapePost.
-    // Fire-and-forget — no sendResponse needed.
-    (async () => {
-      const { docId, wid } = msg;
-      if (!docId || !wid) return;
-      try {
-        const xsrf = await getXsrfToken();
-        for (let pass = 0; pass < 10; pass++) {
-          const outdated = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
-          const list = Array.isArray(outdated) ? outdated : (outdated?.items || []);
-          console.log(`[DrawingSync] Pass ${pass + 1} — out-of-date: ${list.length === 0 ? "none" : list.map(e => e.name).join(", ")}`);
-          if (list.length === 0) break;
-          await Promise.all(list.map(el =>
-            fetch(`${ONSHAPE_BASE}/api/documents/d/${docId}/w/${wid}/syncApplicationElements?applicationElementIds=${el.id}`, {
-              method: "POST",
-              credentials: "include",
-              headers: { "Accept": "application/json", "Content-Type": "application/json", "X-XSRF-TOKEN": xsrf },
-              body: "{}",
-            }).then(r => console.log(`[DrawingSync] Synced "${el.name}" → ${r.status}`))
-              .catch(e => console.log(`[DrawingSync] Failed "${el.name}": ${e.message}`))
-          ));
-          // Re-check immediately; only wait if drawings are still outdated (Onshape processing lag)
-          const recheck = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
-          const remaining = Array.isArray(recheck) ? recheck : (recheck?.items || []);
-          console.log(`[DrawingSync] Re-check: ${remaining.length} still outdated`);
-          if (remaining.length === 0) break;
-          console.log(`[DrawingSync] Waiting 1.5s before next pass...`);
-          await new Promise(r => setTimeout(r, 1500));
-        }
-        console.log("[DrawingSync] Done.");
-      } catch (e) {
-        console.log(`[DrawingSync] Error: ${e.message}`);
-      }
-    })();
-
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
     chrome.tabs.query({ active: true, currentWindow: true }, async (tabs) => {
@@ -4378,6 +4451,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await storeDocScanResult(result);
       sendResponse(result);
     });
+    return true;
+
+  } else if (msg.type === "get-top-folder") {
+    (async () => {
+      try {
+        const result = await getTopLevelFolder(msg.docId);
+        sendResponse(result);
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "get-folder-top") {
+    (async () => {
+      try {
+        const result = await getTopLevelFolderFromFolder(msg.folderId);
+        sendResponse(result);
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
     return true;
 
   } else if (msg.type === "get-session-user") {

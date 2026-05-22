@@ -1867,31 +1867,6 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Drawing sync on release — auto-syncs out-of-date drawings when release dialog opens
-  // ---------------------------------------------------------------------------
-  (function initDrawingsSyncOnRelease() {
-    const DIALOG_SEL = "div.modal.release-dialog.show, div.modal.workspace-permissions-dialog.show";
-    let _triggered = false;
-
-    const observer = new MutationObserver(() => {
-      if (_killSwitchActive || _docDisabled) return;
-      const dialog = document.querySelector(DIALOG_SEL);
-      if (dialog && !_triggered) {
-        _triggered = true;
-        const docId = getDocIdFromUrl();
-        const wid   = getWidFromUrl();
-        if (!docId || !wid) return;
-        chrome.runtime.sendMessage({ type: "sync-outdated-drawings", docId, wid });
-      } else if (!dialog) {
-        _triggered = false;
-      }
-    });
-
-    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
-    console.log("[DrawingSync] Observer started");
-  })();
-
-  // ---------------------------------------------------------------------------
   // Assembly Duplicate blocker — hides "Duplicate" from the tab context menu
   // when the right-clicked tab is an assembly (data-icon-src="assembly").
   // ---------------------------------------------------------------------------

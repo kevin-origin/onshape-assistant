@@ -1,0 +1,240 @@
+Flat Pattern View (Drawing Creator)
+-------------------------------------
+- Flat body lookup: GET /api/documents/d/{did}/w/{wid}/insertables?includeFlattenedBodies=true&includeParts=false&elementId={psEid}
+  → items[].isFlattenedBody=true, deterministicId=flat body ID, unflattenedPartDeterministicId=solid part ID
+- Passing flat deterministicId as partId in onshapeCreateViews → silently ignored, no flat view appears
+- Template auto-populates 4 standard views on draw create — explicit createViews call may be redundant
+- CONFIRMED DEAD END: flat pattern views are NOT created via the REST API at all.
+  Onshape's drawing editor runs in a cross-origin iframe (production-drawing-aps1*.onshape.com)
+  and communicates with the backend via a proprietary WebSocket protocol called "Xe".
+  The flat pattern view is triggered by the AutoCAD-style command `m_RunCmd: "^C^C_DRAWINGVIEW"`
+  sent as a JSON XeData message over that WebSocket. No REST /modify call is ever made.
+  Tested orientations tried (all silently ignored by REST): 'front', 'FLAT', 'FLAT_PATTERN'.
+  Tested reference formats tried (all silently ignored): {partId: flatDeterministicId},
+    {isFlatPattern:true, partId:solidId, flatBodyId:flatId}, {insertableQuery:...} (→ 400).
+- CONFIRMED WORKING PATH (via chrome.scripting.executeScript into drawing iframe):
+  Step 1: Focus canvas via CDP Input.dispatchMouseEvent (mousePressed+Released) at canvas center
+           — CRITICAL: without canvas focus, RunCmd silently does nothing (Wt doesn't route command)
+           — canvas coords: iframeRect.left + canvas.offsetLeft + canvas.width/2,
+             iframeRect.top + canvas.offsetTop + canvas.height/2
+  Step 2: chrome.scripting.executeScript(target:{tabId,frameIds:[drawFrameId]}, world:'MAIN')
+           → window.getXeActiveDocument().RunCmd('^C^C_DRAWINGVIEW')
+           — wait ~3s for COsDlgDrawingView to appear in DOM
+  Step 3: chrome.scripting.executeScript(target:{tabId,frameIds:[0]}, world:'MAIN')
+           → iframe.contentWindow.postMessage(msg, iframeOrigin)
+    msg = {
+      messageName: 'itemSelectedInSelectItemDialog',
+      documentId, workspaceId, versionId: '',
+      documentMicroversionId: <fb.microversionId from FRESH insertables call>,  ← CONFIRMED WORKS
+      elementId: <psEid>, elementName, elementType: 'partstudio',
+      elementMicroversionId: <same fb.microversionId>,
+      elementConfiguration: 'default', itemType: 'part',
+      partName: 'Flat pattern of <X>', idTag: <fb.deterministicId>,
+      isFlattenedBody: true, context: '_OSDRAWINGVIEW',
+      includeSurfaces: false, includeWires: false, isSurface: false,
+      isComposite: false, isSketch: false, sketchIds: [], partNumber: '',
+      revision: '', isConfigurable: false, isWire: false, isMesh: false
+    }
+    Origin check: G===t.origin where G='https://cad.onshape.com' — send from parent frame (frameId:0)
+    Effect: fires Wt.emit('partSelected') → XeData OsLoadStatistics → drawing enters placement mode
+  Step 4: CDP Input.dispatchMouseEvent — move mouse to placement position, wait ~1s, then click
+           sequence: mouseMoved → wait 1000ms → mousePressed → wait 100ms → mouseReleased
+           — the 1s pause at position is needed for the view preview to render there before click registers
+           — after click: Onshape automatically starts _PROJECTEDVIEW command (counter increments)
+  Step 5: Cancel _PROJECTEDVIEW with RunCmd('^C^C') in drawing iframe
+           — REST API confirms new view added: GET /api/v6/drawings/d/{did}/w/{wid}/e/{drawEid}/views
+- documentMicroversionId: use microversionId from fresh insertables API response
+    (ALL flat bodies in same Part Studio share the same microversionId — it is the workspace microversion)
+    Endpoint: GET /api/documents/d/{did}/w/{wid}/insertables?includeFlattenedBodies=true&elementId={psEid}
+- idTag = fb.deterministicId from same insertables API call
+- world:'MAIN' is REQUIRED in chrome.scripting.executeScript — Xe/Wt globals only exist in MAIN world
+- iframeOrigin for postMessage target: new URL(drawFrame.url).origin (varies per session/server)
+- After placement, _PROJECTEDVIEW starts automatically — cancel with RunCmd('^C^C') or it will wait indefinitely
+- TESTED TWICE end-to-end (2026-05-06): both runs placed view successfully, REST viewCount incremented
+
+Flat Pattern Views via Xe Protocol — confirmed working (2026-05-14)
+--------------------------------------------------------------------
+- Frame detection: query all production-drawing frames, pick the one whose
+  OnshapeViewObject count matches what the user sees (lowest count = visible editor).
+  Pattern: chrome.webNavigation.getAllFrames → executeScript world:'MAIN' → count
+  entities where m_Class==='OnshapeViewObject'
+
+- Flat body lookup:
+  GET /api/documents/d/{did}/w/{wid}/insertables?includeFlattenedBodies=true&includeParts=false&elementId={psEid}
+  → match fb.unflattenedPartDeterministicId === partId to find the right flat body
+  → use fb.deterministicId as idTag, fb.microversionId as documentMicroversionId
+
+- Auto-scale: fetch flat body bounding box, run through computeScale (AVAILABLE=100mm)
+  GET /api/v10/parts/d/{did}/w/{wid}/e/{eid}/partid/{encodeURIComponent(fb.deterministicId)}/boundingboxes?includeHidden=true
+  → works with flat body deterministicId as partId (not just solid part IDs)
+  e.g. Anderson Cap (406mm wide) → 1:5, Cradle (1321mm wide) → 1:15
+
+- onshapeCreateViews — CONFIRMED WORKING for flat pattern:
+  {
+    messageName: 'onshapeCreateViews', formatVersion: '2021-01-01',
+    views: [{
+      viewType: 'TopLevel', orientation: 'top',   // or 'left', 'front', etc.
+      scale: { scaleSource: 'Custom', numerator: N, denumerator: D },  // NOTE: denumerator (typo)
+      reference: {
+        documentId, elementId,
+        idTag: fb.deterministicId,
+        documentMicroversionId: fb.microversionId,
+        isFlattenedBody: true
+      },
+      position: { x, y },   // mm, origin bottom-left, Y-up (A3 sheet = 420×297mm)
+      showBendLines: true, showBendNotes: true
+    }]
+  }
+  Call: XeRequest.prototype.Promise(getXeActiveDocument(), data, 'onshapeCreateViews')
+  Returns: { status:'OK', results:[{ logicalId:'h:XXXXXXXX', viewId:'...' }] }
+
+- Projected views — CONFIRMED WORKING:
+  { viewType:'Projected', parentView:{ viewId:'<viewId from createViews response>' },
+    position:{ x, y } }
+  Projects in the direction of the offset from parent position.
+  e.g. same x, lower y → projects downward (back/bottom view)
+       higher x, same y → projects to the right (left view in third-angle)
+
+- onshapeEditViews — CONFIRMED WORKING with logicalId from createViews response:
+  { messageName:'onshapeEditViews', formatVersion:'2021-01-01',
+    views:[{ logicalId:'h:XXXXXXXX', viewType:'Projected'/'TopLevel', position:{x,y} }] }
+  NOTE: For Projected views, logicalId from createViews works directly.
+  For TopLevel flat pattern views, use the OnshapeViewObject handle from
+  m_XeDatabase.m_XeEntities (find entities with m_Class==='OnshapeViewObject'),
+  NOT the logicalId returned by createViews (those are AcDbLine/AcDbXrecord handles).
+
+- Tested positions on A3 (420×297mm) sheet, Y-up, origin bottom-left:
+  Top flat pattern: x=60, y=163  (Cradle at 1:15)
+  Left flat pattern: x=200, y=163
+  Projected (below top view): x=60, y=80
+  Projected (right of top view): x=280, y=163  (then edited to x=280 via onshapeEditViews)
+
+- Flat pattern scale vs. 3D views: flat pattern views use AVAILABLE=200mm (vs 100mm for 3D).
+  Double AVAILABLE → approx. 2× larger views on the sheet.
+  e.g. Cradle (1321mm) → 1:15 at AVAILABLE=100, → 1:7 at AVAILABLE=200.
+  Positions for larger scale need more clearance from sheet edges:
+  Top flat pattern (1:7, ~189mm wide): x=110, y=163  (needs x ≥ 95 to avoid left clip)
+  Projected right (1:7):               x=310, y=163
+
+- sw-relay.py extension ID: cbiccdinkmibaglkaihgelmffmnjkmge
+  (update _find_sw_ws_url() if relay stops finding SW target)
+
+Adding a new sheet — CONFIRMED WORKING (2026-05-14)
+-----------------------------------------------------
+- addSheetViaIframe(tabId) is already in background.js (line ~1009).
+  Invoked via message type "test-add-sheet".
+
+- Frame detection: looks for f.url.includes("onshape.com/editor") — this matches
+  production-drawing-*.onshape.com/editor?documentId=... frames correctly.
+
+- Mechanism: dispatches mousedown/mouseup/click on .xenon-dialog-addSheet button.
+  The button lives inside a hidden panel (parent has display:none / class "off")
+  but still responds to direct event dispatch even when not visible.
+  Uses ISOLATED world (no world:'MAIN') — DOM access works fine in isolated world.
+
+- After clicking, the active sheet switches to the new sheet in that frame.
+  Check result: { ok:true, sheetBefore:'Sheet1', sheetAfter:'Sheet2' }
+
+- Which frame shows which sheet: check .active_sheet_label textContent in each
+  production-drawing frame (ISOLATED world executeScript).
+
+- Undo sheet contents: doc.RunCmd('^C^C_U') in MAIN world of the target frame,
+  once per view added. Wait ~2s between each undo call.
+
+BOM API
+-------
+- GET bom: /api/v6/assemblies/d/{did}/w/{wid}/e/{eid}/bom?indented=false&generate_if_absent=true
+  → rows[].headerIdToValue keyed by header ID; material is nested object, use .displayName
+  → REQUIRES /d/ before docId — 404 without it
+- GET templates: /api/v14/tabletemplates/d/{did}?includeDefaults=true&onlyActive=true&templateType=BOM
+- POST metadata: /api/v14/metadata/d/{did}/w/{wid}/e/{eid}/p/{partId} (partId URL-encoded)
+  body: { properties: [{ propertyId, value }] }
+  → writable fields: Part number, Name, Description, Revision, Vendor, Title 1/2/3, Material
+  → Project field (source:4) — POST returns SUCCEEDED but silently does nothing; UI can edit it via unknown endpoint
+- v6 metadata POST also works for writable fields; v14 behaves identically
+
+Dimension textPosition coordinate system
+----------------------------------------
+- `textPosition` in an Onshape annotation requires a `viewId` field to be interpreted
+  in view/model space (meters, same coordinate system as jsongeometry output).
+  Without `viewId`, Onshape treats the coordinate as sheet space (mm from bottom-left
+  of the sheet) — so a model-scale value like [0.3, 0.1, 0] appears at 0.3mm from the
+  sheet edge, i.e. effectively the origin.
+  Fix: always include `viewId: vid` in the textPosition object, same as edge references.
+
+- Once viewId is set, textPosition coordinates are raw model meters matching jsongeometry.
+  Text offset formula to get 5mm paper clearance outside the geometry:
+    off = 5 * scaleDen / (scaleNum * 1000)   // paper_mm * (scaleDen/scaleNum) / 1000
+  Height dim text (right of geometry):  [maxXval + off, midHval, 0]
+  Width dim text (above geometry):       [midXval, maxHval + off, 0]
+  No need to look up view.position — view-space coords are self-contained.
+
+- chrome.runtime.reload() does not re-read files from disk for admin-console installed
+  extensions. The extension reads from Chrome's internal profile copy, not the source
+  directory. To deploy changes: publish a new version via publish.py.
+
+Drawing auto-sync on release dialog (removed 2026-05-21)
+---------------------------------------------------------
+WHY REMOVED: Auto-syncing drawings updated document.modifiedAt, which caused the
+export stale-revision check (check-releases handler) to always flag the doc as
+having "changes since last release" — making export impossible right after releasing.
+
+content.js — initDrawingsSyncOnRelease() IIFE
+Watched for the release dialog appearing via MutationObserver, then fired a
+fire-and-forget "sync-outdated-drawings" message to the background.
+
+  const DIALOG_SEL = "div.modal.release-dialog.show, div.modal.workspace-permissions-dialog.show";
+  let _triggered = false;
+
+  const observer = new MutationObserver(() => {
+    if (_killSwitchActive || _docDisabled) return;
+    const dialog = document.querySelector(DIALOG_SEL);
+    if (dialog && !_triggered) {
+      _triggered = true;
+      const docId = getDocIdFromUrl();
+      const wid   = getWidFromUrl();
+      if (!docId || !wid) return;
+      chrome.runtime.sendMessage({ type: "sync-outdated-drawings", docId, wid });
+    } else if (!dialog) {
+      _triggered = false;
+    }
+  });
+
+  observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+
+background.js — "sync-outdated-drawings" message handler
+Polled /api/documents/d/{docId}/w/{wid}/outofdatedelements in a loop (up to 10
+passes, 1.5s delay between passes). Synced each out-of-date drawing via POST
+syncApplicationElements. Used raw fetch (not onshapePost) because endpoint returns 204.
+
+  } else if (msg.type === "sync-outdated-drawings") {
+    (async () => {
+      const { docId, wid } = msg;
+      if (!docId || !wid) return;
+      try {
+        const xsrf = await getXsrfToken();
+        for (let pass = 0; pass < 10; pass++) {
+          const outdated = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
+          const list = Array.isArray(outdated) ? outdated : (outdated?.items || []);
+          if (list.length === 0) break;
+          await Promise.all(list.map(el =>
+            fetch(`${ONSHAPE_BASE}/api/documents/d/${docId}/w/${wid}/syncApplicationElements?applicationElementIds=${el.id}`, {
+              method: "POST", credentials: "include",
+              headers: { "Accept": "application/json", "Content-Type": "application/json", "X-XSRF-TOKEN": xsrf },
+              body: "{}",
+            })
+          ));
+          const recheck = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
+          const remaining = Array.isArray(recheck) ? recheck : (recheck?.items || []);
+          if (remaining.length === 0) break;
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      } catch (e) { console.log(`[DrawingSync] Error: ${e.message}`); }
+    })();
+
+API notes:
+- GET  /api/documents/d/{did}/w/{wid}/outofdatedelements  → array of {id, name, ...}
+- POST /api/documents/d/{did}/w/{wid}/syncApplicationElements?applicationElementIds={eid}
+  Returns 204 (empty body) — must use raw fetch, not onshapePost; requires X-XSRF-TOKEN
+- If re-adding: trigger AFTER release is confirmed (not on dialog open) to avoid
+  the modifiedAt race with the stale-revision check.
