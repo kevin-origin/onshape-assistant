@@ -173,11 +173,11 @@ Dimension textPosition coordinate system
   extensions. The extension reads from Chrome's internal profile copy, not the source
   directory. To deploy changes: publish a new version via publish.py.
 
-Drawing auto-sync on release dialog (removed 2026-05-21)
----------------------------------------------------------
-WHY REMOVED: Auto-syncing drawings updated document.modifiedAt, which caused the
-export stale-revision check (check-releases handler) to always flag the doc as
-having "changes since last release" — making export impossible right after releasing.
+Drawing auto-sync on release dialog (re-added 2026-05-27)
+----------------------------------------------------------
+Previously removed 2026-05-21 over concern that syncing bumped document.modifiedAt,
+but the stale-revision check has a 60s grace window — so triggering on dialog open
+is fine and the original removal was unnecessary.
 
 content.js — initDrawingsSyncOnRelease() IIFE
 Watched for the release dialog appearing via MutationObserver, then fired a
@@ -236,5 +236,4 @@ API notes:
 - GET  /api/documents/d/{did}/w/{wid}/outofdatedelements  → array of {id, name, ...}
 - POST /api/documents/d/{did}/w/{wid}/syncApplicationElements?applicationElementIds={eid}
   Returns 204 (empty body) — must use raw fetch, not onshapePost; requires X-XSRF-TOKEN
-- If re-adding: trigger AFTER release is confirmed (not on dialog open) to avoid
-  the modifiedAt race with the stale-revision check.
+- Trigger on dialog open — modifiedAt bump is a non-issue due to 60s stale grace window.

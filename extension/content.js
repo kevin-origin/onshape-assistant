@@ -1685,6 +1685,32 @@
   })();
 
   // ---------------------------------------------------------------------------
+  // Drawing sync on release — auto-syncs out-of-date drawings when release dialog opens
+  // ---------------------------------------------------------------------------
+
+  (function initDrawingsSyncOnRelease() {
+    let _lastModal = null;
+
+    const observer = new MutationObserver(() => {
+      if (_killSwitchActive || _docDisabled) return;
+      const modal = document.querySelector("div.modal.release-dialog.show");
+      if (modal && modal !== _lastModal) {
+        _lastModal = modal;
+        const docId = getDocIdFromUrl();
+        const wid   = getWidFromUrl();
+        if (!docId || !wid) return;
+        console.log("[DrawingSync] Release dialog opened — syncing outdated drawings");
+        chrome.runtime.sendMessage({ type: "sync-outdated-drawings", docId, wid });
+      } else if (!modal && _lastModal) {
+        _lastModal = null;
+      }
+    });
+
+    observer.observe(document.body, { childList: true, subtree: true, attributes: true, attributeFilter: ["class"] });
+    console.log("[DrawingSync] Observer started");
+  })();
+
+  // ---------------------------------------------------------------------------
   // Workspace protection guard — only doc creator can toggle protection
   // ---------------------------------------------------------------------------
   // Selector confirmed via live DOM: div.modal.workspace-permissions-dialog.show
