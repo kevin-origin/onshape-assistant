@@ -188,10 +188,119 @@ async function getDisabledDocs() {
   return disabledDocsCache || [];
 }
 
+async function getDisabledFolderNames() {
+  const { disabledFolderNamesCache, disabledFolderNamesFetchedAt } =
+    await chrome.storage.local.get(["disabledFolderNamesCache", "disabledFolderNamesFetchedAt"]);
+  if (disabledFolderNamesCache && disabledFolderNamesFetchedAt &&
+      Date.now() - disabledFolderNamesFetchedAt < 60 * 60 * 1000) {
+    return disabledFolderNamesCache;
+  }
+  try {
+    const res = await fetch(`${SYNC_SERVER}/api/disabled-folder-names`);
+    if (res.ok) {
+      const data = await res.json();
+      const names = data.disabledFolderNames || [];
+      await chrome.storage.local.set({ disabledFolderNamesCache: names, disabledFolderNamesFetchedAt: Date.now() });
+      return names;
+    }
+  } catch (e) {
+    console.warn("[FolderDisable] fetch failed:", e.message);
+  }
+  return disabledFolderNamesCache || [];
+}
+
+/**
+ * Walk the parentId chain of a doc to find its top-level folder (1-hour cache).
+ * @param {string} docId
+ * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
+ */
+async function getTopLevelFolder(docId) {
+  const cacheKey = `topFolder3_${docId}`;
+  const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
+  if (cached[cacheKey] && (Date.now() - cached[cacheKey].ts < 3600000)) {
+    console.log(`[TopFolder] Cache hit: ${docId} → ${cached[cacheKey].topFolderName}`);
+    return cached[cacheKey];
+  }
+
+  const doc = await onshapeFetch(`/api/v10/documents/${docId}`);
+  let currentId = doc.parentId;
+  let topFolder = null;
+  let prevFolder = null;
+  let depth = 0;
+
+  while (currentId && depth < 10) {
+    const folder = await onshapeFetch(`/api/v10/folders/${currentId}`);
+    if (folder.jsonType !== "folder") {
+      // Non-folder node (workspace root) — top-level user folder is prevFolder
+      topFolder = prevFolder || folder;
+      break;
+    }
+    // Real folder: treat it as the current top candidate
+    topFolder = folder;
+    if (!folder.parentId) break; // parentId=null → this IS the top-level user folder
+    prevFolder = folder;
+    currentId = folder.parentId;
+    depth++;
+  }
+
+  const result = {
+    topFolderName: topFolder?.name || null,
+    topFolderId: topFolder?.id || null,
+    ts: Date.now()
+  };
+  chrome.storage.local.set({ [cacheKey]: result });
+  console.log(`[TopFolder] ${docId} → ${result.topFolderName} (${depth} hops)`);
+  return result;
+}
+
+/**
+ * Walk the parentId chain starting from a folder to find its top-level folder (1-hour cache).
+ * Used for company homepage folder navigation (vs getTopLevelFolder which starts from a doc).
+ * @param {string} folderId
+ * @returns {Promise<{topFolderName:string|null, topFolderId:string|null, ts:number}>}
+ */
+async function getTopLevelFolderFromFolder(folderId) {
+  const cacheKey = `topFolder3_folder_${folderId}`;
+  const cached = await new Promise(res => chrome.storage.local.get(cacheKey, res));
+  if (cached[cacheKey] && (Date.now() - cached[cacheKey].ts < 3600000)) {
+    return cached[cacheKey];
+  }
+
+  let currentId = folderId;
+  let topFolder = null;
+  let prevFolder = null;
+  let depth = 0;
+
+  while (currentId && depth < 10) {
+    const folder = await onshapeFetch(`/api/v10/folders/${currentId}`);
+    if (folder.jsonType !== "folder") {
+      topFolder = prevFolder || folder;
+      break;
+    }
+    topFolder = folder;
+    if (!folder.parentId) break;
+    prevFolder = folder;
+    currentId = folder.parentId;
+    depth++;
+  }
+
+  const result = {
+    topFolderName: topFolder?.name || null,
+    topFolderId: topFolder?.id || null,
+    ts: Date.now()
+  };
+  chrome.storage.local.set({ [cacheKey]: result });
+  console.log(`[TopFolder] folder:${folderId} → ${result.topFolderName} (${depth} hops)`);
+  return result;
+}
+
 async function isDocDisabled(docId) {
   if (!docId) return false;
   const docs = await getDisabledDocs();
   if (docs.includes(docId)) return true;
+  const folderInfo = await getTopLevelFolder(docId);
+  const folderNames = await getDisabledFolderNames();
+  if (folderInfo.topFolderName && folderNames.includes(folderInfo.topFolderName)) return true;
   return false;
 }
 
@@ -199,10 +308,11 @@ async function isDocDisabled(docId) {
 // dev branch manifest has "dev_build": true — absent on main.
 const IS_PRODUCTION_BUILD = !chrome.runtime.getManifest().dev_build;
 
-// Always force-refresh the disabled-docs list on every SW startup.
-// Busting the timestamp ensures we never serve a stale empty list after a doc is added.
-chrome.storage.local.remove(["disabledDocsFetchedAt"], () => {
+// Always force-refresh the disabled-docs and disabled-folder-names lists on every SW startup.
+// Busting the timestamps ensures we never serve a stale empty list after a doc/folder is added.
+chrome.storage.local.remove(["disabledDocsFetchedAt", "disabledFolderNamesFetchedAt"], () => {
   getDisabledDocs();
+  getDisabledFolderNames();
 });
 
 if (IS_PRODUCTION_BUILD) {
@@ -328,6 +438,63 @@ const DRAWING_TEMPLATE = {
   templateWorkspaceId: "038996d814574f1d1d3b774a",
   templateElementId: "4a80b03c1485e714f587fb61",
 };
+
+// ---------------------------------------------------------------------------
+// Drawing Link Sync — writes "Drawing link" metadata property onto parts
+// ---------------------------------------------------------------------------
+const DRAWING_LINK_PROP_ID = "6a15830dfefe74effb076888";
+
+// In-memory set: "${did}:${wid}" already synced this SW session (avoids redundant writes)
+const _drawingLinkSynced = new Set();
+
+async function syncDrawingLinks(did, wid, force = false) {
+  const cacheKey = `${did}:${wid}`;
+  if (!force && _drawingLinkSynced.has(cacheKey)) return null;
+  _drawingLinkSynced.add(cacheKey);
+
+  // 1. Find all drawing elements (APPLICATION type with drawing dataType)
+  const els = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+  const drawings = els.filter(e => e.dataType === "onshape-app/drawing");
+  if (!drawings.length) return { updated: 0, errors: 0 };
+
+  // 2. Build map: "${elementId}:${idTag}" → Set of drawing URLs
+  const partToUrls = {};
+  for (const drawing of drawings) {
+    const drawingUrl = `https://cad.onshape.com/documents/${did}/w/${wid}/e/${drawing.id}`;
+    try {
+      const r = await onshapeFetch(`/api/v6/appelements/d/${did}/w/${wid}/e/${drawing.id}/resolvereferences`);
+      const seen = new Set();
+      for (const ref of (r.resolvedReferences || [])) {
+        if (ref.isFlattenedPart) continue;
+        const key = `${ref.targetElementId}:${ref.idTag}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!partToUrls[key]) partToUrls[key] = new Set();
+        partToUrls[key].add(drawingUrl);
+      }
+    } catch (_) {}
+  }
+
+  // 3. Write metadata in parallel — 1 URL → write it, 2+ URLs → write error string
+  const entries = Object.entries(partToUrls);
+  const results = await Promise.all(entries.map(async ([key, urls]) => {
+    const colonIdx = key.indexOf(":");
+    const elementId = key.slice(0, colonIdx);
+    const idTag = key.slice(colonIdx + 1);
+    const value = urls.size === 1 ? [...urls][0] : "Error, multiple drawing URLs.";
+    try {
+      await onshapePost(
+        `/api/metadata/d/${did}/w/${wid}/e/${elementId}/p/${encodeURIComponent(idTag)}`,
+        { properties: [{ propertyId: DRAWING_LINK_PROP_ID, value }] }
+      );
+      return "ok";
+    } catch (_) { return "err"; }
+  }));
+
+  const updated = results.filter(r => r === "ok").length;
+  const errors  = results.filter(r => r === "err").length;
+  return { updated, errors };
+}
 
 function broadcastDrawLog(message, cls) {
   console.log(`[Drawing] ${message}`);
@@ -3931,12 +4098,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Fetch parts list and return to popup for selection
     (async () => {
       const parsed = parsePartStudioUrl(msg.url || "");
-      if (!parsed) { sendResponse({ error: "Invalid Part Studio URL" }); return; }
+      if (!parsed) { sendResponse({ notPartStudio: true }); return; }
       if (await isDocDisabled(parsed.docId)) {
         sendResponse({ error: "Extension disabled for this document." });
         return;
       }
       try {
+        const elList = await onshapeFetch(`/api/v10/documents/d/${parsed.docId}/w/${parsed.wid}/elements?elementId=${parsed.eid}`);
+        const el = Array.isArray(elList) ? elList[0] : (elList?.items?.[0]);
+        if (!el || el.elementType !== "PARTSTUDIO") { sendResponse({ notPartStudio: true }); return; }
         const configParam = msg.configuration ? `?configuration=${encodeURIComponent(msg.configuration)}` : "";
         const parts = await onshapeFetch(`/api/v10/parts/d/${parsed.docId}/w/${parsed.wid}/e/${parsed.eid}${configParam}`);
         if (!parts || parts.length === 0) { sendResponse({ error: "No parts found" }); return; }
@@ -4133,43 +4303,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return true;
-
-  } else if (msg.type === "sync-outdated-drawings") {
-    // Fetch out-of-date drawings and sync them in a loop until none remain.
-    // syncApplicationElements returns 204 (empty body) — cannot use onshapePost.
-    // Fire-and-forget — no sendResponse needed.
-    (async () => {
-      const { docId, wid } = msg;
-      if (!docId || !wid) return;
-      try {
-        const xsrf = await getXsrfToken();
-        for (let pass = 0; pass < 10; pass++) {
-          const outdated = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
-          const list = Array.isArray(outdated) ? outdated : (outdated?.items || []);
-          console.log(`[DrawingSync] Pass ${pass + 1} — out-of-date: ${list.length === 0 ? "none" : list.map(e => e.name).join(", ")}`);
-          if (list.length === 0) break;
-          await Promise.all(list.map(el =>
-            fetch(`${ONSHAPE_BASE}/api/documents/d/${docId}/w/${wid}/syncApplicationElements?applicationElementIds=${el.id}`, {
-              method: "POST",
-              credentials: "include",
-              headers: { "Accept": "application/json", "Content-Type": "application/json", "X-XSRF-TOKEN": xsrf },
-              body: "{}",
-            }).then(r => console.log(`[DrawingSync] Synced "${el.name}" → ${r.status}`))
-              .catch(e => console.log(`[DrawingSync] Failed "${el.name}": ${e.message}`))
-          ));
-          // Re-check immediately; only wait if drawings are still outdated (Onshape processing lag)
-          const recheck = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
-          const remaining = Array.isArray(recheck) ? recheck : (recheck?.items || []);
-          console.log(`[DrawingSync] Re-check: ${remaining.length} still outdated`);
-          if (remaining.length === 0) break;
-          console.log(`[DrawingSync] Waiting 1.5s before next pass...`);
-          await new Promise(r => setTimeout(r, 1500));
-        }
-        console.log("[DrawingSync] Done.");
-      } catch (e) {
-        console.log(`[DrawingSync] Error: ${e.message}`);
-      }
-    })();
 
   } else if (msg.type === "test-add-sheet") {
     // Manual test: run on the active tab's drawing
@@ -4378,6 +4511,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       await storeDocScanResult(result);
       sendResponse(result);
     });
+    return true;
+
+  } else if (msg.type === "get-top-folder") {
+    (async () => {
+      try {
+        const result = await getTopLevelFolder(msg.docId);
+        sendResponse(result);
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
+    return true;
+
+  } else if (msg.type === "get-folder-top") {
+    (async () => {
+      try {
+        const result = await getTopLevelFolderFromFolder(msg.folderId);
+        sendResponse(result);
+      } catch (e) {
+        sendResponse({ error: e.message });
+      }
+    })();
     return true;
 
   } else if (msg.type === "get-session-user") {
@@ -4876,7 +5031,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const parsed = parsePartStudioUrl(url);
         if (!parsed) throw new Error("Invalid assembly URL");
         const { docId: did, wid, eid } = parsed;
-        const docInfo = await onshapeFetch(`/api/v10/documents/d/${did}`).catch(() => ({}));
+        const docInfo = await onshapeFetch(`/api/v10/documents/${did}`).catch(() => ({}));
         const safeDocName = (docInfo?.name || did).replace(/[\\/:*?"<>|]/g, "_").trim();
         const configParam = configuration ? `&configuration=${encodeURIComponent(configuration)}` : "";
         chrome.runtime.sendMessage({ type: "bom-export-progress", message: "Fetching BOM data..." }).catch(() => {});
@@ -4899,7 +5054,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         const csvStr = csvLines.join("\r\n");
         const csvBytes = new TextEncoder().encode(csvStr);
-        const filename = `bom_${safeDocName}.csv`;
+        const filename = `BOM - ${safeDocName}.csv`;
         chrome.downloads.download({ url: `data:text/csv;base64,${toBase64(csvBytes)}`, filename, saveAs: false });
         chrome.runtime.sendMessage({ type: "bom-export-done", filename, rows: bom.rows?.length ?? 0 }).catch(() => {});
       } catch (e) {
@@ -4965,6 +5120,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return true;
+
+  } else if (msg.type === "sync-drawing-links") {
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const result = await syncDrawingLinks(msg.did, msg.wid, true);
+        chrome.runtime.sendMessage({ type: "drawing-link-sync-done", result }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "drawing-link-sync-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
   }
 });
 
@@ -4994,6 +5161,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       console.log("[SPA] Content script not reachable, reloading tab");
       chrome.tabs.reload(tabId);
     });
+    if (newDocId !== prevDocId) {
+      const widM = changeInfo.url.match(/\/w\/([a-f0-9]+)/);
+      if (widM) syncDrawingLinks(newDocId, widM[1]).catch(e => console.log("[DrawingLinkSync] Auto-sync failed:", e.message));
+    }
   }
 });
 
