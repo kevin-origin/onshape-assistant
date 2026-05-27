@@ -2,6 +2,34 @@
 
 ---
 
+### vs. Traditional PLM
+
+Enterprise PLMs (Windchill, Teamcenter, Arena, Enovia, Vault) solve real problems — BOM governance, release control, access enforcement, compliance tracking — but at a cost: separate login, a parallel data model, weeks of integration work, per-seat licensing, and engineers who context-switch out of their CAD tool to do "PLM tasks."
+
+Onshape Assistant embeds the same governance layer directly inside the Onshape UI, where engineers already work:
+
+| Capability | Traditional PLM | Onshape Assistant |
+|---|---|---|
+| BOM export | Separate tool, manual sync | One click, live from assembly |
+| Release gating | Separate approval workflow | Enforced in-place (materials, descriptions, drawings) |
+| Access / merge control | PLM roles & permissions | Per-document owner list, merge dialog disabled for others |
+| Compliance monitoring | Audit log in PLM system | Webhook-driven, Slack-alerted, visible in popup |
+| Drawing generation | Manual or template-based | Fully automated — views, scale, title block, dimensions |
+| URDF / robot export | Custom scripts or none | One-click, ROS-ready ZIP |
+| Folder / naming rules | PLM taxonomy, manual entry | Auto-detected, auto-corrected in Onshape |
+| Violation tracking | PLM audit trail | Real-time, per-event, surfaced in popup |
+
+**Key advantages over a separate PLM:**
+- **Zero context-switch** — engineers never leave Onshape. Rules fire where actions happen.
+- **No integration layer** — no PDM connector, no data sync job, no schema mapping.
+- **Incremental adoption** — each feature is independent. Turn on what you need.
+- **Near-zero cost** — a Cloudflare Worker + browser extension vs. five-figure PLM licenses.
+- **Instant enforcement** — blocks happen at the click, not after a nightly sync.
+
+Where a full PLM still wins: multi-site supplier portals, ERP integration, long-horizon change order workflows, and compliance documentation for regulated industries (FDA, ITAR). For teams that live in Onshape and need governance without enterprise overhead, Onshape Assistant covers most of the value at a fraction of the complexity.
+
+---
+
 ### Assisting Features
 
 **1. Automated Drawing Creator**
@@ -83,5 +111,8 @@ Allows an admin to disable the extension for specific documents via the popup or
 **25. Per-Folder Disable (Admin)**
 Disables the extension for all documents inside a named top-level company folder. Folder names are fetched from the sync server and cached hourly — no extension rebuild needed to block a new folder.
 
-**26. Compliance Monitor**
+**26. Tab Limit Guard**
+Disables the tab creation dropdown options (Part Studio, Drawing, Variable Studio, Import) when a document reaches 40 tabs — Onshape's practical stability limit. Warns at 35 tabs via a browser notification so engineers can reorganize before hitting the cap.
+
+**27. Compliance Monitor**
 Tracks rule violations (unauthorized exports, merges without permission, etc.) via Onshape webhooks and per-event extension signals. Violations are recorded on the sync server and surfaced in the popup's Violations section. Sends Slack alerts to admins and can demote offending users.

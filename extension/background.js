@@ -4221,7 +4221,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
           .map(r => new Date(r.createdAt).getTime())
           .reduce((a, b) => Math.max(a, b), 0);
         const modifiedAt = new Date(docData.modifiedAt).getTime();
-        const stale = modifiedAt > latestRevAt;
+        const stale = modifiedAt > latestRevAt + 60000;
         console.log(`[ExportDetect] Doc ${msg.docId}: ${items.length} revision(s), latest=${new Date(latestRevAt).toISOString()}, modifiedAt=${docData.modifiedAt}, stale=${stale}`);
         sendResponse({ hasReleases: true, staleRevision: stale, count: items.length });
       } catch (e) {
@@ -5130,6 +5130,32 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (e) {
         chrome.runtime.sendMessage({ type: "drawing-link-sync-done", error: e.message }).catch(() => {});
       }
+    })();
+    return;
+
+  } else if (msg.type === "sync-outdated-drawings") {
+    (async () => {
+      const { docId, wid } = msg;
+      if (!docId || !wid) return;
+      try {
+        const xsrf = await getXsrfToken();
+        for (let pass = 0; pass < 10; pass++) {
+          const outdated = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
+          const list = Array.isArray(outdated) ? outdated : (outdated?.items || []);
+          if (list.length === 0) break;
+          await Promise.all(list.map(el =>
+            fetch(`${ONSHAPE_BASE}/api/documents/d/${docId}/w/${wid}/syncApplicationElements?applicationElementIds=${el.id}`, {
+              method: "POST", credentials: "include",
+              headers: { "Accept": "application/json", "Content-Type": "application/json", "X-XSRF-TOKEN": xsrf },
+              body: "{}",
+            })
+          ));
+          const recheck = await onshapeFetch(`/api/documents/d/${docId}/w/${wid}/outofdatedelements`);
+          const remaining = Array.isArray(recheck) ? recheck : (recheck?.items || []);
+          if (remaining.length === 0) break;
+          await new Promise(r => setTimeout(r, 1500));
+        }
+      } catch (e) { console.log(`[DrawingSync] Error: ${e.message}`); }
     })();
     return;
   }
