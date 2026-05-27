@@ -439,6 +439,63 @@ const DRAWING_TEMPLATE = {
   templateElementId: "4a80b03c1485e714f587fb61",
 };
 
+// ---------------------------------------------------------------------------
+// Drawing Link Sync — writes "Drawing link" metadata property onto parts
+// ---------------------------------------------------------------------------
+const DRAWING_LINK_PROP_ID = "6a15830dfefe74effb076888";
+
+// In-memory set: "${did}:${wid}" already synced this SW session (avoids redundant writes)
+const _drawingLinkSynced = new Set();
+
+async function syncDrawingLinks(did, wid, force = false) {
+  const cacheKey = `${did}:${wid}`;
+  if (!force && _drawingLinkSynced.has(cacheKey)) return null;
+  _drawingLinkSynced.add(cacheKey);
+
+  // 1. Find all drawing elements (APPLICATION type with drawing dataType)
+  const els = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+  const drawings = els.filter(e => e.dataType === "onshape-app/drawing");
+  if (!drawings.length) return { updated: 0, errors: 0 };
+
+  // 2. Build map: "${elementId}:${idTag}" → Set of drawing URLs
+  const partToUrls = {};
+  for (const drawing of drawings) {
+    const drawingUrl = `https://cad.onshape.com/documents/${did}/w/${wid}/e/${drawing.id}`;
+    try {
+      const r = await onshapeFetch(`/api/v6/appelements/d/${did}/w/${wid}/e/${drawing.id}/resolvereferences`);
+      const seen = new Set();
+      for (const ref of (r.resolvedReferences || [])) {
+        if (ref.isFlattenedPart) continue;
+        const key = `${ref.targetElementId}:${ref.idTag}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        if (!partToUrls[key]) partToUrls[key] = new Set();
+        partToUrls[key].add(drawingUrl);
+      }
+    } catch (_) {}
+  }
+
+  // 3. Write metadata in parallel — 1 URL → write it, 2+ URLs → write error string
+  const entries = Object.entries(partToUrls);
+  const results = await Promise.all(entries.map(async ([key, urls]) => {
+    const colonIdx = key.indexOf(":");
+    const elementId = key.slice(0, colonIdx);
+    const idTag = key.slice(colonIdx + 1);
+    const value = urls.size === 1 ? [...urls][0] : "Error, multiple drawing URLs.";
+    try {
+      await onshapePost(
+        `/api/metadata/d/${did}/w/${wid}/e/${elementId}/p/${encodeURIComponent(idTag)}`,
+        { properties: [{ propertyId: DRAWING_LINK_PROP_ID, value }] }
+      );
+      return "ok";
+    } catch (_) { return "err"; }
+  }));
+
+  const updated = results.filter(r => r === "ok").length;
+  const errors  = results.filter(r => r === "err").length;
+  return { updated, errors };
+}
+
 function broadcastDrawLog(message, cls) {
   console.log(`[Drawing] ${message}`);
   chrome.runtime.sendMessage({ type: "draw-log", message, cls }).catch(() => {});
@@ -4041,12 +4098,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Fetch parts list and return to popup for selection
     (async () => {
       const parsed = parsePartStudioUrl(msg.url || "");
-      if (!parsed) { sendResponse({ error: "Invalid Part Studio URL" }); return; }
+      if (!parsed) { sendResponse({ notPartStudio: true }); return; }
       if (await isDocDisabled(parsed.docId)) {
         sendResponse({ error: "Extension disabled for this document." });
         return;
       }
       try {
+        const elList = await onshapeFetch(`/api/v10/documents/d/${parsed.docId}/w/${parsed.wid}/elements?elementId=${parsed.eid}`);
+        const el = Array.isArray(elList) ? elList[0] : (elList?.items?.[0]);
+        if (!el || el.elementType !== "PARTSTUDIO") { sendResponse({ notPartStudio: true }); return; }
         const configParam = msg.configuration ? `?configuration=${encodeURIComponent(msg.configuration)}` : "";
         const parts = await onshapeFetch(`/api/v10/parts/d/${parsed.docId}/w/${parsed.wid}/e/${parsed.eid}${configParam}`);
         if (!parts || parts.length === 0) { sendResponse({ error: "No parts found" }); return; }
@@ -4971,7 +5031,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const parsed = parsePartStudioUrl(url);
         if (!parsed) throw new Error("Invalid assembly URL");
         const { docId: did, wid, eid } = parsed;
-        const docInfo = await onshapeFetch(`/api/v10/documents/d/${did}`).catch(() => ({}));
+        const docInfo = await onshapeFetch(`/api/v10/documents/${did}`).catch(() => ({}));
         const safeDocName = (docInfo?.name || did).replace(/[\\/:*?"<>|]/g, "_").trim();
         const configParam = configuration ? `&configuration=${encodeURIComponent(configuration)}` : "";
         chrome.runtime.sendMessage({ type: "bom-export-progress", message: "Fetching BOM data..." }).catch(() => {});
@@ -4994,7 +5054,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         }
         const csvStr = csvLines.join("\r\n");
         const csvBytes = new TextEncoder().encode(csvStr);
-        const filename = `bom_${safeDocName}.csv`;
+        const filename = `BOM - ${safeDocName}.csv`;
         chrome.downloads.download({ url: `data:text/csv;base64,${toBase64(csvBytes)}`, filename, saveAs: false });
         chrome.runtime.sendMessage({ type: "bom-export-done", filename, rows: bom.rows?.length ?? 0 }).catch(() => {});
       } catch (e) {
@@ -5060,6 +5120,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return true;
+
+  } else if (msg.type === "sync-drawing-links") {
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const result = await syncDrawingLinks(msg.did, msg.wid, true);
+        chrome.runtime.sendMessage({ type: "drawing-link-sync-done", result }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "drawing-link-sync-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
   }
 });
 
@@ -5089,6 +5161,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       console.log("[SPA] Content script not reachable, reloading tab");
       chrome.tabs.reload(tabId);
     });
+    if (newDocId !== prevDocId) {
+      const widM = changeInfo.url.match(/\/w\/([a-f0-9]+)/);
+      if (widM) syncDrawingLinks(newDocId, widM[1]).catch(e => console.log("[DrawingLinkSync] Auto-sync failed:", e.message));
+    }
   }
 });
 

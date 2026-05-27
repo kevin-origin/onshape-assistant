@@ -260,7 +260,8 @@
     console.log("[Scanner] autoScan starting for", docId);
 
     // Wait for tab bar to be ready
-    await waitForTabBar();
+    const tabBarReady = await waitForTabBar();
+    if (!tabBarReady) { console.log("[Scanner] autoScan: aborted — tab bar not found (signed out?)"); return; }
     console.log("[Scanner] Tab bar ready");
 
     // Scan immediately — tab sorting is manual only (Sort Tabs button in Folder Generator)
@@ -358,11 +359,12 @@
     for (let i = 0; i < 30; i++) {
       if (document.querySelector(".os-tab-name")) {
         console.log(`[Scanner] waitForTabBar: found after ${i * 500}ms`);
-        return;
+        return true;
       }
       await sleep(500);
     }
     console.log("[Scanner] waitForTabBar: timed out after 15s");
+    return false;
   }
 
   // ---------------------------------------------------------------------------

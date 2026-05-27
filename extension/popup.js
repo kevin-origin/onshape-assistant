@@ -767,7 +767,8 @@ function appendDrawLog(text, cls) {
 $btnCreateDraw.addEventListener("click", () => {
   const url = _drawingUrl;
   if (!url || !url.includes("cad.onshape.com/documents/")) {
-    appendDrawLog("Not on a Part Studio tab", "log-err");
+    $drawLog.innerHTML = "";
+    appendDrawLog("Open a Part Studio to use the Drawing Generator", "log-err");
     return;
   }
 
@@ -778,8 +779,13 @@ $btnCreateDraw.addEventListener("click", () => {
 
   chrome.runtime.sendMessage({ type: "fetch-parts", url }, (response) => {
     $btnCreateDraw.disabled = false;
-    if (!response || response.error) {
-      appendDrawLog(response ? response.error : "No response from background", "log-err");
+    if (!response || response.notPartStudio) {
+      $drawLog.innerHTML = "";
+      appendDrawLog("Open a Part Studio to use the Drawing Generator", "log-err");
+      return;
+    }
+    if (response.error) {
+      appendDrawLog(response.error, "log-err");
       return;
     }
     _fetchedParts = response.parts || [];
@@ -867,6 +873,48 @@ $btnConfirm.addEventListener("click", () => {
       $btnCreateDraw.disabled = false;
     }
   });
+});
+
+// ---------------------------------------------------------------------------
+// Drawing Link Sync
+// ---------------------------------------------------------------------------
+
+const $btnSyncLinks     = document.getElementById("btnSyncDrawingLinks");
+const $syncLinksStatus  = document.getElementById("drawingLinkSyncStatus");
+
+$btnSyncLinks.addEventListener("click", () => {
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
+    const widMatch = url.match(/\/w\/([a-f0-9]+)/);
+    if (!docMatch || !widMatch) {
+      $syncLinksStatus.style.display = "block";
+      $syncLinksStatus.style.color = "#ff6b6b";
+      $syncLinksStatus.textContent = "Not on a workspace tab";
+      return;
+    }
+    $btnSyncLinks.disabled = true;
+    $syncLinksStatus.style.display = "block";
+    $syncLinksStatus.style.color = "#aaa";
+    $syncLinksStatus.textContent = "Syncing...";
+    chrome.runtime.sendMessage({ type: "sync-drawing-links", did: docMatch[1], wid: widMatch[1] });
+  });
+});
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type !== "drawing-link-sync-done") return;
+  $btnSyncLinks.disabled = false;
+  if (msg.error) {
+    $syncLinksStatus.style.color = "#ff6b6b";
+    $syncLinksStatus.textContent = "Error: " + msg.error;
+  } else {
+    const r = msg.result;
+    $syncLinksStatus.style.color = "#95d5b2";
+    $syncLinksStatus.textContent = r
+      ? `Done — ${r.updated} updated, ${r.errors} errors`
+      : "Already synced";
+  }
 });
 
 // ---------------------------------------------------------------------------
@@ -1211,6 +1259,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     }
   } else if (msg.type === "urdf-configs-loaded") {
     if (msg.notAssembly) {
+      document.getElementById("urdfLog").innerHTML = "";
       appendUrdfLog("Open an Assembly tab to use URDF Export", "log-err");
     } else {
       renderUrdfConfigs(msg.params || []);
@@ -1219,6 +1268,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     appendUrdfLog("Error: " + msg.error, "log-err");
   } else if (msg.type === "bom-configs-loaded") {
     if (msg.notAssembly) {
+      document.getElementById("bomGenLog").innerHTML = "";
       appendBomLog("Open an Assembly tab to use the BOM Generator", "log-err");
     } else {
       renderBomConfigs(msg.params || []);

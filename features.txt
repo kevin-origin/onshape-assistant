@@ -17,7 +17,7 @@ Export all flat-pattern DXFs and drawing PDFs from a document as a single ZIP. P
 Export individual parts from any Part Studio as STEP or STL files. Toggle format, pick parts, download.
 
 **5. URDF Export**
-Generate a ROS-compatible URDF package from any Onshape assembly. Downloads everything as a ZIP ready for a ROS workspace.
+Generate a ROS-compatible URDF package from any Onshape assembly. Mirrors the onshape-to-robot output format — includes sub-assembly hierarchy, config.json, and mesh files. Downloads as a ZIP ready for a ROS workspace.
 
 **6. BOM Generator**
 Export a Bill of Materials from any assembly as a CSV. Supports configuration parameters before generating.
@@ -65,20 +65,23 @@ Blocks release creation if any parts have a default name or are missing a materi
 **19. Rollback Reset**
 Automatically rolls every Part Studio's feature bar to the end when the release dialog opens, so no part is in a rolled-back state before release.
 
-**20. Drawing Auto-Sync**
-Automatically syncs all out-of-date drawings when the release dialog opens, so drawings are always current before a release is submitted.
-
-**21. Assembly Duplicate Blocker**
+**20. Assembly Duplicate Blocker**
 Hides the "Duplicate" option from the right-click menu on assembly tabs.
 
-**22. Doc Permissions**
+**21. Doc Permissions**
 Assign merge owners per document. Anyone not on the list has their merge dialog disabled with a warning naming the document owner.
 
-**23. Release Branch Guard**
+**22. Release Branch Guard**
 Blocks release candidate creation when the current workspace is not the document's main workspace.
 
-**24. Workspace Protection Guard**
+**23. Workspace Protection Guard**
 Restricts the workspace protection toggle to the document creator only.
 
-**25. Per-Document Disable (Admin)**
+**24. Per-Document Disable (Admin)**
 Allows an admin to disable the extension for specific documents via the popup or a remote command.
+
+**25. Per-Folder Disable (Admin)**
+Disables the extension for all documents inside a named top-level company folder. Folder names are fetched from the sync server and cached hourly — no extension rebuild needed to block a new folder.
+
+**26. Compliance Monitor**
+Tracks rule violations (unauthorized exports, merges without permission, etc.) via Onshape webhooks and per-event extension signals. Violations are recorded on the sync server and surfaced in the popup's Violations section. Sends Slack alerts to admins and can demote offending users.
