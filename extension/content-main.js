@@ -116,6 +116,17 @@
 
     XMLHttpRequest.prototype.send = function (...args) {
       if (this._oxtMethod === 'POST' && typeof this._oxtUrl === 'string') {
+        // Block STEP/STP file imports
+        if (/\/api\/elements\/upload\//.test(this._oxtUrl) && args[0] instanceof FormData) {
+          const fname = decodeURIComponent(args[0].get('encodedFilename') || '');
+          if (/\.steps?$/i.test(fname)) {
+            showStepImportBlockedToast();
+            const self = this;
+            setTimeout(() => self.dispatchEvent(new ProgressEvent('error')), 0);
+            return;
+          }
+        }
+
         const url = this._oxtUrl;
         let event = null, did = null;
 
@@ -139,6 +150,21 @@
       }
       return _origSend.apply(this, args);
     };
+  }
+
+  function showStepImportBlockedToast() {
+    if (document.getElementById('oxt-step-import-blocked-toast')) return;
+    const toast = document.createElement('div');
+    toast.id = 'oxt-step-import-blocked-toast';
+    toast.textContent = 'STEP/STP file imports are not permitted.';
+    Object.assign(toast.style, {
+      position: 'fixed', bottom: '32px', left: '50%', transform: 'translateX(-50%)',
+      background: '#d32f2f', color: '#fff', padding: '10px 20px',
+      borderRadius: '4px', fontSize: '14px', zIndex: '99999',
+      boxShadow: '0 2px 8px rgba(0,0,0,0.3)', pointerEvents: 'none'
+    });
+    document.body.appendChild(toast);
+    setTimeout(() => toast.remove(), 4000);
   }
 
   function showAssemblyBlockedToast() {
