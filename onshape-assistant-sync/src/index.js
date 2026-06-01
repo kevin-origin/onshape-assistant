@@ -14,6 +14,10 @@ const WEBHOOK_EVENTS = [
 
 export default {
   async fetch(request, env, ctx) {
+    // Piggyback pending violation checks on every request — cron unreliable on free tier.
+    // Non-blocking: response returns immediately, processing happens in background.
+    ctx.waitUntil(processPendingChecks(env));
+
     const corsHeaders = {
       "Access-Control-Allow-Origin": "*",
       "Access-Control-Allow-Methods": "GET, PUT, DELETE, OPTIONS",
@@ -293,44 +297,8 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // --- Process pending violation checks (every cron trigger) ---
-    const { results: pending } = await env.DB.prepare(
-      "SELECT * FROM pending_checks WHERE checkAfter <= datetime('now')"
-    ).all();
-    const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
-    for (const check of pending) {
-      await env.DB.prepare("DELETE FROM pending_checks WHERE id = ?").bind(check.id).run();
-      const extEvent = await env.DB.prepare(
-        "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-30 minutes')"
-      ).bind(check.email, check.event, check.documentId).first();
-      if (!extEvent && !whitelist.includes(check.documentId)) {
-        const userId = check.userId || await env.MERGE_PERMS.get(`emailid:${check.email}`);
-        if (userId) {
-          const violationRecord = {
-            email: check.email,
-            userId,
-            documentId: check.documentId,
-            versionId: check.versionId || null,
-            event: check.event,
-            detectedAt: new Date().toISOString(),
-            reason: "no_extension_event",
-          };
-          await demoteUser(userId, check.email, env);
-          await env.DB.prepare(
-            "INSERT OR REPLACE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
-          ).bind(
-            violationRecord.email,
-            violationRecord.userId,
-            violationRecord.documentId,
-            violationRecord.versionId || null,
-            violationRecord.event,
-            violationRecord.detectedAt,
-            violationRecord.reason
-          ).run();
-          await notifySlack(violationRecord, env);
-        }
-      }
-    }
+    // --- Process pending violation checks ---
+    await processPendingChecks(env);
 
     // --- D1 cleanup (stale row expiry) ---
     await env.DB.prepare(
@@ -364,6 +332,55 @@ export default {
     }
   },
 };
+
+/**
+ * Processes all pending violation checks whose checkAfter time has passed.
+ * Called on every fetch request (non-blocking via ctx.waitUntil) and from the scheduled handler.
+ * Deletes each pending_check before checking so concurrent calls don't double-process.
+ */
+async function processPendingChecks(env) {
+  const { results: pending } = await env.DB.prepare(
+    "SELECT * FROM pending_checks WHERE checkAfter <= datetime('now')"
+  ).all();
+  if (!pending.length) return;
+  const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
+  for (const check of pending) {
+    const { meta } = await env.DB.prepare(
+      "DELETE FROM pending_checks WHERE id = ? AND checkAfter <= datetime('now')"
+    ).bind(check.id).run();
+    if (!meta.changes) continue; // another concurrent request already claimed it
+    const extEvent = await env.DB.prepare(
+      "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-30 minutes')"
+    ).bind(check.email, check.event, check.documentId).first();
+    if (!extEvent && !whitelist.includes(check.documentId)) {
+      const userId = check.userId || await env.MERGE_PERMS.get(`emailid:${check.email}`);
+      if (userId) {
+        const violationRecord = {
+          email: check.email,
+          userId,
+          documentId: check.documentId,
+          versionId: check.versionId || null,
+          event: check.event,
+          detectedAt: new Date().toISOString(),
+          reason: "no_extension_event",
+        };
+        await demoteUser(userId, check.email, env);
+        await env.DB.prepare(
+          "INSERT OR REPLACE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        ).bind(
+          violationRecord.email,
+          violationRecord.userId,
+          violationRecord.documentId,
+          violationRecord.versionId || null,
+          violationRecord.event,
+          violationRecord.detectedAt,
+          violationRecord.reason
+        ).run();
+        await notifySlack(violationRecord, env);
+      }
+    }
+  }
+}
 
 /**
  * Deletes the user's existing webhook (if any) and registers a fresh one.
