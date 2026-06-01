@@ -364,9 +364,8 @@ async function processPendingChecks(env) {
           detectedAt: new Date().toISOString(),
           reason: "no_extension_event",
         };
-        await demoteUser(userId, check.email, env);
-        await env.DB.prepare(
-          "INSERT OR REPLACE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
+        const { meta: vMeta } = await env.DB.prepare(
+          "INSERT OR IGNORE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
         ).bind(
           violationRecord.email,
           violationRecord.userId,
@@ -376,7 +375,10 @@ async function processPendingChecks(env) {
           violationRecord.detectedAt,
           violationRecord.reason
         ).run();
-        await notifySlack(violationRecord, env);
+        if (vMeta.changes === 1) {
+          await demoteUser(userId, check.email, env);
+          await notifySlack(violationRecord, env);
+        }
       }
     }
   }
