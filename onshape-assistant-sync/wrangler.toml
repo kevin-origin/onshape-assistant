@@ -17,4 +17,4 @@ database_name = "onshape-compliance"
 database_id = "72425074-7db7-42ec-8d4c-ef58a55874b7"
 
 [triggers]
-crons = ["0 2 * * *"]
+crons = ["0 2 * * *", "*/5 * * * *"]

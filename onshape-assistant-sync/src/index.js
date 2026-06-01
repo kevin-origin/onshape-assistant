@@ -112,40 +112,11 @@ export default {
 
               if (evt === 'onshape.model.lifecycle.deleted') return;
 
-              // Wait 45s before checking: gives the extension pipeline plenty of time to deliver
-              // the compliance event even if the SW needs to wake from idle.
-              await new Promise(r => setTimeout(r, 45000));
-              const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
-              const extEvent = await env.DB.prepare(
-                "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-30 minutes')"
-              ).bind(createdBy.email, evt, documentId).first();
-              if (!extEvent && !whitelist.includes(documentId)) {
-                const userId = createdBy.id || await env.MERGE_PERMS.get(`emailid:${createdBy.email}`);
-                if (userId) {
-                  const violationRecord = {
-                    email: createdBy.email,
-                    userId,
-                    documentId,
-                    versionId: versionId || null,
-                    event: evt || "unknown",
-                    detectedAt: new Date().toISOString(),
-                    reason: "no_extension_event",
-                  };
-                  await demoteUser(userId, createdBy.email, env);
-                  await env.DB.prepare(
-                    "INSERT OR REPLACE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
-                  ).bind(
-                    violationRecord.email,
-                    violationRecord.userId,
-                    violationRecord.documentId,
-                    violationRecord.versionId || null,
-                    violationRecord.event,
-                    violationRecord.detectedAt,
-                    violationRecord.reason
-                  ).run();
-                  await notifySlack(violationRecord, env);
-                }
-              }
+              // Queue violation check — cron processes pending_checks every 5 min.
+              // Avoids the Cloudflare free-tier 30s wall-clock kill that broke inline setTimeout.
+              await env.DB.prepare(
+                "INSERT INTO pending_checks (email, userId, documentId, versionId, event, checkAfter, createdAt) VALUES (?, ?, ?, ?, ?, datetime('now', '+45 seconds'), datetime('now'))"
+              ).bind(createdBy.email, createdBy.id || null, documentId, versionId || null, evt || "unknown").run();
             }
           }
         })());
@@ -322,7 +293,46 @@ export default {
   },
 
   async scheduled(event, env, ctx) {
-    // --- D1 cleanup (stale row expiry, replacing KV TTLs) ---
+    // --- Process pending violation checks (every cron trigger) ---
+    const { results: pending } = await env.DB.prepare(
+      "SELECT * FROM pending_checks WHERE checkAfter <= datetime('now')"
+    ).all();
+    const whitelist = await env.MERGE_PERMS.get("__whitelisted_docs__", "json") || [];
+    for (const check of pending) {
+      await env.DB.prepare("DELETE FROM pending_checks WHERE id = ?").bind(check.id).run();
+      const extEvent = await env.DB.prepare(
+        "SELECT recordedAt FROM extension_events WHERE email = ? AND event = ? AND documentId = ? AND recordedAt > datetime('now', '-30 minutes')"
+      ).bind(check.email, check.event, check.documentId).first();
+      if (!extEvent && !whitelist.includes(check.documentId)) {
+        const userId = check.userId || await env.MERGE_PERMS.get(`emailid:${check.email}`);
+        if (userId) {
+          const violationRecord = {
+            email: check.email,
+            userId,
+            documentId: check.documentId,
+            versionId: check.versionId || null,
+            event: check.event,
+            detectedAt: new Date().toISOString(),
+            reason: "no_extension_event",
+          };
+          await demoteUser(userId, check.email, env);
+          await env.DB.prepare(
+            "INSERT OR REPLACE INTO violations (email, userId, documentId, versionId, event, detectedAt, reason) VALUES (?, ?, ?, ?, ?, ?, ?)"
+          ).bind(
+            violationRecord.email,
+            violationRecord.userId,
+            violationRecord.documentId,
+            violationRecord.versionId || null,
+            violationRecord.event,
+            violationRecord.detectedAt,
+            violationRecord.reason
+          ).run();
+          await notifySlack(violationRecord, env);
+        }
+      }
+    }
+
+    // --- D1 cleanup (stale row expiry) ---
     await env.DB.prepare(
       "DELETE FROM processed_events WHERE createdAt < datetime('now', '-2 hours')"
     ).run();
@@ -332,18 +342,23 @@ export default {
     await env.DB.prepare(
       "DELETE FROM extension_events WHERE recordedAt < datetime('now', '-35 minutes')"
     ).run();
+    await env.DB.prepare(
+      "DELETE FROM pending_checks WHERE createdAt < datetime('now', '-2 hours')"
+    ).run();
     // Violations: keep indefinitely — only manual delete clears them
 
-    // --- Daily webhook re-registration for all enrolled users ---
-    const { keys } = await env.MERGE_PERMS.list({ prefix: "userkeys:" });
-    for (const { name } of keys) {
-      const email = name.slice("userkeys:".length);
-      const userKeys = await env.MERGE_PERMS.get(name, "json");
-      if (userKeys) {
-        try {
-          await reRegisterWebhookForUser(email, userKeys, env);
-        } catch (e) {
-          console.error(`[webhook-refresh] failed for ${email}: ${e.message}`);
+    // --- Daily webhook re-registration (2 AM cron only) ---
+    if (event.cron === "0 2 * * *") {
+      const { keys } = await env.MERGE_PERMS.list({ prefix: "userkeys:" });
+      for (const { name } of keys) {
+        const email = name.slice("userkeys:".length);
+        const userKeys = await env.MERGE_PERMS.get(name, "json");
+        if (userKeys) {
+          try {
+            await reRegisterWebhookForUser(email, userKeys, env);
+          } catch (e) {
+            console.error(`[webhook-refresh] failed for ${email}: ${e.message}`);
+          }
         }
       }
     }
