@@ -531,6 +531,16 @@
   <div id="sectionUrdf" class="section">
     <h3><button class="btn-back" id="btnBackFromUrdf">Back</button> URDF Export</h3>
 
+    <div style="margin-top:8px;">
+      <label for="urdfMeshQuality">Mesh quality</label>
+      <select id="urdfMeshQuality">
+        <option value="default">Default (Onshape)</option>
+        <option value="high">High (0.1 rad)</option>
+        <option value="medium">Medium (0.3 rad)</option>
+        <option value="low">Low (0.5 rad)</option>
+      </select>
+    </div>
+
     <div id="urdfConfigPanel" style="display:none;margin-top:6px;">
       <div id="urdfConfigList"></div>
       <div class="btn-row" style="margin-top:10px;">

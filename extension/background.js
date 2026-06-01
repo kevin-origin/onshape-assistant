@@ -3318,11 +3318,14 @@ function extractMateParams(featureMessage) {
  * @param {string} [configuration] - Onshape configuration string (optional)
  * @returns {Promise<void>} Broadcasts urdf-progress messages; sends urdf-done on completion
  */
-async function generateUrdf(did, wid, eid, configuration) {
+async function generateUrdf(did, wid, eid, configuration, meshQuality) {
   const bcast = (msg, cls) =>
     chrome.runtime.sendMessage({ type: "urdf-progress", message: msg, cls }).catch(() => {});
 
   const cfgParam = configuration ? `&configuration=${encodeURIComponent(configuration)}` : "";
+  const _qualityMap = { high: "0.1", medium: "0.3", low: "0.5" };
+  const _tolValue = _qualityMap[meshQuality];
+  const tolParam = _tolValue ? `&angleTolerance=${_tolValue}` : "";
   bcast("Fetching assembly definition...");
   // includeMateFeatures/includeMateConnectors ensure rootAssembly.features is populated;
   // includeNonSolids captures surface bodies that may appear in mates.
@@ -3482,7 +3485,7 @@ async function generateUrdf(did, wid, eid, configuration) {
       }
       const resp = await fetch(
         `${ONSHAPE_BASE}/api/v6/parts/d/${exportDid}/${wvm}/e/${inst.elementId}` +
-        `/partid/${encodeURIComponent(inst.partId)}/stl?mode=binary&units=meter&angleTolerance=0.3`,
+        `/partid/${encodeURIComponent(inst.partId)}/stl?mode=binary&units=meter${tolParam}`,
         { credentials: "include" }
       );
       if (!resp.ok) throw new Error(`STL ${resp.status}`);
@@ -4904,7 +4907,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
 
   } else if (msg.type === "export-urdf") {
-    const { url, configuration } = msg;
+    const { url, configuration, meshQuality } = msg;
     if (!url) { sendResponse({ ok: true }); return; }
     sendResponse({ ok: true });
     // Web Lock keeps Chrome from terminating the SW during the long export.
@@ -4915,7 +4918,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       try {
         const parsed = parsePartStudioUrl(url);
         if (!parsed) throw new Error("Invalid assembly URL — must contain /documents/{did}/w/{wid}/e/{eid}");
-        await generateUrdf(parsed.docId, parsed.wid, parsed.eid, configuration);
+        await generateUrdf(parsed.docId, parsed.wid, parsed.eid, configuration, meshQuality);
       } catch (e) {
         chrome.runtime.sendMessage({ type: "urdf-done", error: e.message }).catch(() => {});
       }

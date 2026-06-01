@@ -646,6 +646,15 @@ document.getElementById("btnRunExport3d").addEventListener("click", () => {
 let _urdfUrl = "";
 let _urdfKeepalivePort = null;
 
+// Persist mesh quality selection
+const $urdfMeshQuality = document.getElementById("urdfMeshQuality");
+chrome.storage.local.get("urdfMeshQuality", (data) => {
+  if (data.urdfMeshQuality) $urdfMeshQuality.value = data.urdfMeshQuality;
+});
+$urdfMeshQuality.addEventListener("change", () => {
+  chrome.storage.local.set({ urdfMeshQuality: $urdfMeshQuality.value });
+});
+
 function appendUrdfLog(text, cls) {
   const $log = document.getElementById("urdfLog");
   $log.style.display = "block";
@@ -702,7 +711,7 @@ document.getElementById("btnGenerateUrdf").addEventListener("click", () => {
   appendUrdfLog("Starting URDF export...");
   // Open a persistent port — Chrome keeps the SW alive for the entire duration.
   _urdfKeepalivePort = chrome.runtime.connect({ name: "urdf-export-keepalive" });
-  chrome.runtime.sendMessage({ type: "export-urdf", url: _urdfUrl, configuration }, (response) => {
+  chrome.runtime.sendMessage({ type: "export-urdf", url: _urdfUrl, configuration, meshQuality: $urdfMeshQuality.value }, (response) => {
     if (!response) {
       appendUrdfLog("No response from background — try reloading extension", "log-err");
       btn.disabled = false;
