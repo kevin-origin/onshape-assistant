@@ -1308,33 +1308,13 @@
       if (!isHomepage()) return;
       const docBtn = dropdown.querySelector("button.create-new-document");
       const folderBtn = dropdown.querySelector("button.create-new-folder");
-      const importBtn = dropdown.querySelector("button.create-new-import");
-      [docBtn, folderBtn, importBtn].forEach(btn => {
+      [docBtn, folderBtn].forEach(btn => {
         if (!btn || btn.dataset.oxtCreateGuarded) return;
         btn.dataset.oxtCreateGuarded = "1";
         btn.style.opacity = "0.4";
         btn.style.pointerEvents = "none";
         btn.style.cursor = "not-allowed";
       });
-
-      // Re-enable import if browsing inside OTS Parts folder (or subfolder)
-      if (importBtn && importBtn.dataset.oxtCreateGuarded) {
-        const params = new URLSearchParams(window.location.search);
-        const nodeId = params.get("nodeId");
-        if (nodeId && nodeId !== COMPANY_NODE_ID) {
-          chrome.runtime.sendMessage({ type: "get-folder-top", folderId: nodeId }, (resp) => {
-            if (resp?.topFolderName === "OTS Parts") {
-              importBtn.style.opacity = "";
-              importBtn.style.pointerEvents = "";
-              importBtn.style.cursor = "";
-              delete importBtn.dataset.oxtCreateGuarded;
-              console.log("[CreateDropdownGuard] Import re-enabled — OTS Parts folder");
-            } else {
-              console.log("[CreateDropdownGuard] Import stays disabled — folder: " + resp?.topFolderName);
-            }
-          });
-        }
-      }
     }
 
     let _lastDropdown = null;
@@ -1786,49 +1766,21 @@
   }
 
   // ---------------------------------------------------------------------------
-  // Insert tab import guard — disable Import in insert-tab dropdown unless
-  // the doc's top-level folder is "OTS Parts"
   // Tab limit guard — disable create items in dropdown when tabs >= 40
   // ---------------------------------------------------------------------------
   // Selectors confirmed via live DOM observation (2026-05-07):
   //   Dropdown:       ul.dropdown-menu.bottom-up
-  //   Import item:    a#upload-button
   //   Part Studio:    a#create-part-studio-button
   //   Drawing:        a#create-drawing-button
   //   Variable Studio: a#create-variable-studio-button
   // ---------------------------------------------------------------------------
   /**
-   * Disable the Import item in the insert-tab dropdown unless the doc is in the "OTS Parts"
-   * top-level folder. Also enforces a 40-tab limit by disabling create options near that cap.
+   * Enforces a 40-tab limit by disabling create options in the insert-tab dropdown near that cap.
    */
   function initInsertTabGuard() {
     function applyGuard() {
       const menu = document.querySelector("ul.dropdown-menu.bottom-up");
       if (!menu || menu.offsetHeight === 0) return;
-
-      // Import guard
-      const importItem = menu.querySelector("a#upload-button");
-      if (importItem && !importItem.dataset.oxtImportGuarded) {
-        importItem.dataset.oxtImportGuarded = "1";
-        importItem.style.opacity = "0.4";
-        importItem.style.pointerEvents = "none";
-        importItem.style.cursor = "not-allowed";
-        console.log("[InsertTabGuard] Import disabled by default");
-
-        const docId = getDocIdFromUrl();
-        if (docId) {
-          chrome.runtime.sendMessage({ type: "get-top-folder", docId }, (resp) => {
-            if (resp?.topFolderName === "OTS Parts") {
-              importItem.style.opacity = "";
-              importItem.style.pointerEvents = "";
-              importItem.style.cursor = "";
-              console.log("[InsertTabGuard] Import enabled — OTS Parts doc");
-            } else {
-              console.log("[InsertTabGuard] Import stays disabled — top folder: " + resp?.topFolderName);
-            }
-          });
-        }
-      }
 
       // Tab limit guard — disable create items when doc has >= 40 tabs
       const tabCount = parseInt(document.documentElement.dataset.oxtTabCount, 10);
