@@ -764,6 +764,21 @@
     }
   }
 
+  // Check if current doc is in OTS Parts and update oxtOtsParts dataset for content-main.js.
+  // Called on page load and SPA navigation so the state is always fresh before any import attempt.
+  function refreshOtsParts(docId) {
+    if (!docId) { delete document.documentElement.dataset.oxtOtsParts; return; }
+    chrome.runtime.sendMessage({ type: "get-top-folder", docId }, (resp) => {
+      if (resp?.topFolderName === "OTS Parts") {
+        document.documentElement.dataset.oxtOtsParts = "1";
+        console.log("[OtsParts] OTS Parts doc — STEP restriction lifted");
+      } else {
+        delete document.documentElement.dataset.oxtOtsParts;
+        console.log("[OtsParts] Not OTS Parts — STEP restriction active");
+      }
+    });
+  }
+
   // ---------------------------------------------------------------------------
   // Assembly guard — write oxtAssemblyCount to DOM dataset so content-main.js
   // (MAIN world) can read it without an extra API call
@@ -865,6 +880,7 @@
     }
     // Wait for setup check before scanning — prevents folder overlay from showing on new docs
     // await maybeSetupDoc();
+    refreshOtsParts(_docId);
     runOnDocLoad();
     maybeHideToolbar();
   });
@@ -875,7 +891,7 @@
     if (msg.type === "spa-navigated") {
       console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
       _docDisabled = false; // reset for new doc before re-checking
-      delete document.documentElement.dataset.oxtOtsParts; // re-evaluated on next insert-tab click
+      delete document.documentElement.dataset.oxtOtsParts;
       // Re-check doc whitelist for the new doc
       const _navDocId = getDocIdFromUrl();
       if (_navDocId) {
@@ -892,6 +908,7 @@
       _notifiedDocIds.clear(); // reset notification tracking for new doc
       removeFolderOverlay();
       // await maybeSetupDoc();
+      refreshOtsParts(_navDocId);
       runOnDocLoad();
       maybeHideToolbar();
     }
@@ -1842,15 +1859,6 @@
           if (resp && typeof resp.count === "number") {
             document.documentElement.dataset.oxtAssemblyCount = String(resp.count);
             console.log("[InsertTabGuard] Assembly count refreshed:", resp.count);
-          }
-        });
-        // Check OTS Parts folder so content-main.js STEP block knows to skip
-        chrome.runtime.sendMessage({ type: "get-top-folder", docId }, (resp) => {
-          if (resp?.topFolderName === "OTS Parts") {
-            document.documentElement.dataset.oxtOtsParts = "1";
-            console.log("[InsertTabGuard] OTS Parts doc — STEP restriction lifted");
-          } else {
-            delete document.documentElement.dataset.oxtOtsParts;
           }
         });
       }, true);

@@ -126,7 +126,7 @@
    * and show a toast — unless the kill switch is active.
    */
   function initStepFileInputGuard() {
-    document.addEventListener('change', function (e) {
+    function handleFileEvent(e) {
       if (document.documentElement.dataset.oxtKillSwitch) return;
       if (document.documentElement.dataset.oxtOtsParts) return;
       if (e.target.type !== 'file') return;
@@ -134,9 +134,12 @@
       if (file && /\.(step|stp)$/i.test(file.name)) {
         e.target.value = ''; // clear selection so Onshape reads empty files list
         e.stopImmediatePropagation();
+        e.preventDefault();
         showStepBlockedToast();
       }
-    }, true);
+    }
+    document.addEventListener('change', handleFileEvent, true);
+    document.addEventListener('input', handleFileEvent, true);
   }
 
   /**
@@ -160,11 +163,15 @@
         if (
           !document.documentElement.dataset.oxtKillSwitch &&
           !document.documentElement.dataset.oxtOtsParts &&
-          /\/api\/elements\/upload\//.test(this._oxtUrl) &&
+          /\/api\/(v\d+\/)?elements\/upload\//.test(this._oxtUrl) &&
           args[0] instanceof FormData
         ) {
-          const fname = decodeURIComponent(args[0].get('encodedFilename') || '');
-          if (/\.(step|stp)$/i.test(fname)) {
+          const formData = args[0];
+          const fname = decodeURIComponent(formData.get('encodedFilename') || '');
+          const fileObj = formData.get('file');
+          const isStep = /\.(step|stp)$/i.test(fname) ||
+                         (fileObj instanceof File && /\.(step|stp)$/i.test(fileObj.name));
+          if (isStep) {
             showStepBlockedToast();
             const self = this;
             setTimeout(() => self.dispatchEvent(new ProgressEvent('error')), 0);
