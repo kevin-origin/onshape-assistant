@@ -755,6 +755,15 @@
   let _killSwitchActive = false; // set true if background says extension is disabled
   let _docDisabled = false;     // set true if current doc is in the disabled-docs list; resets on navigation
 
+  // Write kill switch state to DOM dataset so content-main.js (MAIN world) can read it
+  function setKillSwitchDataset(active) {
+    if (active) {
+      document.documentElement.dataset.oxtKillSwitch = '1';
+    } else {
+      delete document.documentElement.dataset.oxtKillSwitch;
+    }
+  }
+
   // ---------------------------------------------------------------------------
   // Assembly guard — write oxtAssemblyCount to DOM dataset so content-main.js
   // (MAIN world) can read it without an extra API call
@@ -837,6 +846,7 @@
   chrome.runtime.sendMessage({ type: "check-kill-switch" }, async (resp) => {
     if (resp?.disabled) {
       _killSwitchActive = true;
+      setKillSwitchDataset(true);
       console.log("[Scanner] Kill switch active — content script disabled");
       return;
     }

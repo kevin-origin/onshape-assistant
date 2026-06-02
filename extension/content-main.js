@@ -93,10 +93,47 @@
         }
       }
 
+      // Block STEP file uploads unless kill switch is active
+      if (
+        typeof url === 'string' &&
+        /\/api\/elements\/upload\//.test(url) &&
+        opts?.method === 'POST' &&
+        !document.documentElement.dataset.oxtKillSwitch
+      ) {
+        const body = opts.body;
+        if (body instanceof FormData) {
+          const file = body.get('file');
+          if (file instanceof File && /\.(step|stp)$/i.test(file.name)) {
+            showStepBlockedToast();
+            return new Response(
+              JSON.stringify({ message: 'STEP file imports are not allowed' }),
+              { status: 400, headers: { 'Content-Type': 'application/json' } }
+            );
+          }
+        }
+      }
+
       const promise = _fetch.apply(this, args);
 
       return promise;
     };
+  }
+
+  /**
+   * Backstop guard: intercept file input change events in the capture phase.
+   * If the user selects a .step/.stp file, stop the event before Onshape sees it
+   * and show a toast — unless the kill switch is active.
+   */
+  function initStepFileInputGuard() {
+    document.addEventListener('change', function (e) {
+      if (document.documentElement.dataset.oxtKillSwitch) return;
+      if (e.target.type !== 'file') return;
+      const file = e.target.files?.[0];
+      if (file && /\.(step|stp)$/i.test(file.name)) {
+        e.stopImmediatePropagation();
+        showStepBlockedToast();
+      }
+    }, true);
   }
 
   /**
@@ -116,11 +153,15 @@
 
     XMLHttpRequest.prototype.send = function (...args) {
       if (this._oxtMethod === 'POST' && typeof this._oxtUrl === 'string') {
-        // Block STEP/STP file imports
-        if (/\/api\/elements\/upload\//.test(this._oxtUrl) && args[0] instanceof FormData) {
+        // Block STEP/STP file imports unless kill switch is active
+        if (
+          !document.documentElement.dataset.oxtKillSwitch &&
+          /\/api\/elements\/upload\//.test(this._oxtUrl) &&
+          args[0] instanceof FormData
+        ) {
           const fname = decodeURIComponent(args[0].get('encodedFilename') || '');
           if (/\.steps?$/i.test(fname)) {
-            showStepImportBlockedToast();
+            showStepBlockedToast();
             const self = this;
             setTimeout(() => self.dispatchEvent(new ProgressEvent('error')), 0);
             return;
@@ -152,11 +193,11 @@
     };
   }
 
-  function showStepImportBlockedToast() {
-    if (document.getElementById('oxt-step-import-blocked-toast')) return;
+  function showStepBlockedToast() {
+    if (document.getElementById('oxt-step-blocked-toast')) return;
     const toast = document.createElement('div');
-    toast.id = 'oxt-step-import-blocked-toast';
-    toast.textContent = 'STEP/STP file imports are not permitted.';
+    toast.id = 'oxt-step-blocked-toast';
+    toast.textContent = 'STEP file imports are not allowed.';
     Object.assign(toast.style, {
       position: 'fixed', bottom: '32px', left: '50%', transform: 'translateX(-50%)',
       background: '#d32f2f', color: '#fff', padding: '10px 20px',
@@ -267,4 +308,5 @@
   initAssemblyFetchGuard();
   initXhrComplianceGuard();
   initContextCreationGuard();
+  initStepFileInputGuard();
 })();
