@@ -7,6 +7,12 @@ If D1 migration breaks anything, roll back to this release.
 ## Reference repo
 onshape-to-robot source is cloned locally at `onshape-to-robot-ref/` (gitignored). Use Grep/Read on it directly — do NOT fetch from GitHub. Key files: `onshape_to_robot/robot.py`, `onshape_to_robot/onshape.py`, `onshape_to_robot/utils.py`.
 
+## Onshape API references (References/)
+Three local references — use in this order:
+1. **`References/api-data/tags/<tag>.json`** — index first. Each file is an array of `{method, path, operationId, summary}`. Grep here to find the right endpoint without reading the full spec. Tags: `assembly`, `drawing`, `document`, `metadata`, etc.
+2. **`onshape-openapi.json`** — full spec. Once you have the path from step 1, look up only that path here for parameters and response schemas.
+3. **`References/onshapedrawingjson/definitions/`** — drawing entity JSON format (what goes inside `onshapeCreateAnnotations` payloads). Has schemas for `annotations/table.schema.json`, `annotations/tables/generaltable.schema.json`, `annotations/tables/types/cell.schema.json`, views, formatting, etc. Use this when building drawing modify payloads, not the REST spec.
+
 ## File map
 ```
 extension/
@@ -150,6 +156,10 @@ echo "" | python3 publish.py          # patch bump (default)
 echo "2.1.13" | python3 publish.py    # explicit version
 ```
 Version: **MAJOR** = rewrite/UI overhaul · **MINOR** = new feature · **PATCH** = bug fix/tweak
+
+**Never publish without asking Kevin first** — always confirm before running publish.py, even if Kevin just said "publish". Ask: "Ready to publish as vX.X.X?"
+
+**Firefox is mandatory** — every release must include both CRX and XPI. If Firefox signing fails (e.g. AMO "version already exists" conflict), do NOT proceed with a Chrome-only release. Stop, flag the error to Kevin, and resolve before publishing.
 
 ## Service worker testing (sw-relay)
 

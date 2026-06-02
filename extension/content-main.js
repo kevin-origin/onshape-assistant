@@ -93,53 +93,10 @@
         }
       }
 
-      // Block STEP file uploads unless kill switch is active or in OTS Parts folder
-      if (
-        typeof url === 'string' &&
-        /\/api\/elements\/upload\//.test(url) &&
-        opts?.method === 'POST' &&
-        !document.documentElement.dataset.oxtKillSwitch &&
-        !document.documentElement.dataset.oxtOtsParts
-      ) {
-        const body = opts.body;
-        if (body instanceof FormData) {
-          const file = body.get('file');
-          if (file instanceof File && /\.(step|stp)$/i.test(file.name)) {
-            showStepBlockedToast();
-            return new Response(
-              JSON.stringify({ message: 'STEP file imports are not allowed' }),
-              { status: 400, headers: { 'Content-Type': 'application/json' } }
-            );
-          }
-        }
-      }
-
       const promise = _fetch.apply(this, args);
 
       return promise;
     };
-  }
-
-  /**
-   * Backstop guard: intercept file input change events in the capture phase.
-   * If the user selects a .step/.stp file, stop the event before Onshape sees it
-   * and show a toast — unless the kill switch is active.
-   */
-  function initStepFileInputGuard() {
-    function handleFileEvent(e) {
-      if (document.documentElement.dataset.oxtKillSwitch) return;
-      if (document.documentElement.dataset.oxtOtsParts) return;
-      if (e.target.type !== 'file') return;
-      const file = e.target.files?.[0];
-      if (file && /\.(step|stp)$/i.test(file.name)) {
-        e.target.value = ''; // clear selection so Onshape reads empty files list
-        e.stopImmediatePropagation();
-        e.preventDefault();
-        showStepBlockedToast();
-      }
-    }
-    document.addEventListener('change', handleFileEvent, true);
-    document.addEventListener('input', handleFileEvent, true);
   }
 
   /**
@@ -158,27 +115,23 @@
     };
 
     XMLHttpRequest.prototype.send = function (...args) {
-      if (this._oxtMethod === 'POST' && typeof this._oxtUrl === 'string') {
-        // Block STEP/STP file imports unless kill switch is active or in OTS Parts folder
-        if (
-          !document.documentElement.dataset.oxtKillSwitch &&
-          !document.documentElement.dataset.oxtOtsParts &&
-          /\/api\/(v\d+\/)?elements\/upload\//.test(this._oxtUrl) &&
-          args[0] instanceof FormData
-        ) {
-          const formData = args[0];
-          const fname = decodeURIComponent(formData.get('encodedFilename') || '');
-          const fileObj = formData.get('file');
-          const isStep = /\.(step|stp)$/i.test(fname) ||
-                         (fileObj instanceof File && /\.(step|stp)$/i.test(fileObj.name));
-          if (isStep) {
-            showStepBlockedToast();
-            const self = this;
-            setTimeout(() => self.dispatchEvent(new ProgressEvent('error')), 0);
-            return;
-          }
+      // Block STEP/STP file imports (OTS Parts folder is exempt)
+      if (
+        /\/api\/elements\/upload\//.test(this._oxtUrl) &&
+        args[0] instanceof FormData &&
+        !document.documentElement.dataset.oxtKillSwitch &&
+        !document.documentElement.dataset.oxtOtsParts
+      ) {
+        const fname = decodeURIComponent(args[0].get('encodedFilename') || '');
+        if (/\.(step|stp)$/i.test(fname)) {
+          showStepBlockedToast();
+          const self = this;
+          setTimeout(() => self.dispatchEvent(new ProgressEvent('error')), 0);
+          return;
         }
+      }
 
+      if (this._oxtMethod === 'POST' && typeof this._oxtUrl === 'string') {
         const url = this._oxtUrl;
         let event = null, did = null;
 
@@ -319,5 +272,4 @@
   initAssemblyFetchGuard();
   initXhrComplianceGuard();
   initContextCreationGuard();
-  initStepFileInputGuard();
 })();
