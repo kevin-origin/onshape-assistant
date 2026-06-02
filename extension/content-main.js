@@ -93,12 +93,13 @@
         }
       }
 
-      // Block STEP file uploads unless kill switch is active
+      // Block STEP file uploads unless kill switch is active or in OTS Parts folder
       if (
         typeof url === 'string' &&
         /\/api\/elements\/upload\//.test(url) &&
         opts?.method === 'POST' &&
-        !document.documentElement.dataset.oxtKillSwitch
+        !document.documentElement.dataset.oxtKillSwitch &&
+        !document.documentElement.dataset.oxtOtsParts
       ) {
         const body = opts.body;
         if (body instanceof FormData) {
@@ -127,9 +128,11 @@
   function initStepFileInputGuard() {
     document.addEventListener('change', function (e) {
       if (document.documentElement.dataset.oxtKillSwitch) return;
+      if (document.documentElement.dataset.oxtOtsParts) return;
       if (e.target.type !== 'file') return;
       const file = e.target.files?.[0];
       if (file && /\.(step|stp)$/i.test(file.name)) {
+        e.target.value = ''; // clear selection so Onshape reads empty files list
         e.stopImmediatePropagation();
         showStepBlockedToast();
       }
@@ -153,14 +156,15 @@
 
     XMLHttpRequest.prototype.send = function (...args) {
       if (this._oxtMethod === 'POST' && typeof this._oxtUrl === 'string') {
-        // Block STEP/STP file imports unless kill switch is active
+        // Block STEP/STP file imports unless kill switch is active or in OTS Parts folder
         if (
           !document.documentElement.dataset.oxtKillSwitch &&
+          !document.documentElement.dataset.oxtOtsParts &&
           /\/api\/elements\/upload\//.test(this._oxtUrl) &&
           args[0] instanceof FormData
         ) {
           const fname = decodeURIComponent(args[0].get('encodedFilename') || '');
-          if (/\.steps?$/i.test(fname)) {
+          if (/\.(step|stp)$/i.test(fname)) {
             showStepBlockedToast();
             const self = this;
             setTimeout(() => self.dispatchEvent(new ProgressEvent('error')), 0);

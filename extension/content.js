@@ -847,6 +847,7 @@
     if (resp?.disabled) {
       _killSwitchActive = true;
       setKillSwitchDataset(true);
+      delete document.documentElement.dataset.oxtOtsParts;
       console.log("[Scanner] Kill switch active — content script disabled");
       return;
     }
@@ -874,6 +875,7 @@
     if (msg.type === "spa-navigated") {
       console.log("[Scanner] SPA navigation (tabs.onUpdated):", msg.url);
       _docDisabled = false; // reset for new doc before re-checking
+      delete document.documentElement.dataset.oxtOtsParts; // re-evaluated on next insert-tab click
       // Re-check doc whitelist for the new doc
       const _navDocId = getDocIdFromUrl();
       if (_navDocId) {
@@ -1840,6 +1842,15 @@
           if (resp && typeof resp.count === "number") {
             document.documentElement.dataset.oxtAssemblyCount = String(resp.count);
             console.log("[InsertTabGuard] Assembly count refreshed:", resp.count);
+          }
+        });
+        // Check OTS Parts folder so content-main.js STEP block knows to skip
+        chrome.runtime.sendMessage({ type: "get-top-folder", docId }, (resp) => {
+          if (resp?.topFolderName === "OTS Parts") {
+            document.documentElement.dataset.oxtOtsParts = "1";
+            console.log("[InsertTabGuard] OTS Parts doc — STEP restriction lifted");
+          } else {
+            delete document.documentElement.dataset.oxtOtsParts;
           }
         });
       }, true);
