@@ -466,6 +466,7 @@ async function syncDrawingLinks(did, wid, force = false) {
       const seen = new Set();
       for (const ref of (r.resolvedReferences || [])) {
         if (ref.isFlattenedPart) continue;
+        if (!ref.idTag) continue;
         const key = `${ref.targetElementId}:${ref.idTag}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -494,6 +495,91 @@ async function syncDrawingLinks(did, wid, force = false) {
   const updated = results.filter(r => r === "ok").length;
   const errors  = results.filter(r => r === "err").length;
   return { updated, errors };
+}
+
+// ---------------------------------------------------------------------------
+// Stock Mass Sync — writes calculated stock mass onto parts in all part studios
+// ---------------------------------------------------------------------------
+const MFGPROCESS_PROP_ID = "6a1fcc5971f563010c433f0d";
+const STOCKMASS_PROP_ID  = "6a1fec8671f563010c4a1104";
+
+// In-memory set: "${did}:${wid}" already synced this SW session
+const _stockMassSynced = new Set();
+
+async function syncStockMass(did, wid, force = false) {
+  const cacheKey = `${did}:${wid}`;
+  if (!force && _stockMassSynced.has(cacheKey)) return null;
+  _stockMassSynced.add(cacheKey);
+
+  const els = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+  const partStudios = els.filter(e => e.elementType === "PARTSTUDIO");
+  if (!partStudios.length) return { updated: 0, skipped: 0, errors: 0 };
+
+  let updated = 0, skipped = 0, errors = 0;
+
+  for (const ps of partStudios) {
+    const eid = ps.id;
+    let parts;
+    try {
+      parts = await onshapeFetch(`/api/v6/parts/d/${did}/w/${wid}/e/${eid}?withThumbnails=false`);
+      if (!Array.isArray(parts)) continue;
+    } catch (e) { errors++; continue; }
+
+    const workParts = parts.filter(p => {
+      if (p.isFlattenedBody) return false;
+      const mfg = (p.customProperties?.[MFGPROCESS_PROP_ID] || "").trim().toUpperCase();
+      return mfg === "CNC" || mfg === "SHEET";
+    });
+    if (!workParts.length) continue;
+
+    // Lazy-load flat body map only if any Sheet parts exist
+    let flatBodyMap = null;
+    const getFlatBodyMap = async () => {
+      if (flatBodyMap) return flatBodyMap;
+      flatBodyMap = new Map();
+      try {
+        const ins = await onshapeFetch(
+          `/api/documents/d/${did}/w/${wid}/insertables?includeFlattenedBodies=true&includeParts=false&elementId=${eid}`
+        );
+        for (const item of (ins.items || [])) {
+          if (item.isFlattenedBody && item.unflattenedPartDeterministicId)
+            flatBodyMap.set(item.unflattenedPartDeterministicId, item.deterministicId);
+        }
+      } catch (_) {}
+      return flatBodyMap;
+    };
+
+    for (const p of workParts) {
+      const mfg = (p.customProperties?.[MFGPROCESS_PROP_ID] || "").trim().toUpperCase();
+      const density = parseFloat(p.material?.properties?.find(m => m.name === "DENS")?.value);
+      if (!density) { skipped++; continue; }
+
+      try {
+        let stockMassKg;
+        if (mfg === "CNC") {
+          const bb = await onshapeFetch(
+            `/api/v6/parts/d/${did}/w/${wid}/e/${eid}/partid/${encodeURIComponent(p.partId)}/boundingboxes?includeHidden=true`
+          );
+          stockMassKg = (bb.highX - bb.lowX) * (bb.highY - bb.lowY) * (bb.highZ - bb.lowZ) * density;
+        } else {
+          const fbMap = await getFlatBodyMap();
+          const flatId = fbMap.get(p.partId);
+          if (!flatId) { skipped++; continue; }
+          const bb = await onshapeFetch(
+            `/api/v6/parts/d/${did}/w/${wid}/e/${eid}/partid/${encodeURIComponent(flatId)}/boundingboxes?includeHidden=true`
+          );
+          stockMassKg = (bb.highX - bb.lowX) * (bb.highY - bb.lowY) * (bb.highZ - bb.lowZ) * density;
+        }
+        await onshapePost(
+          `/api/metadata/d/${did}/w/${wid}/e/${eid}/p/${encodeURIComponent(p.partId)}`,
+          { properties: [{ propertyId: STOCKMASS_PROP_ID, value: stockMassKg.toFixed(3) + " kg" }] }
+        );
+        updated++;
+      } catch (e) { errors++; }
+    }
+  }
+
+  return { updated, skipped, errors };
 }
 
 function broadcastDrawLog(message, cls) {
@@ -5136,6 +5222,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return;
 
+  } else if (msg.type === "fill-bom") {
+    sendResponse({ ok: true });
+    (async () => {
+      function fillLog(message, cls) {
+        chrome.runtime.sendMessage({ type: "fill-bom-progress", message, cls }).catch(() => {});
+      }
+      try {
+        fillLog("Syncing drawing links...");
+        const dlResult = await syncDrawingLinks(msg.did, msg.wid, true);
+        fillLog(`  Drawing links: ${dlResult?.updated ?? 0} updated, ${dlResult?.errors ?? 0} errors`, dlResult?.errors ? "log-warn" : "log-ok");
+
+        fillLog("Calculating stock masses...");
+        const smResult = await syncStockMass(msg.did, msg.wid, true);
+        fillLog(`  Stock mass: ${smResult?.updated ?? 0} updated, ${smResult?.skipped ?? 0} skipped, ${smResult?.errors ?? 0} errors`, smResult?.errors ? "log-warn" : "log-ok");
+
+        chrome.runtime.sendMessage({ type: "fill-bom-done", dlResult, smResult }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "fill-bom-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
   } else if (msg.type === "sync-outdated-drawings") {
     (async () => {
       const { docId, wid } = msg;
@@ -5192,7 +5300,10 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     });
     if (newDocId !== prevDocId) {
       const widM = changeInfo.url.match(/\/w\/([a-f0-9]+)/);
-      if (widM) syncDrawingLinks(newDocId, widM[1]).catch(e => console.log("[DrawingLinkSync] Auto-sync failed:", e.message));
+      if (widM) {
+        syncDrawingLinks(newDocId, widM[1]).catch(e => console.log("[DrawingLinkSync] Auto-sync failed:", e.message));
+        syncStockMass(newDocId, widM[1]).catch(e => console.log("[StockMassSync] Auto-sync failed:", e.message));
+      }
     }
   }
 });

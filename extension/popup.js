@@ -72,6 +72,8 @@ document.getElementById("btnGoBomGen").addEventListener("click", () => {
   document.getElementById("bomGenParamPanel").style.display = "none";
   document.getElementById("bomGenLog").style.display = "none";
   document.getElementById("bomGenLog").innerHTML = "";
+  document.getElementById("fillBomLog").style.display = "none";
+  document.getElementById("fillBomLog").innerHTML = "";
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs.length) return;
     const url = tabs[0].url || "";
@@ -1174,6 +1176,36 @@ document.getElementById("btnGenerateBomCsv").addEventListener("click", () => {
   });
 });
 
+function appendFillBomLog(text, cls) {
+  const $log = document.getElementById("fillBomLog");
+  $log.style.display = "block";
+  const line = document.createElement("div");
+  line.className = "log-line" + (cls ? " " + cls : "");
+  line.textContent = text;
+  $log.appendChild(line);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+document.getElementById("btnFillBom").addEventListener("click", () => {
+  const btn = document.getElementById("btnFillBom");
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    const didM = url.match(/\/documents\/([a-f0-9]+)/);
+    const widM = url.match(/\/w\/([a-f0-9]+)/);
+    if (!didM || !widM) {
+      appendFillBomLog("Open an Onshape workspace tab first", "log-err");
+      return;
+    }
+    btn.disabled = true;
+    document.getElementById("fillBomLog").innerHTML = "";
+    appendFillBomLog("Running Fill BOM...");
+    chrome.runtime.sendMessage({ type: "fill-bom", did: didM[1], wid: widM[1] }, (response) => {
+      if (!response) { appendFillBomLog("No response from background", "log-err"); btn.disabled = false; }
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Listen for messages from background.js — routes progress/done events to UI update handlers
 // ---------------------------------------------------------------------------
@@ -1292,6 +1324,15 @@ chrome.runtime.onMessage.addListener((msg) => {
       appendBomLog("Error: " + msg.error, "log-err");
     } else {
       appendBomLog(`Downloaded: ${msg.filename} (${msg.rows ?? 0} rows)`, "log-ok");
+    }
+  } else if (msg.type === "fill-bom-progress") {
+    appendFillBomLog(msg.message, msg.cls);
+  } else if (msg.type === "fill-bom-done") {
+    document.getElementById("btnFillBom").disabled = false;
+    if (msg.error) {
+      appendFillBomLog("Error: " + msg.error, "log-err");
+    } else {
+      appendFillBomLog("Done.", "log-ok");
     }
   }
 });
