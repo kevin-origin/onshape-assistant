@@ -969,6 +969,11 @@
 
         const docId = getDocIdFromUrl();
 
+        if (!getWidFromUrl()) {
+          // Version/release URL — export is always allowed, no release check needed
+          return;
+        }
+
         const releaseCheck = new Promise(resolve =>
           chrome.runtime.sendMessage({ type: "check-releases", docId }, resolve)
         );
@@ -1765,22 +1770,35 @@
               color: #92400e; font-weight: 500;
               font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
             `;
-            banner.textContent = "Only the document creator can change workspace protection settings.";
+            banner.textContent = "Only the document owner can change workspace protection settings.";
             if (footer) footer.parentNode.insertBefore(banner, footer);
+
+            const blockClick = (e) => { e.preventDefault(); e.stopImmediatePropagation(); };
 
             const checkbox = modal.querySelector("#enable-workspace-protection");
             if (checkbox) {
               checkbox.disabled = true;
               checkbox.style.opacity = "0.4";
               checkbox.style.cursor = "not-allowed";
+              checkbox.addEventListener("click", blockClick, true);
+              checkbox.addEventListener("change", blockClick, true);
+              // Also block the label/toggle wrapper that wraps the input
+              const toggleWrapper = checkbox.closest("label") || checkbox.closest(".os-toggle") || checkbox.parentElement;
+              if (toggleWrapper && toggleWrapper !== checkbox) {
+                toggleWrapper.style.pointerEvents = "none";
+                toggleWrapper.style.cursor = "not-allowed";
+                toggleWrapper.style.opacity = "0.4";
+              }
             }
 
             const applyBtn = modal.querySelector("#workspace-protection-apply");
             if (applyBtn) {
               applyBtn.disabled = true;
+              applyBtn.setAttribute("disabled", "disabled");
               applyBtn.style.opacity = "0.4";
               applyBtn.style.cursor = "not-allowed";
-              applyBtn.title = "Only the document creator can change workspace protection";
+              applyBtn.title = "Only the document owner can change workspace protection";
+              applyBtn.addEventListener("click", blockClick, true);
             }
           });
         }
