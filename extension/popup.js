@@ -72,6 +72,8 @@ document.getElementById("btnGoBomGen").addEventListener("click", () => {
   document.getElementById("bomGenParamPanel").style.display = "none";
   document.getElementById("bomGenLog").style.display = "none";
   document.getElementById("bomGenLog").innerHTML = "";
+  document.getElementById("fillBomLog").style.display = "none";
+  document.getElementById("fillBomLog").innerHTML = "";
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs.length) return;
     const url = tabs[0].url || "";
@@ -132,7 +134,17 @@ document.getElementById("btnBulkExport").addEventListener("click", () => {
 
   const selectedDrawings = [];
   document.querySelectorAll(".drawing-export-cb:checked").forEach(cb => {
-    selectedDrawings.push({ id: cb.dataset.drawingId, name: cb.dataset.drawingName });
+    const row = cb.closest(".part-item");
+    const fromVal = row?.querySelector(".pdf-range-from")?.value;
+    const toVal = row?.querySelector(".pdf-range-to")?.value;
+    const pageFrom = fromVal ? parseInt(fromVal, 10) : null;
+    const pageTo = toVal ? parseInt(toVal, 10) : null;
+    selectedDrawings.push({
+      id: cb.dataset.drawingId,
+      name: cb.dataset.drawingName,
+      pageFrom: pageFrom || null,
+      pageTo: pageTo || null,
+    });
   });
 
   if (selectedPartStudios.length === 0 && selectedDrawings.length === 0) {
@@ -288,10 +300,33 @@ function renderExportElements(partStudios, drawings) {
     cb.dataset.drawingId = d.id;
     cb.dataset.drawingName = d.name;
     const label = document.createElement("span");
+    label.className = "drawing-name-label";
     label.textContent = d.name;
+    const rangeWrap = document.createElement("div");
+    rangeWrap.className = "pdf-range-wrap";
+    const fromInput = document.createElement("input");
+    fromInput.type = "number";
+    fromInput.className = "pdf-range-from";
+    fromInput.min = "1";
+    fromInput.placeholder = "pg";
+    const sep = document.createElement("span");
+    sep.className = "range-sep";
+    sep.textContent = "–";
+    const toInput = document.createElement("input");
+    toInput.type = "number";
+    toInput.className = "pdf-range-to";
+    toInput.min = "1";
+    toInput.placeholder = "pg";
+    rangeWrap.appendChild(fromInput);
+    rangeWrap.appendChild(sep);
+    rangeWrap.appendChild(toInput);
     row.appendChild(cb);
     row.appendChild(label);
-    row.addEventListener("click", (e) => { if (e.target !== cb) cb.checked = !cb.checked; });
+    row.appendChild(rangeWrap);
+    row.addEventListener("click", (e) => {
+      if (e.target === cb || e.target.type === "number") return;
+      cb.checked = !cb.checked;
+    });
     $drawList.appendChild(row);
   }
 }
@@ -885,48 +920,6 @@ $btnConfirm.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Drawing Link Sync
-// ---------------------------------------------------------------------------
-
-const $btnSyncLinks     = document.getElementById("btnSyncDrawingLinks");
-const $syncLinksStatus  = document.getElementById("drawingLinkSyncStatus");
-
-$btnSyncLinks.addEventListener("click", () => {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (!tabs.length) return;
-    const url = tabs[0].url || "";
-    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
-    const widMatch = url.match(/\/w\/([a-f0-9]+)/);
-    if (!docMatch || !widMatch) {
-      $syncLinksStatus.style.display = "block";
-      $syncLinksStatus.style.color = "#ff6b6b";
-      $syncLinksStatus.textContent = "Not on a workspace tab";
-      return;
-    }
-    $btnSyncLinks.disabled = true;
-    $syncLinksStatus.style.display = "block";
-    $syncLinksStatus.style.color = "#aaa";
-    $syncLinksStatus.textContent = "Syncing...";
-    chrome.runtime.sendMessage({ type: "sync-drawing-links", did: docMatch[1], wid: widMatch[1] });
-  });
-});
-
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type !== "drawing-link-sync-done") return;
-  $btnSyncLinks.disabled = false;
-  if (msg.error) {
-    $syncLinksStatus.style.color = "#ff6b6b";
-    $syncLinksStatus.textContent = "Error: " + msg.error;
-  } else {
-    const r = msg.result;
-    $syncLinksStatus.style.color = "#95d5b2";
-    $syncLinksStatus.textContent = r
-      ? `Done — ${r.updated} updated, ${r.errors} errors`
-      : "Already synced";
-  }
-});
-
-// ---------------------------------------------------------------------------
 // Notes panel
 // ---------------------------------------------------------------------------
 
@@ -1174,6 +1167,36 @@ document.getElementById("btnGenerateBomCsv").addEventListener("click", () => {
   });
 });
 
+function appendFillBomLog(text, cls) {
+  const $log = document.getElementById("fillBomLog");
+  $log.style.display = "block";
+  const line = document.createElement("div");
+  line.className = "log-line" + (cls ? " " + cls : "");
+  line.textContent = text;
+  $log.appendChild(line);
+  $log.scrollTop = $log.scrollHeight;
+}
+
+document.getElementById("btnFillBom").addEventListener("click", () => {
+  const btn = document.getElementById("btnFillBom");
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    const didM = url.match(/\/documents\/([a-f0-9]+)/);
+    const widM = url.match(/\/w\/([a-f0-9]+)/);
+    if (!didM || !widM) {
+      appendFillBomLog("Open an Onshape workspace tab first", "log-err");
+      return;
+    }
+    btn.disabled = true;
+    document.getElementById("fillBomLog").innerHTML = "";
+    appendFillBomLog("Running Fill BOM...");
+    chrome.runtime.sendMessage({ type: "fill-bom", did: didM[1], wid: widM[1] }, (response) => {
+      if (!response) { appendFillBomLog("No response from background", "log-err"); btn.disabled = false; }
+    });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // Listen for messages from background.js — routes progress/done events to UI update handlers
 // ---------------------------------------------------------------------------
@@ -1292,6 +1315,15 @@ chrome.runtime.onMessage.addListener((msg) => {
       appendBomLog("Error: " + msg.error, "log-err");
     } else {
       appendBomLog(`Downloaded: ${msg.filename} (${msg.rows ?? 0} rows)`, "log-ok");
+    }
+  } else if (msg.type === "fill-bom-progress") {
+    appendFillBomLog(msg.message, msg.cls);
+  } else if (msg.type === "fill-bom-done") {
+    document.getElementById("btnFillBom").disabled = false;
+    if (msg.error) {
+      appendFillBomLog("Error: " + msg.error, "log-err");
+    } else {
+      appendFillBomLog("Done.", "log-ok");
     }
   }
 });

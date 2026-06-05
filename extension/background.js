@@ -466,6 +466,7 @@ async function syncDrawingLinks(did, wid, force = false) {
       const seen = new Set();
       for (const ref of (r.resolvedReferences || [])) {
         if (ref.isFlattenedPart) continue;
+        if (!ref.idTag) continue;
         const key = `${ref.targetElementId}:${ref.idTag}`;
         if (seen.has(key)) continue;
         seen.add(key);
@@ -494,6 +495,149 @@ async function syncDrawingLinks(did, wid, force = false) {
   const updated = results.filter(r => r === "ok").length;
   const errors  = results.filter(r => r === "err").length;
   return { updated, errors };
+}
+
+// ---------------------------------------------------------------------------
+// Stock Mass Sync — writes calculated stock mass onto parts in all part studios
+// ---------------------------------------------------------------------------
+const MFGPROCESS_PROP_ID = "6a1fcc5971f563010c433f0d";
+const STOCKMASS_PROP_ID  = "6a1fec8671f563010c4a1104";
+
+// In-memory set: "${did}:${wid}" already synced this SW session
+const _stockMassSynced = new Set();
+
+async function syncStockMass(did, wid, force = false) {
+  const cacheKey = `${did}:${wid}`;
+  if (!force && _stockMassSynced.has(cacheKey)) return null;
+  _stockMassSynced.add(cacheKey);
+
+  const els = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+  const partStudios = els.filter(e => e.elementType === "PARTSTUDIO");
+  if (!partStudios.length) return { updated: 0, skipped: 0, errors: 0 };
+
+  let updated = 0, skipped = 0, errors = 0;
+
+  for (const ps of partStudios) {
+    const eid = ps.id;
+    let parts;
+    try {
+      parts = await onshapeFetch(`/api/v6/parts/d/${did}/w/${wid}/e/${eid}?withThumbnails=false`);
+      if (!Array.isArray(parts)) continue;
+    } catch (e) { errors++; continue; }
+
+    const workParts = parts.filter(p => {
+      if (p.isFlattenedBody) return false;
+      const mfg = (p.customProperties?.[MFGPROCESS_PROP_ID] || "").trim().toUpperCase();
+      return mfg === "CNC" || mfg === "SHEET";
+    });
+    if (!workParts.length) continue;
+
+    // Lazy-load flat body map only if any Sheet parts exist
+    let flatBodyMap = null;
+    const getFlatBodyMap = async () => {
+      if (flatBodyMap) return flatBodyMap;
+      flatBodyMap = new Map();
+      try {
+        const ins = await onshapeFetch(
+          `/api/documents/d/${did}/w/${wid}/insertables?includeFlattenedBodies=true&includeParts=false&elementId=${eid}`
+        );
+        for (const item of (ins.items || [])) {
+          if (item.isFlattenedBody && item.unflattenedPartDeterministicId)
+            flatBodyMap.set(item.unflattenedPartDeterministicId, item.deterministicId);
+        }
+      } catch (_) {}
+      return flatBodyMap;
+    };
+
+    for (const p of workParts) {
+      const mfg = (p.customProperties?.[MFGPROCESS_PROP_ID] || "").trim().toUpperCase();
+      const density = parseFloat(p.material?.properties?.find(m => m.name === "DENS")?.value);
+      if (!density) { skipped++; continue; }
+
+      try {
+        let stockMassKg;
+        if (mfg === "CNC") {
+          const bb = await onshapeFetch(
+            `/api/v6/parts/d/${did}/w/${wid}/e/${eid}/partid/${encodeURIComponent(p.partId)}/boundingboxes?includeHidden=true`
+          );
+          stockMassKg = (bb.highX - bb.lowX) * (bb.highY - bb.lowY) * (bb.highZ - bb.lowZ) * density;
+        } else {
+          const fbMap = await getFlatBodyMap();
+          const flatId = fbMap.get(p.partId);
+          if (!flatId) { skipped++; continue; }
+          const bb = await onshapeFetch(
+            `/api/v6/parts/d/${did}/w/${wid}/e/${eid}/partid/${encodeURIComponent(flatId)}/boundingboxes?includeHidden=true`
+          );
+          stockMassKg = (bb.highX - bb.lowX) * (bb.highY - bb.lowY) * (bb.highZ - bb.lowZ) * density;
+        }
+        await onshapePost(
+          `/api/metadata/d/${did}/w/${wid}/e/${eid}/p/${encodeURIComponent(p.partId)}`,
+          { properties: [{ propertyId: STOCKMASS_PROP_ID, value: stockMassKg.toFixed(3) + " kg" }] }
+        );
+        updated++;
+      } catch (e) { errors++; }
+    }
+  }
+
+  return { updated, skipped, errors };
+}
+
+// Part Name Normalization — auto-formats names on doc load
+// ---------------------------------------------------------------------------
+// Rules: underscores→spaces, camelCase→spaces, first letter of each word uppercased
+const NAME_PROP_ID = "57f3fb8efa3416c06701d60d";
+const _normalizedDocs = new Set();
+
+function normalizePartName(name) {
+  name = name.replace(/_/g, ' ');
+  name = name.replace(/([a-z])([A-Z])/g, '$1 $2');
+  return name.split(' ').map(w => w ? w[0].toUpperCase() + w.slice(1) : w).join(' ');
+}
+
+async function normalizePartNames(did, wid, force = false) {
+  const cacheKey = `${did}:${wid}`;
+  if (!force && _normalizedDocs.has(cacheKey)) return null;
+  _normalizedDocs.add(cacheKey);
+
+  const els = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+  const partStudios = els.filter(e => e.elementType === "PARTSTUDIO");
+  if (!partStudios.length) return { updated: 0, skipped: 0, errors: 0 };
+
+  let updated = 0, skipped = 0, errors = 0;
+
+  for (const ps of partStudios) {
+    const eid = ps.id;
+    let meta;
+    try {
+      meta = await onshapeFetch(`/api/metadata/d/${did}/w/${wid}/e/${eid}/p`);
+      if (!Array.isArray(meta?.items)) continue;
+    } catch (e) { errors++; continue; }
+
+    const changes = [];
+    for (const item of meta.items) {
+      const nameProp = item.properties?.find(p => p.propertyId === NAME_PROP_ID);
+      if (!nameProp || typeof nameProp.value !== 'string') continue;
+      const newName = normalizePartName(nameProp.value);
+      if (newName === nameProp.value) { skipped++; continue; }
+      changes.push({ pid: item.partId, newName });
+    }
+
+    const results = await Promise.all(changes.map(async ({ pid, newName }) => {
+      try {
+        await onshapePost(
+          `/api/metadata/d/${did}/w/${wid}/e/${eid}/p/${encodeURIComponent(pid)}`,
+          { properties: [{ propertyId: NAME_PROP_ID, value: newName }] }
+        );
+        return 'ok';
+      } catch (e) { return 'err'; }
+    }));
+
+    updated += results.filter(r => r === 'ok').length;
+    errors  += results.filter(r => r === 'err').length;
+  }
+
+  console.log(`[NormalizeNames] done — updated:${updated} skipped:${skipped} errors:${errors}`);
+  return { updated, skipped, errors };
 }
 
 function broadcastDrawLog(message, cls) {
@@ -3030,6 +3174,51 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
  * @param {Array<{id:string, name:string}>} selectedDrawings
  * @returns {Promise<Array<{name:string, data:Uint8Array}>>} Files ready for makeZip()
  */
+async function splitPdfViaTab(did, extDataId, indices) {
+  const [tab] = await chrome.tabs.query({ url: "*://cad.onshape.com/*" });
+  if (!tab) throw new Error("No Onshape tab open for PDF split");
+  const libCode = await fetch(chrome.runtime.getURL("pdf-lib.min.js")).then(r => r.text());
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: "MAIN",
+    func: async (libCode, did, extDataId, indices) => {
+      try {
+        if (typeof PDFLib === "undefined") {
+          const s = document.createElement("script");
+          s.textContent = libCode;
+          (document.head || document.documentElement).appendChild(s);
+          await new Promise(r => setTimeout(r, 300));
+        }
+        if (typeof PDFLib === "undefined") return { error: "PDFLib not loaded" };
+        const resp = await fetch(
+          `https://cad.onshape.com/api/v6/documents/d/${did}/externaldata/${extDataId}`,
+          { credentials: "include" }
+        );
+        if (!resp.ok) return { error: `fetch ${resp.status}` };
+        const pdfBytes = new Uint8Array(await resp.arrayBuffer());
+        const srcDoc = await PDFLib.PDFDocument.load(pdfBytes);
+        const newDoc = await PDFLib.PDFDocument.create();
+        const pages = await newDoc.copyPages(srcDoc, indices);
+        pages.forEach(p => newDoc.addPage(p));
+        const outBytes = await newDoc.save();
+        let s = "";
+        for (let i = 0; i < outBytes.length; i += 8192)
+          s += String.fromCharCode(...outBytes.subarray(i, i + 8192));
+        return { base64: btoa(s), pages: newDoc.getPageCount() };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    args: [libCode, did, extDataId, indices],
+  });
+  const res = results[0]?.result;
+  if (!res || res.error) throw new Error(res?.error || "splitPdfViaTab failed");
+  const raw = atob(res.base64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
 async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
   console.log("[BulkExport] Drawing elements:", selectedDrawings.map(e => e.name));
   chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `${selectedDrawings.length} drawing(s) to export` }).catch(() => {});
@@ -3041,7 +3230,7 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
         `/api/v6/drawings/d/${did}/w/${wid}/e/${el.id}/translations`,
         { formatName: "PDF", storeInDocument: false }
       );
-      return { name: el.name, jobId: job.id, documentId: job.documentId || did };
+      return { name: el.name, jobId: job.id, documentId: job.documentId || did, pageFrom: el.pageFrom, pageTo: el.pageTo };
     } catch (e) {
       console.warn("[BulkExport] PDF job failed:", el.name, e.message);
       chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF job failed: ${el.name}` }).catch(() => {});
@@ -3049,7 +3238,7 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
     }
   }));
 
-  // 3. Poll + collect binary
+  // Poll + collect binary
   const files = [];
   for (const job of jobs.filter(Boolean)) {
     let t;
@@ -3063,20 +3252,29 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
       chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF failed: ${job.name}` }).catch(() => {});
       continue;
     }
+    const extDataId = t.resultExternalDataIds[0];
+    const docId = t.documentId || did;
+    const safeName = (job.name || "Drawing").replace(/[^a-zA-Z0-9_\-]/g, "_") + ".pdf";
     try {
-      const resp = await fetch(
-        `${ONSHAPE_BASE}/api/v6/documents/d/${t.documentId || did}/externaldata/${t.resultExternalDataIds[0]}`,
-        { credentials: "include" }
-      );
-      if (!resp.ok) throw new Error(`blob fetch ${resp.status}`);
-      const data = new Uint8Array(await resp.arrayBuffer());
-      const safeName = (job.name || "Drawing").replace(/[^a-zA-Z0-9_\-]/g, "_") + ".pdf";
+      let data;
+      if (job.pageFrom && job.pageTo && job.pageTo >= job.pageFrom) {
+        const indices = Array.from({ length: job.pageTo - job.pageFrom + 1 }, (_, i) => job.pageFrom - 1 + i);
+        chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  Splitting pages ${job.pageFrom}–${job.pageTo}: ${safeName}` }).catch(() => {});
+        data = await splitPdfViaTab(docId, extDataId, indices);
+      } else {
+        const resp = await fetch(
+          `${ONSHAPE_BASE}/api/v6/documents/d/${docId}/externaldata/${extDataId}`,
+          { credentials: "include" }
+        );
+        if (!resp.ok) throw new Error(`blob fetch ${resp.status}`);
+        data = new Uint8Array(await resp.arrayBuffer());
+      }
       files.push({ name: "pdf/" + safeName, data });
       console.log("[BulkExport] PDF ok:", safeName, data.length, "bytes");
       chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF: ${safeName}` }).catch(() => {});
     } catch (e) {
       console.warn("[BulkExport] PDF blob error:", job.name, e.message);
-      chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF blob error: ${job.name}` }).catch(() => {});
+      chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF error: ${job.name}: ${e.message}` }).catch(() => {});
     }
   }
 
@@ -4234,6 +4432,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
 
+  } else if (msg.type === "check-version-is-release") {
+    (async () => {
+      try {
+        const revData = await onshapeFetch(`/api/v10/revisions/d/${msg.docId}/v/${msg.vid}`);
+        const isRelease = (revData.items || []).length > 0;
+        console.log(`[ExportDetect] Version ${msg.vid}: isRelease=${isRelease}`);
+        sendResponse({ isRelease });
+      } catch (e) {
+        console.log(`[ExportDetect] Version release check failed: ${e.message}`);
+        sendResponse({ isRelease: false });
+      }
+    })();
+    return true; // async sendResponse
+
   } else if (msg.type === "check-main-workspace") {
     // Returns { isMain: bool } — true if current wid is the main (non-deletable) workspace.
     // The main workspace is the only one with canDelete:false in the workspaces list.
@@ -5136,6 +5348,28 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return;
 
+  } else if (msg.type === "fill-bom") {
+    sendResponse({ ok: true });
+    (async () => {
+      function fillLog(message, cls) {
+        chrome.runtime.sendMessage({ type: "fill-bom-progress", message, cls }).catch(() => {});
+      }
+      try {
+        fillLog("Syncing drawing links...");
+        const dlResult = await syncDrawingLinks(msg.did, msg.wid, true);
+        fillLog(`  Drawing links: ${dlResult?.updated ?? 0} updated, ${dlResult?.errors ?? 0} errors`, dlResult?.errors ? "log-warn" : "log-ok");
+
+        fillLog("Calculating stock masses...");
+        const smResult = await syncStockMass(msg.did, msg.wid, true);
+        fillLog(`  Stock mass: ${smResult?.updated ?? 0} updated, ${smResult?.skipped ?? 0} skipped, ${smResult?.errors ?? 0} errors`, smResult?.errors ? "log-warn" : "log-ok");
+
+        chrome.runtime.sendMessage({ type: "fill-bom-done", dlResult, smResult }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "fill-bom-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
   } else if (msg.type === "sync-outdated-drawings") {
     (async () => {
       const { docId, wid } = msg;
@@ -5161,6 +5395,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       } catch (e) { console.log(`[DrawingSync] Error: ${e.message}`); }
     })();
     return;
+
   }
 });
 
@@ -5192,7 +5427,11 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
     });
     if (newDocId !== prevDocId) {
       const widM = changeInfo.url.match(/\/w\/([a-f0-9]+)/);
-      if (widM) syncDrawingLinks(newDocId, widM[1]).catch(e => console.log("[DrawingLinkSync] Auto-sync failed:", e.message));
+      if (widM) {
+        syncDrawingLinks(newDocId, widM[1]).catch(e => console.log("[DrawingLinkSync] Auto-sync failed:", e.message));
+        syncStockMass(newDocId, widM[1]).catch(e => console.log("[StockMassSync] Auto-sync failed:", e.message));
+        normalizePartNames(newDocId, widM[1]).catch(e => console.log("[NormalizeNames] Auto-sync failed:", e.message));
+      }
     }
   }
 });

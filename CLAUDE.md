@@ -161,6 +161,8 @@ Version: **MAJOR** = rewrite/UI overhaul · **MINOR** = new feature · **PATCH**
 
 **Firefox is mandatory** — every release must include both CRX and XPI. If Firefox signing fails (e.g. AMO "version already exists" conflict), do NOT proceed with a Chrome-only release. Stop, flag the error to Kevin, and resolve before publishing.
 
+**Always test new API approaches before editing extension files** — verify endpoints, field names, and response shapes via curl, sw-exec, or any live API call first. Never write extension code against an untested API assumption.
+
 ## Service worker testing (sw-relay)
 
 Claude runs setup autonomously — never asks Kevin.
@@ -178,3 +180,4 @@ Notes: `sw-relay.py` uses `urllib.request` (asyncio TCP times out in WSL2). Wrap
 - `filter=6` = by owner (`filter=7` = label, wrong)
 - `globaltreenodes/folder/{COMPANY_ID}` → 403 on Pro — use `GET /api/v10/folders/{fid}` with `parentId`
 - BOM Template Origin ID: `dc9153301b06a1d59d889555` — pass as `?templateId=` to BOM endpoint
+- **`/boundingboxes` always needs `?includeHidden=true`** — hidden parts return `{0,0,0,0,0,0}` without it. Always append this param to every bounding box call.
