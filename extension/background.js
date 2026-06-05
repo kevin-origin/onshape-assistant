@@ -498,277 +498,6 @@ async function syncDrawingLinks(did, wid, force = false) {
 }
 
 // ---------------------------------------------------------------------------
-// BOM Table Insertion — scans visible drawing sheet and inserts a 5-column BOM
-// ---------------------------------------------------------------------------
-
-async function insertBomTable(did, wid, drawEid, tab) {
-  function log(msg) {
-    chrome.runtime.sendMessage({ type: 'insert-bom-progress', message: msg }).catch(() => {});
-  }
-  try {
-    // Step 0: Detect active drawing frame + sheet name
-    log('Detecting active sheet...');
-    const frames = await chrome.webNavigation.getAllFrames({ tabId: tab.id });
-    const drawFrames = frames.filter(f =>
-      f.url.includes('production-drawing') || f.url.includes('onshape.com/editor') || f.url.includes('onshape.com/drawing')
-    );
-    if (!drawFrames.length) {
-      console.log('[BOM] No drawing frames. All frames:', frames.map(f => f.url.slice(0, 120)));
-      throw new Error('No drawing frames found');
-    }
-
-    let activeFrameId = drawFrames[0].frameId;
-    if (drawFrames.length > 1) {
-      const iframeCheck = await chrome.scripting.executeScript({
-        target: { tabId: tab.id, frameIds: [0] },
-        func: () => Array.from(document.querySelectorAll('iframe'))
-          .filter(f => f.src.includes('production-drawing') || f.src.includes('onshape.com/editor') || f.src.includes('onshape.com/drawing'))
-          .map(f => ({ style: f.parentElement?.getAttribute('style') || '' }))
-      });
-      const activeIdx = (iframeCheck?.[0]?.result || []).findIndex(f => /top:\s*0px/.test(f.style));
-      if (activeIdx >= 0 && drawFrames[activeIdx]) activeFrameId = drawFrames[activeIdx].frameId;
-    }
-
-    const sheetRes = await chrome.scripting.executeScript({
-      target: { tabId: tab.id, frameIds: [activeFrameId] },
-      func: () => document.querySelector('.active_sheet_label')?.textContent.trim() || '(none)'
-    });
-    const activeSheetName = sheetRes?.[0]?.result || '(none)';
-    log(`Sheet: ${activeSheetName}`);
-
-    // Step 1: Export DRAWING_JSON to get sheet→view mapping
-    log('Exporting drawing JSON...');
-    const trans = await onshapePost(
-      `/api/v6/drawings/d/${did}/w/${wid}/e/${drawEid}/translations`,
-      { formatName: 'DRAWING_JSON', storeInDocument: false }
-    );
-
-    let transResult;
-    for (let i = 0; i < 60; i++) {
-      await new Promise(r => setTimeout(r, 2000));
-      transResult = await onshapeFetch(`/api/v6/translations/${trans.id}`);
-      if (transResult.requestState === 'DONE') break;
-    }
-    if (transResult.requestState !== 'DONE')
-      throw new Error(`Translation timeout (${transResult.requestState})`);
-
-    const extDataId = transResult.resultExternalDataIds?.[0];
-    if (!extDataId) throw new Error('No externalDataId from translation');
-
-    const drawingJson = await onshapeFetch(`/api/v6/documents/d/${did}/externaldata/${extDataId}`);
-
-    // Step 2: Find view IDs for the active sheet
-    let sheets = [];
-    if (Array.isArray(drawingJson.sheets)) sheets = drawingJson.sheets;
-    else if (drawingJson.drawing?.sheets) sheets = drawingJson.drawing.sheets;
-    else for (const k of Object.keys(drawingJson))
-      if (Array.isArray(drawingJson[k]) && drawingJson[k][0]?.views) { sheets = drawingJson[k]; break; }
-    if (!sheets.length) throw new Error('Could not parse sheets from DRAWING_JSON');
-
-    const sheet = sheets.find(s => s.name === activeSheetName || s.label === activeSheetName) || sheets[0];
-    const viewIds = (sheet?.views || sheet?.viewIds || [])
-      .map(v => typeof v === 'string' ? v : (v.viewId || v.id)).filter(Boolean);
-    if (!viewIds.length) throw new Error(`No views on "${activeSheetName}"`);
-
-    // Step 3: Collect occurrence paths from jsongeometry.
-    // For patterned parts, all N physical copies share the same occurrence path and each
-    // contributes one bodyData entry per face type. qty = min face-type count within a
-    // single view. To avoid multi-view inflation we compute per-view and take the max.
-    // For non-patterned parts each instance has a unique partial path → per-view min = 1,
-    // and we accumulate 1 per unique partial, so both cases are handled uniformly.
-    log('Scanning geometry...');
-    const partialMaxMin = {};  // partialPath → max(per-view min bodyData count)
-    for (const vid of viewIds) {
-      try {
-        const geo = await onshapeFetch(
-          `/api/v6/drawings/d/${did}/w/${wid}/e/${drawEid}/views/${vid}/jsongeometry`
-        );
-        // Count how many times each full occurrence path appears in THIS view's bodyData
-        const viewFull = {};
-        for (const b of (geo.bodyData || []))
-          for (const occ of [...(b.rightRepOccurrences || []), ...(b.leftRepOccurrences || [])])
-            viewFull[occ] = (viewFull[occ] || 0) + 1;
-
-        // Per-partial: min count across face types within this view
-        const viewMin = {};
-        for (const [full, cnt] of Object.entries(viewFull)) {
-          const partial = full.split('.').slice(0, -1).join('.');
-          if (!(partial in viewMin) || cnt < viewMin[partial]) viewMin[partial] = cnt;
-        }
-
-        // Global: take max across views (the view showing all instances gives true count)
-        for (const [partial, minCnt] of Object.entries(viewMin)) {
-          if (!(partial in partialMaxMin) || minCnt > partialMaxMin[partial])
-            partialMaxMin[partial] = minCnt;
-        }
-      } catch(e) { console.warn('[BOM] geo error', vid, e.message); }
-    }
-    const allPartials = Object.keys(partialMaxMin);
-    log(`Found ${allPartials.length} occurrence path(s)`);
-
-    // Step 4: Load assembly definition
-    log('Resolving parts...');
-    const elements = await onshapeFetch(`/api/v9/documents/d/${did}/w/${wid}/elements`);
-    const asmEl = elements.find(e => (e.elementType || e.type) === 'ASSEMBLY');
-
-    const rootInstMap = {};   // instId → instance
-    const subAsmInstMap = {}; // partId → name (Strategy D: deleted sub-asm parts)
-
-    if (asmEl) {
-      const asmDef = await onshapeFetch(`/api/v6/assemblies/d/${did}/w/${wid}/e/${asmEl.id}`);
-      for (const inst of (asmDef.rootAssembly?.instances || []))
-        rootInstMap[inst.id] = inst;
-      for (const sub of (asmDef.subAssemblies || []))
-        for (const inst of (sub.instances || []))
-          if (inst.partId) subAsmInstMap[inst.partId] = inst.name?.replace(/ <\d+>$/, '').trim() || '';
-    }
-
-    // Batch-fetch part numbers for all visible instances
-    const elemFetches = {};
-    for (const partial of allPartials) {
-      const segs = partial.split('.');
-      const inst = rootInstMap[segs[0]] || (segs.length >= 3 ? rootInstMap[segs[1]] : null);
-      if (!inst || !inst.elementId) continue;
-      const key = inst.documentId + '|' + inst.elementId;
-      if (!elemFetches[key]) {
-        const url = inst.documentId === did
-          ? `/api/v6/parts/d/${inst.documentId}/w/${wid}/e/${inst.elementId}?withThumbnails=false`
-          : `/api/v6/parts/d/${inst.documentId}/v/${inst.documentVersion}/e/${inst.elementId}?withThumbnails=false`;
-        elemFetches[key] = onshapeFetch(url).catch(() => []);
-      }
-    }
-    const resolvedParts = {};
-    for (const [key, p] of Object.entries(elemFetches)) resolvedParts[key] = await p;
-
-    // Strategy C: part studio parts (partId as seg0 for drawings of part studios)
-    const psPartMap = {};
-    for (const ps of elements.filter(e => (e.elementType || e.type) === 'PARTSTUDIO')) {
-      try {
-        const psParts = await onshapeFetch(
-          `/api/v6/parts/d/${did}/w/${wid}/e/${ps.id}?withThumbnails=false`
-        );
-        for (const p of (psParts || []))
-          if (p.partId) psPartMap[p.partId] = { name: p.name, partNumber: p.partNumber || '' };
-      } catch(e) { /* skip */ }
-    }
-
-    // Step 5: Resolve each partial path → name/partNumber + accumulate qty
-    const nameMap = {};
-
-    for (const partial of allPartials) {
-      const segs = partial.split('.');
-      let info = null;
-
-      const inst0 = rootInstMap[segs[0]];
-      const inst1 = segs.length >= 3 ? rootInstMap[segs[1]] : null;
-
-      if (inst0) {
-        // Strategy A: seg0 is a root assembly instance
-        const key = inst0.documentId + '|' + inst0.elementId;
-        const part = (resolvedParts[key] || []).find(p => p.partId === inst0.partId);
-        info = { name: inst0.name.replace(/ <\d+>$/, '').trim(), partNumber: part?.partNumber || '' };
-
-      } else if (inst1) {
-        // Strategy B: dissolved sub-assembly — seg1 is now a root instance
-        const key = inst1.documentId + '|' + inst1.elementId;
-        const part = (resolvedParts[key] || []).find(p => p.partId === inst1.partId);
-        info = { name: inst1.name.replace(/ <\d+>$/, '').trim(), partNumber: part?.partNumber || '' };
-
-      } else if (segs.length === 1 && psPartMap[segs[0]]) {
-        // Strategy C: direct part studio (2-seg full path → 1-seg partial = partId)
-        info = psPartMap[segs[0]];
-
-      } else if (segs.length === 2 && subAsmInstMap[segs[1]]) {
-        // Strategy D: 3-seg full path, seg0 deleted, seg1 is a partId in deleted sub-asm
-        info = { name: subAsmInstMap[segs[1]], partNumber: '' };
-
-      } else {
-        continue;  // DROP — deleted part, stale geometry cache
-      }
-
-      if (!info || !info.name) continue;
-
-      if (!nameMap[info.name]) nameMap[info.name] = { partNumber: info.partNumber, qty: 0 };
-      nameMap[info.name].qty += partialMaxMin[partial];
-    }
-
-    const parts = Object.entries(nameMap)
-      .map(([name, { partNumber, qty }]) => ({ name, partNumber, qty }))
-      .sort((a, b) => a.name.localeCompare(b.name));
-
-    if (!parts.length) throw new Error('No parts found on this sheet');
-    log(`Inserting table — ${parts.length} part(s)...`);
-
-    // Step 6: Build + insert 5-column BOM table
-    // Columns: Item(15) | Part Number(35) | Part Name(55) | Description(75,blank) | Qty(15)
-    const totalRows = Math.max(parts.length + 1, 4);
-
-    const cells = [
-      { row:0, column:0, content:'Item',        isMerged:false, textHeight:3.5 },
-      { row:0, column:1, content:'Part Number', isMerged:false, textHeight:3.5 },
-      { row:0, column:2, content:'Part Name',   isMerged:false, textHeight:3.5 },
-      { row:0, column:3, content:'Description', isMerged:false, textHeight:3.5 },
-      { row:0, column:4, content:'Qty',         isMerged:false, textHeight:3.5 },
-    ];
-    parts.forEach((p, i) => {
-      const r = i + 1;
-      cells.push({ row:r, column:0, content:String(i + 1),  isMerged:false, textHeight:3 });
-      cells.push({ row:r, column:1, content:p.partNumber,   isMerged:false, textHeight:3 });
-      cells.push({ row:r, column:2, content:p.name,         isMerged:false, textHeight:3 });
-      cells.push({ row:r, column:3, content:'',             isMerged:false, textHeight:3 });
-      cells.push({ row:r, column:4, content:String(p.qty),  isMerged:false, textHeight:3 });
-    });
-    for (let r = parts.length + 1; r < totalRows; r++)
-      for (let c = 0; c < 5; c++)
-        cells.push({ row:r, column:c, content:'', isMerged:false, textHeight:3 });
-
-    const rowHeights = [{ rowIndex:0, rowHeight:10 }];
-    for (let r = 1; r < totalRows; r++) rowHeights.push({ rowIndex:r, rowHeight:8 });
-
-    await onshapePost(
-      `/api/v6/drawings/d/${did}/w/${wid}/e/${drawEid}/modify`,
-      {
-        description: 'BOM',
-        jsonRequests: [{
-          messageName: 'onshapeCreateAnnotations',
-          formatVersion: '2021-01-01',
-          annotations: [{
-            type: 'Onshape::Table::GeneralTable',
-            table: {
-              rows: totalRows, columns: 5,
-              position: { coordinate:[200,287,0], type:'Onshape::Reference::Point' },
-              horizontalCellMargin: 0, verticalCellMargin: 0,
-              formatting: {
-                fixedCorners: 'FixedCornerTopRight',
-                flowDirection: 'TtoB',
-                tableColumnWidth: [
-                  { columnIndex:0, columnWidth:15 },
-                  { columnIndex:1, columnWidth:35 },
-                  { columnIndex:2, columnWidth:55 },
-                  { columnIndex:3, columnWidth:75 },
-                  { columnIndex:4, columnWidth:15 }
-                ],
-                tableRowHeight: rowHeights
-              },
-              cells
-            }
-          }]
-        }]
-      }
-    );
-
-    chrome.runtime.sendMessage({
-      type: 'insert-bom-done',
-      result: `Done — ${parts.length} part(s) on "${activeSheetName}"`
-    }).catch(() => {});
-
-  } catch(e) {
-    console.error('[BOM]', e);
-    chrome.runtime.sendMessage({ type: 'insert-bom-done', error: e.message }).catch(() => {});
-  }
-}
-
-// ---------------------------------------------------------------------------
 // Stock Mass Sync — writes calculated stock mass onto parts in all part studios
 // ---------------------------------------------------------------------------
 const MFGPROCESS_PROP_ID = "6a1fcc5971f563010c433f0d";
@@ -3445,6 +3174,51 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
  * @param {Array<{id:string, name:string}>} selectedDrawings
  * @returns {Promise<Array<{name:string, data:Uint8Array}>>} Files ready for makeZip()
  */
+async function splitPdfViaTab(did, extDataId, indices) {
+  const [tab] = await chrome.tabs.query({ url: "*://cad.onshape.com/*" });
+  if (!tab) throw new Error("No Onshape tab open for PDF split");
+  const libCode = await fetch(chrome.runtime.getURL("pdf-lib.min.js")).then(r => r.text());
+  const results = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: "MAIN",
+    func: async (libCode, did, extDataId, indices) => {
+      try {
+        if (typeof PDFLib === "undefined") {
+          const s = document.createElement("script");
+          s.textContent = libCode;
+          (document.head || document.documentElement).appendChild(s);
+          await new Promise(r => setTimeout(r, 300));
+        }
+        if (typeof PDFLib === "undefined") return { error: "PDFLib not loaded" };
+        const resp = await fetch(
+          `https://cad.onshape.com/api/v6/documents/d/${did}/externaldata/${extDataId}`,
+          { credentials: "include" }
+        );
+        if (!resp.ok) return { error: `fetch ${resp.status}` };
+        const pdfBytes = new Uint8Array(await resp.arrayBuffer());
+        const srcDoc = await PDFLib.PDFDocument.load(pdfBytes);
+        const newDoc = await PDFLib.PDFDocument.create();
+        const pages = await newDoc.copyPages(srcDoc, indices);
+        pages.forEach(p => newDoc.addPage(p));
+        const outBytes = await newDoc.save();
+        let s = "";
+        for (let i = 0; i < outBytes.length; i += 8192)
+          s += String.fromCharCode(...outBytes.subarray(i, i + 8192));
+        return { base64: btoa(s), pages: newDoc.getPageCount() };
+      } catch (e) {
+        return { error: e.message };
+      }
+    },
+    args: [libCode, did, extDataId, indices],
+  });
+  const res = results[0]?.result;
+  if (!res || res.error) throw new Error(res?.error || "splitPdfViaTab failed");
+  const raw = atob(res.base64);
+  const bytes = new Uint8Array(raw.length);
+  for (let i = 0; i < raw.length; i++) bytes[i] = raw.charCodeAt(i);
+  return bytes;
+}
+
 async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
   console.log("[BulkExport] Drawing elements:", selectedDrawings.map(e => e.name));
   chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `${selectedDrawings.length} drawing(s) to export` }).catch(() => {});
@@ -3456,7 +3230,7 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
         `/api/v6/drawings/d/${did}/w/${wid}/e/${el.id}/translations`,
         { formatName: "PDF", storeInDocument: false }
       );
-      return { name: el.name, jobId: job.id, documentId: job.documentId || did };
+      return { name: el.name, jobId: job.id, documentId: job.documentId || did, pageFrom: el.pageFrom, pageTo: el.pageTo };
     } catch (e) {
       console.warn("[BulkExport] PDF job failed:", el.name, e.message);
       chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF job failed: ${el.name}` }).catch(() => {});
@@ -3464,7 +3238,7 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
     }
   }));
 
-  // 3. Poll + collect binary
+  // Poll + collect binary
   const files = [];
   for (const job of jobs.filter(Boolean)) {
     let t;
@@ -3478,20 +3252,29 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
       chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF failed: ${job.name}` }).catch(() => {});
       continue;
     }
+    const extDataId = t.resultExternalDataIds[0];
+    const docId = t.documentId || did;
+    const safeName = (job.name || "Drawing").replace(/[^a-zA-Z0-9_\-]/g, "_") + ".pdf";
     try {
-      const resp = await fetch(
-        `${ONSHAPE_BASE}/api/v6/documents/d/${t.documentId || did}/externaldata/${t.resultExternalDataIds[0]}`,
-        { credentials: "include" }
-      );
-      if (!resp.ok) throw new Error(`blob fetch ${resp.status}`);
-      const data = new Uint8Array(await resp.arrayBuffer());
-      const safeName = (job.name || "Drawing").replace(/[^a-zA-Z0-9_\-]/g, "_") + ".pdf";
+      let data;
+      if (job.pageFrom && job.pageTo && job.pageTo >= job.pageFrom) {
+        const indices = Array.from({ length: job.pageTo - job.pageFrom + 1 }, (_, i) => job.pageFrom - 1 + i);
+        chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  Splitting pages ${job.pageFrom}–${job.pageTo}: ${safeName}` }).catch(() => {});
+        data = await splitPdfViaTab(docId, extDataId, indices);
+      } else {
+        const resp = await fetch(
+          `${ONSHAPE_BASE}/api/v6/documents/d/${docId}/externaldata/${extDataId}`,
+          { credentials: "include" }
+        );
+        if (!resp.ok) throw new Error(`blob fetch ${resp.status}`);
+        data = new Uint8Array(await resp.arrayBuffer());
+      }
       files.push({ name: "pdf/" + safeName, data });
       console.log("[BulkExport] PDF ok:", safeName, data.length, "bytes");
       chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF: ${safeName}` }).catch(() => {});
     } catch (e) {
       console.warn("[BulkExport] PDF blob error:", job.name, e.message);
-      chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF blob error: ${job.name}` }).catch(() => {});
+      chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `  PDF error: ${job.name}: ${e.message}` }).catch(() => {});
     }
   }
 
@@ -4649,6 +4432,20 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return true; // async sendResponse
 
+  } else if (msg.type === "check-version-is-release") {
+    (async () => {
+      try {
+        const revData = await onshapeFetch(`/api/v10/revisions/d/${msg.docId}/v/${msg.vid}`);
+        const isRelease = (revData.items || []).length > 0;
+        console.log(`[ExportDetect] Version ${msg.vid}: isRelease=${isRelease}`);
+        sendResponse({ isRelease });
+      } catch (e) {
+        console.log(`[ExportDetect] Version release check failed: ${e.message}`);
+        sendResponse({ isRelease: false });
+      }
+    })();
+    return true; // async sendResponse
+
   } else if (msg.type === "check-main-workspace") {
     // Returns { isMain: bool } — true if current wid is the main (non-deletable) workspace.
     // The main workspace is the only one with canDelete:false in the workspaces list.
@@ -5599,22 +5396,6 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return;
 
-  } else if (msg.type === "insert-bom-table") {
-    sendResponse({ ok: true });
-    (async () => {
-      try {
-        const tabs = await chrome.tabs.query({ url: '*://cad.onshape.com/*' });
-        const tab = tabs.find(t => t.url && t.url.includes(msg.did)) || tabs[0];
-        if (!tab) {
-          chrome.runtime.sendMessage({ type: 'insert-bom-done', error: 'No Onshape tab found' }).catch(() => {});
-          return;
-        }
-        await insertBomTable(msg.did, msg.wid, msg.eid, tab);
-      } catch(e) {
-        chrome.runtime.sendMessage({ type: 'insert-bom-done', error: e.message }).catch(() => {});
-      }
-    })();
-    return;
   }
 });
 

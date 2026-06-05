@@ -31,6 +31,11 @@
     return m ? m[1] : null;
   }
 
+  function getVidFromUrl() {
+    const m = window.location.pathname.match(/\/v\/([a-f0-9]+)/);
+    return m ? m[1] : null;
+  }
+
   function getEidFromUrl() {
     const m = window.location.pathname.match(/\/e\/([a-f0-9]+)/);
     return m ? m[1] : null;
@@ -945,9 +950,14 @@
   // On detection: checks releases (API). If blocked: disables submit button.
 
   let _exportDetected = false;
+  let _exportCheckPending = false; // true while a version/release check is in-flight
+  let _lastExportAt = 0;           // timestamp of last dialog detection (ms)
 
   const exportObserver = new MutationObserver((mutations) => {
-    if (_exportDetected || _killSwitchActive || _docDisabled) return;
+    if (_exportDetected || _exportCheckPending || _killSwitchActive || _docDisabled) return;
+    // Time-based dedupe: Angular can recreate the form DOM node (fresh node has no
+    // oxtProcessed attr), so we also guard by timestamp — skip any re-fire within 3s.
+    if (Date.now() - _lastExportAt < 3000) return;
     for (const m of mutations) {
       for (const node of m.addedNodes) {
         if (node.nodeType !== 1) continue;
@@ -956,8 +966,11 @@
           ? node.querySelector("form.export-dxf-or-dwg-dialog")
           : null;
         if (!form) continue;
+        if (form.dataset.oxtProcessed) continue; // same DOM node seen again — skip
+        form.dataset.oxtProcessed = "1";
 
         _exportDetected = true;
+        _lastExportAt = Date.now();
         const filenameInput = form.querySelector("#drawing-export-filename-input");
         const formatSelect = form.querySelector("select");
         const filename = filenameInput ? filenameInput.value : "";
@@ -968,17 +981,15 @@
         console.log(`[ExportDetect] Export Drawing dialog opened: "${filename}" as ${format}`);
 
         const docId = getDocIdFromUrl();
+        const vid = getVidFromUrl();
+        document.documentElement.dataset.oxtExportVid = vid || 'null';
+        document.documentElement.dataset.oxtExportPath = 'pending';
 
-        if (!getWidFromUrl()) {
-          // Version/release URL — export is always allowed, no release check needed
-          return;
-        }
-
-        const releaseCheck = new Promise(resolve =>
-          chrome.runtime.sendMessage({ type: "check-releases", docId }, resolve)
-        );
-
-        releaseCheck.then((releaseResp) => {
+        function runExportReleaseCheck() {
+          const releaseCheck = new Promise(resolve =>
+            chrome.runtime.sendMessage({ type: "check-releases", docId }, resolve)
+          );
+          releaseCheck.then((releaseResp) => {
           const noReleases = !releaseResp || !releaseResp.hasReleases;
           const staleRevision = !noReleases && !!releaseResp?.staleRevision;
           const shouldBlock = noReleases || staleRevision;
@@ -1051,18 +1062,44 @@
             e.stopImmediatePropagation();
             console.log("[ExportDetect] Form submit blocked");
           }, true);
-        });
+          });
+        } // end runExportReleaseCheck
 
-        // Reset flag when modal is removed
-        const modalEl = node.closest ? node : node.parentElement;
+        if (vid) {
+          document.documentElement.dataset.oxtExportPath = 'version-check';
+          _exportCheckPending = true;
+          chrome.runtime.sendMessage({ type: "check-version-is-release", docId, vid }, (resp) => {
+            _exportCheckPending = false;
+            document.documentElement.dataset.oxtExportResp = resp ? JSON.stringify(resp) : 'undefined';
+            if (resp && resp.isRelease === false) {
+              document.documentElement.dataset.oxtExportPath = 'version-not-release';
+              console.log(`[ExportDetect] Version ${vid} is not a formal release — running release check`);
+              runExportReleaseCheck();
+            } else {
+              document.documentElement.dataset.oxtExportPath = 'version-allowed';
+              console.log(`[ExportDetect] Version ${vid}: ${resp?.isRelease ? 'formal release' : 'no handler response'} — export allowed`);
+            }
+          });
+        } else {
+          document.documentElement.dataset.oxtExportPath = 'workspace-check';
+          runExportReleaseCheck();
+        }
+
+        // Reset flag when modal is removed.
+        // Watch only direct children of body (no subtree) so Angular mutations
+        // inside the modal don't fire this and prematurely reset _exportDetected.
+        // NOTE: do NOT reset _exportCheckPending here — the async response callback
+        // owns that flag. Resetting it here allows a 2nd observer fire to bypass
+        // the pending guard before the response arrives.
         const removeObserver = new MutationObserver(() => {
           if (!document.querySelector("form.export-dxf-or-dwg-dialog")) {
             _exportDetected = false;
+            _lastExportAt = 0;  // allow next dialog open to be processed immediately
             removeObserver.disconnect();
             console.log("[ExportDetect] Export dialog closed");
           }
         });
-        removeObserver.observe(document.body, { childList: true, subtree: true });
+        removeObserver.observe(document.body, { childList: true });
         return;
       }
     }

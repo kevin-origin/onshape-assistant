@@ -134,7 +134,17 @@ document.getElementById("btnBulkExport").addEventListener("click", () => {
 
   const selectedDrawings = [];
   document.querySelectorAll(".drawing-export-cb:checked").forEach(cb => {
-    selectedDrawings.push({ id: cb.dataset.drawingId, name: cb.dataset.drawingName });
+    const row = cb.closest(".part-item");
+    const fromVal = row?.querySelector(".pdf-range-from")?.value;
+    const toVal = row?.querySelector(".pdf-range-to")?.value;
+    const pageFrom = fromVal ? parseInt(fromVal, 10) : null;
+    const pageTo = toVal ? parseInt(toVal, 10) : null;
+    selectedDrawings.push({
+      id: cb.dataset.drawingId,
+      name: cb.dataset.drawingName,
+      pageFrom: pageFrom || null,
+      pageTo: pageTo || null,
+    });
   });
 
   if (selectedPartStudios.length === 0 && selectedDrawings.length === 0) {
@@ -290,10 +300,33 @@ function renderExportElements(partStudios, drawings) {
     cb.dataset.drawingId = d.id;
     cb.dataset.drawingName = d.name;
     const label = document.createElement("span");
+    label.className = "drawing-name-label";
     label.textContent = d.name;
+    const rangeWrap = document.createElement("div");
+    rangeWrap.className = "pdf-range-wrap";
+    const fromInput = document.createElement("input");
+    fromInput.type = "number";
+    fromInput.className = "pdf-range-from";
+    fromInput.min = "1";
+    fromInput.placeholder = "pg";
+    const sep = document.createElement("span");
+    sep.className = "range-sep";
+    sep.textContent = "–";
+    const toInput = document.createElement("input");
+    toInput.type = "number";
+    toInput.className = "pdf-range-to";
+    toInput.min = "1";
+    toInput.placeholder = "pg";
+    rangeWrap.appendChild(fromInput);
+    rangeWrap.appendChild(sep);
+    rangeWrap.appendChild(toInput);
     row.appendChild(cb);
     row.appendChild(label);
-    row.addEventListener("click", (e) => { if (e.target !== cb) cb.checked = !cb.checked; });
+    row.appendChild(rangeWrap);
+    row.addEventListener("click", (e) => {
+      if (e.target === cb || e.target.type === "number") return;
+      cb.checked = !cb.checked;
+    });
     $drawList.appendChild(row);
   }
 }
@@ -884,57 +917,6 @@ $btnConfirm.addEventListener("click", () => {
       $btnCreateDraw.disabled = false;
     }
   });
-});
-
-// ---------------------------------------------------------------------------
-// Insert BOM Table
-// ---------------------------------------------------------------------------
-
-const $btnInsertTable    = document.getElementById("btnInsertTable");
-const $insertTableStatus = document.getElementById("insertTableStatus");
-
-$btnInsertTable.addEventListener("click", () => {
-  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
-    if (!tabs.length) return;
-    const url = tabs[0].url || "";
-    const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
-    const widMatch = url.match(/\/w\/([a-f0-9]+)/);
-    const eidMatch = url.match(/\/e\/([a-f0-9]+)/);
-    if (!docMatch || !widMatch || !eidMatch) {
-      $insertTableStatus.style.display = "block";
-      $insertTableStatus.style.color = "#ff6b6b";
-      $insertTableStatus.textContent = "Open a drawing tab first";
-      return;
-    }
-    $btnInsertTable.disabled = true;
-    $insertTableStatus.style.display = "block";
-    $insertTableStatus.style.color = "#aaa";
-    $insertTableStatus.textContent = "Starting...";
-    chrome.runtime.sendMessage({
-      type: "insert-bom-table",
-      did: docMatch[1],
-      wid: widMatch[1],
-      eid: eidMatch[1]
-    });
-  });
-});
-
-chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type === "insert-bom-progress") {
-    $insertTableStatus.style.display = "block";
-    $insertTableStatus.style.color = "#aaa";
-    $insertTableStatus.textContent = msg.message;
-    return;
-  }
-  if (msg.type !== "insert-bom-done") return;
-  $btnInsertTable.disabled = false;
-  if (msg.error) {
-    $insertTableStatus.style.color = "#ff6b6b";
-    $insertTableStatus.textContent = "Error: " + msg.error;
-  } else {
-    $insertTableStatus.style.color = "#95d5b2";
-    $insertTableStatus.textContent = msg.result;
-  }
 });
 
 // ---------------------------------------------------------------------------

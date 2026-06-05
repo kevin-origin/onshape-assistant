@@ -218,6 +218,33 @@
       height: 15px;
       flex-shrink: 0;
     }
+    .drawing-name-label {
+      flex: 1;
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .pdf-range-wrap {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      flex-shrink: 0;
+    }
+    .pdf-range-wrap input[type="number"] {
+      width: 42px;
+      background: #0f172a;
+      border: 1px solid #444;
+      border-radius: 3px;
+      color: #e0e0e0;
+      font-size: 12px;
+      padding: 2px 4px;
+      text-align: center;
+      -moz-appearance: textfield;
+    }
+    .pdf-range-wrap input[type="number"]::-webkit-outer-spin-button,
+    .pdf-range-wrap input[type="number"]::-webkit-inner-spin-button { -webkit-appearance: none; }
+    .pdf-range-wrap .range-sep { font-size: 11px; color: #666; }
     .weldment-section {
       border-top: 1px solid #333;
       padding-top: 8px;
@@ -339,11 +366,6 @@
     </div>
 
     <div id="drawLog"></div>
-
-    <div class="btn-row" style="margin-top:6px;">
-      <button class="btn-rescan" id="btnInsertTable">Insert Table</button>
-    </div>
-    <div id="insertTableStatus" style="font-size:12px;color:#aaa;margin-top:4px;display:none;"></div>
 
     <!-- Part selection panel (shown after fetching parts) -->
     <div id="partSelectPanel">
