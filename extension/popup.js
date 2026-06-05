@@ -887,44 +887,53 @@ $btnConfirm.addEventListener("click", () => {
 });
 
 // ---------------------------------------------------------------------------
-// Drawing Link Sync
+// Insert BOM Table
 // ---------------------------------------------------------------------------
 
-const $btnSyncLinks     = document.getElementById("btnSyncDrawingLinks");
-const $syncLinksStatus  = document.getElementById("drawingLinkSyncStatus");
+const $btnInsertTable    = document.getElementById("btnInsertTable");
+const $insertTableStatus = document.getElementById("insertTableStatus");
 
-$btnSyncLinks.addEventListener("click", () => {
+$btnInsertTable.addEventListener("click", () => {
   chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
     if (!tabs.length) return;
     const url = tabs[0].url || "";
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
-    if (!docMatch || !widMatch) {
-      $syncLinksStatus.style.display = "block";
-      $syncLinksStatus.style.color = "#ff6b6b";
-      $syncLinksStatus.textContent = "Not on a workspace tab";
+    const eidMatch = url.match(/\/e\/([a-f0-9]+)/);
+    if (!docMatch || !widMatch || !eidMatch) {
+      $insertTableStatus.style.display = "block";
+      $insertTableStatus.style.color = "#ff6b6b";
+      $insertTableStatus.textContent = "Open a drawing tab first";
       return;
     }
-    $btnSyncLinks.disabled = true;
-    $syncLinksStatus.style.display = "block";
-    $syncLinksStatus.style.color = "#aaa";
-    $syncLinksStatus.textContent = "Syncing...";
-    chrome.runtime.sendMessage({ type: "sync-drawing-links", did: docMatch[1], wid: widMatch[1] });
+    $btnInsertTable.disabled = true;
+    $insertTableStatus.style.display = "block";
+    $insertTableStatus.style.color = "#aaa";
+    $insertTableStatus.textContent = "Starting...";
+    chrome.runtime.sendMessage({
+      type: "insert-bom-table",
+      did: docMatch[1],
+      wid: widMatch[1],
+      eid: eidMatch[1]
+    });
   });
 });
 
 chrome.runtime.onMessage.addListener((msg) => {
-  if (msg.type !== "drawing-link-sync-done") return;
-  $btnSyncLinks.disabled = false;
+  if (msg.type === "insert-bom-progress") {
+    $insertTableStatus.style.display = "block";
+    $insertTableStatus.style.color = "#aaa";
+    $insertTableStatus.textContent = msg.message;
+    return;
+  }
+  if (msg.type !== "insert-bom-done") return;
+  $btnInsertTable.disabled = false;
   if (msg.error) {
-    $syncLinksStatus.style.color = "#ff6b6b";
-    $syncLinksStatus.textContent = "Error: " + msg.error;
+    $insertTableStatus.style.color = "#ff6b6b";
+    $insertTableStatus.textContent = "Error: " + msg.error;
   } else {
-    const r = msg.result;
-    $syncLinksStatus.style.color = "#95d5b2";
-    $syncLinksStatus.textContent = r
-      ? `Done — ${r.updated} updated, ${r.errors} errors`
-      : "Already synced";
+    $insertTableStatus.style.color = "#95d5b2";
+    $insertTableStatus.textContent = msg.result;
   }
 });
 
