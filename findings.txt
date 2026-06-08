@@ -238,157 +238,6 @@ API notes:
   Returns 204 (empty body) — must use raw fetch, not onshapePost; requires X-XSRF-TOKEN
 - Trigger on dialog open — modifiedAt bump is a non-issue due to 60s stale grace window.
 
-BOM Table Insertion via Drawing Modify API
-------------------------------------------
-- Endpoint: POST /api/v6/drawings/d/{did}/w/{wid}/e/{eid}/modify
-  MUST use onshapePost (not onshapeFetch — onshapeFetch is GET-only, ignores method/body)
-  Inserts on the ACTIVE sheet visible in browser — no sheet selector in API.
-
-- Minimum rows: API requires rows >= 4. Pad with empty rows if fewer than 3 data rows.
-
-- sheetReference in jsonRequests causes a connection reset (server error) — do NOT use it.
-
-- Working payload (5-column BOM: Item | Part Number | Part Name | Description | Qty):
-  columns: 5
-  tableColumnWidth: Item=15, PartNumber=35, PartName=55, Description=75, Qty=15 (total 195mm)
-  position: {coordinate:[280,281,0], type:'Onshape::Reference::Point'} — FixedCornerTopRight
-  rowHeight: header=10, data rows=8
-  textHeight: header=3.5, data=3
-  Description column is blank (no data), width = 75mm
-
-- Position [280,281,0] with fixedCorners:FixedCornerTopRight — slightly inside top-right corner
-  of A3 border (border: x=[10,395], y=[10,287]).
-  Original flush position was [290,286,0]. Shift left/down as needed for visual fit.
-
-INSTANCE QUANTITY for dissolved sub-asm parts (patterned fasteners):
-  Occurrence paths share the SAME path string for all physical instances of a patterned part.
-  e.g. all 11× PEM FH4-M4-15 generate paths `MonxbhEg.IyFheGYB.JHD.JHC` — NOT 11 unique paths.
-  To count instances: count bodyData entries that reference a SPECIFIC full 4-segment path.
-  Each physical instance contributes exactly 1 bodyData entry per face type.
-  → qty = min(count of bodyData entries per unique full path) for that seg0 prefix.
-  Example: JHC=11, JWK=11, JVK=22, JVC=61 → min=11 → 11 instances of PEM FH4-M4-15.
-  The face types JHC and JWK reliably give 1-per-instance counts (top/bottom faces).
-  JVK and JVC have multiples (cylindrical faces with many segments).
-
-Part Detection via jsongeometry — UPDATED 2026-06-03
------------------------------------------------------
-Goal: find which parts are visible on the currently active drawing sheet.
-
-STEP 0 — Detect the active sheet (multi-sheet drawings)
-  For multi-sheet drawings, Onshape loads each sheet in its own production-drawing iframe
-  but hides inactive ones by offsetting their parent div off-screen.
-  Detection: from the parent frame (frameId 0), query all production-drawing iframes,
-  check each iframe's parentElement style attribute:
-    Active sheet:   style="top: 0px; left: 0px;"
-    Inactive sheet: style="top: -10039px; left: -10039px;"
-  Match the iframe index to drawFrames[] (from chrome.webNavigation.getAllFrames filtered
-  by url.includes('production-drawing'|'onshape.com/editor')) — same order.
-  Then read .active_sheet_label textContent from that frame.
-
-  NOTE: Views API (/api/v6/drawings/.../views) has NO sheet field — cannot filter by sheet
-  from the REST API alone. DRAWING_JSON export is the only way to get sheet→viewId mapping.
-
-STEP 1 — Get view IDs for the active sheet from DRAWING_JSON export:
-  POST /api/v6/drawings/d/{did}/w/{wid}/e/{eid}/translations {formatName:'DRAWING_JSON', storeInDocument:false}
-  → poll GET /api/v6/translations/{id} until requestState==='DONE'
-  → fetch GET /api/v6/documents/d/{did}/externaldata/{resultExternalDataIds[0]}
-  → sheets[].{name, views[].viewId}  match by sheet name from DOM
-  IMPORTANT: On large documents translation can take 40+ seconds. Split into two sw-exec.py
-  calls: Call 1 starts translation + returns transId, Call 2 polls + processes.
-  Relay/exec timeout bumped to 240s (was 120s) in sw-relay.py and sw-exec.py.
-
-STEP 2 — jsongeometry → occurrence segments:
-  GET /api/v6/drawings/d/{did}/w/{wid}/e/{eid}/views/{viewId}/jsongeometry
-  → bodyData[].rightRepOccurrences + leftRepOccurrences = dot-separated occurrence paths
-  First segment before first dot = root instance/part ID.
-
-OCCURRENCE PATH FORMAT — two variants:
-  3-segment: {rootInstanceId}.{partId}.{bodyId}
-    → seg[0] = root assembly instance ID → look up in rootAssembly.instances
-  4-segment: {subAsmInstanceId}.{innerInstanceId}.{partId}.{bodyId}
-    → seg[0] = dissolved/deleted sub-assembly instance → NOT in rootAssembly.instances
-    → seg[1] = instance that was inside that sub-asm → now at root level (same instance ID preserved)
-    → resolve via seg[1] in rootAssembly.instances
-
-  So the rule: always try seg[0] in rootAssembly.instances first; if not found AND path has ≥4 segs,
-  try seg[1] in rootAssembly.instances.
-
-  Example from doc 1eb066132dd8435f7b3666f3 / bf6fccd05228c2b5db3f62b4:
-    MonxbhEgpCvz5aHjw.IyFheGYB2MAii/cGB.JHD.JHC
-      → MonxbhEgpCvz5aHjw NOT in root (deleted sub-asm), IyFheGYB2MAii/cGB IS at root = PEM FH4-M4-15
-    MNnpPCU4Jsf2lygyk.IAxxJAyTcdB3H1RIl.JHD.JVC
-      → similar, resolves to PEM FH4-M4-8
-
-  3-seg unknown (seg[0] not in root): seg[0] was a root instance of an external sub-assembly/PS
-  that got deleted. seg[1] is a partId (short, like KF/B) — look up in asmDef.subAssemblies[].instances
-  by matching inst.partId to find the component name.
-  Example: Mqty53LYZ4Ow8F+MU.KFbF.{body} → KFbF is a PCB component in an external electronics asm
-
-STEP 3 — Resolve segment IDs to part names (multi-strategy):
-
-  Strategy A — Normal 3-seg (seg[0] in rootAssembly.instances):
-    GET /api/v6/assemblies/d/{did}/w/{wid}/e/{asmEid}
-    → rootAssembly.instances[].{id, name, partId, elementId, documentId, documentVersion}
-    Match occ.split('.')[0] === instance.id → use instance.name.replace(/ <\d+>$/, '')
-    Qty = count of same name (multiple instances of same part).
-
-  Strategy B — 4-seg dissolved sub-asm (seg[0] NOT in root, path length ≥ 4):
-    Use seg[1] as innerInstanceId → look up in rootAssembly.instances.
-    When a sub-assembly is dissolved (parts moved to root), inner instance IDs are PRESERVED at root.
-
-  Strategy C — Part studio drawings (short partIds like "JHD", "RQzD"):
-    Occurrence segments are partId values from the originating part studio.
-    GET /api/v6/parts/d/{did}/w/{wid}/e/{psEid}?withThumbnails=false for each PS.
-    Match segment === part.partId → use part.name.
-    This happens when drawing views were created by selecting individual parts (not whole assembly).
-
-  Strategy D — 3-seg unknown (seg[0] not in root, path length 3):
-    seg[1] is a partId from an external/deleted element.
-    Look in asmDef.subAssemblies[i].instances for inst.partId === seg[1] → inst.name.
-    These are often PCB footprints/components from electronics sub-assemblies.
-
-  Run strategies in order: A → B → C → D. Anything still unresolved → DROP (do not add to BOM).
-
-  DELETED PARTS — DO NOT ADD TO BOM:
-    If seg[0] is NOT in rootAssembly.instances AND seg[1] (for 4-seg paths) is also NOT in root,
-    the part was completely deleted from the assembly (not just dissolved). The geometry cache is stale.
-    These must be silently dropped — do NOT add an UNKNOWN row to the BOM.
-    API confirmation: such instances are absent from asmDef.parts, asmDef.subAssemblies, and
-    metadata/pi endpoint returns 404. The only fix is to delete and recreate the drawing view.
-    Examples from harness_tray sheet: MY1xXDZ90YRQihB4m (hex nut M8) and MQXp8dBqbG5u4m7hL (hex nut M6)
-    — both deleted from assembly, visible only as stale geometry. Correctly dropped from BOM.
-
-  Sub-assembly instances resolve to the sub-asm name (not its leaf parts). E.g.:
-  wheel_bracket_subassembly_1_2 — resolves via inst.name, but no partNumber (sub-asm has no partId).
-
-  STALE IDs: Even after "Update Drawing", jsongeometry occurrence IDs may persist for deleted instances.
-  UPDATE does NOT purge stale geometry paths. Only fix: delete and recreate the view.
-
-STEP 4 — Get part numbers (for library/external parts):
-  Assembly instance has: documentId, documentVersion, elementId, partId, isStandardContent.
-  For same-doc parts:     GET /api/v6/parts/d/{did}/w/{wid}/e/{elementId}?withThumbnails=false
-  For external-doc parts: GET /api/v6/parts/d/{inst.documentId}/v/{inst.documentVersion}/e/{inst.elementId}?withThumbnails=false
-  Find part where part.partId === inst.partId → part.partNumber (may be null if not set), part.name.
-  Standard library parts (isStandardContent:true) have partNumber set by default.
-  partNumber takes priority; fall back to name if null.
-
-BOM table insert: POST /api/v6/drawings/d/{did}/w/{wid}/e/{drawEid}/modify
-  Confirmed working — inserts on the active sheet only.
-  Confirmed with 4-column table: Item | Part Number | Part Name | Qty
-    columns:4, widths: [15, 35, 55, 15] mm = 120mm total, anchored FixedCornerTopRight at [290,286,0]
-  Confirmed on: doc f1b44fe2117ea5bada5405d2 (assembly drawing, multiple sheets)
-                doc 1eb066132dd8435f7b3666f3 (PS drawing and assembly drawing mixed)
-
-Notes:
-- Views API items[] has NO sheet field — DRAWING_JSON is the only sheet→view map source
-- Both frames have same canvas height/offsetHeight — cannot use size to detect active sheet
-- OnshapeViewObject count in Xe database is same on all sheets (both had 7) — not useful
-- modelReferenceId on a view ≠ element ID (internal Xe ref); use resolvereferences instead
-- Stale partId RPzD in 1eb066132dd8435f7b3666f3/bf6fccd05228c2b5db3f62b4 — part deleted from other_custom_mech_parts PS
-- DRAWING_JSON translation on large docs (474-instance assembly) takes 80–120s to complete.
-  Split into 3 separate sw-exec.py calls: (1) start translation, (2) poll until DONE, (3) process+insert.
-  Each call must stay under 240s relay timeout.
-
 STEP Import Block — content-main.js (2026-06-02)
 -------------------------------------------------
 SYMPTOM: STEP block not firing, imports going through silently.
@@ -445,3 +294,77 @@ UPLOAD URL PATTERN:
   Confirmed: /api/elements/upload/ (no version prefix — Onshape omits /v14/ etc. for this endpoint).
   FormData field: encodedFilename = encodeURIComponent(filename) — decode before regex match.
   XHR (not fetch) — confirmed by URL logger showing no fetch calls for upload actions.
+
+Insert BOM Table — REMOVED 2026-06-05
+--------------------------------------
+Feature removed to simplify the popup. Full working implementation documented below for restoration.
+
+WHAT WAS REMOVED:
+  popup.html  — <button class="btn-rescan" id="btnInsertTable">Insert Table</button>
+                inside a <div class="btn-row" style="margin-top:6px;"> after #drawLog,
+                plus <div id="insertTableStatus" ...> status div below it.
+  popup.js    — "Insert BOM Table" section (~50 lines):
+                  const $btnInsertTable / $insertTableStatus element refs
+                  $btnInsertTable click handler → parses did/wid/eid from active tab URL,
+                    disables button, sends {type:"insert-bom-table", did, wid, eid} to background
+                  chrome.runtime.onMessage listener for "insert-bom-progress" (updates status text)
+                    and "insert-bom-done" (re-enables button, shows result or error)
+  background.js — async function insertBomTable(did, wid, drawEid, tab) (~300 lines)
+                  "insert-bom-table" message handler in the main message handler
+
+HOW insertBomTable WORKS (confirmed working, tested 2026-06-05):
+
+  Step 0 — Detect active drawing frame:
+    chrome.webNavigation.getAllFrames → filter by 'production-drawing'/'onshape.com/editor'.
+    Multi-sheet: query iframes from frameId:0, find one with style="top: 0px; left: 0px;" → activeFrameId.
+    Read active sheet name: executeScript → .active_sheet_label textContent.
+
+  Step 1 — Export DRAWING_JSON (sheet→view mapping):
+    POST /api/v6/drawings/d/{did}/w/{wid}/e/{drawEid}/translations {formatName:'DRAWING_JSON',storeInDocument:false}
+    Poll GET /api/v6/translations/{id} until requestState==='DONE' (up to 60×2s = 120s).
+    Fetch GET /api/v6/documents/d/{did}/externaldata/{resultExternalDataIds[0]}.
+    Parse drawingJson.sheets[] (also checks drawingJson.drawing.sheets fallback).
+    Match active sheet by name/label. Extract view IDs from sheet.views[].viewId.
+    Pull displayStateId from first TopLevel view (skip 'followParentId' / 'showAllNodeId').
+
+  Step 2 — Scan jsongeometry for occurrence paths + qty:
+    GET /api/v6/drawings/d/{did}/w/{wid}/e/{drawEid}/views/{vid}/jsongeometry per view.
+    Count full occurrence paths in bodyData[].rightRepOccurrences + leftRepOccurrences.
+    Per-partial (strip last segment): min count across face types within a view.
+    Global: take max across views → partialMaxMin{} map.
+    Qty logic: patterned parts share one path with N bodyData entries (min=N); unique parts give min=1 per path.
+
+  Step 3 — Resolve assembly definition:
+    GET /api/v9/documents/d/{did}/w/{wid}/elements → find ASSEMBLY element.
+    GET /api/v6/assemblies/d/{did}/w/{wid}/e/{asmEl.id}[?displayStateId=...].
+    Build rootInstMap{instId→instance}, subAsmInstMap{partId→name}.
+    Build hiddenInstIds set from occurrences[].hidden where path.length===1.
+    Build asmNameCount{name→count} excluding hidden instances.
+
+  Step 4 — Batch-fetch part numbers:
+    For each partial, resolve inst from rootInstMap[seg0] or rootInstMap[seg1].
+    GET /api/v6/parts/d/{...}/w/{wid}/e/{elementId}?withThumbnails=false (same-doc)
+         or /api/v6/parts/d/{...}/v/{documentVersion}/e/{...} (external-doc parts).
+    Strategy C: GET parts for each PARTSTUDIO element → psPartMap{partId→{name,partNumber}}.
+
+  Step 5 — Resolve partial paths to names/partNumbers (4 strategies in order):
+    A: seg0 in rootInstMap → assembly instance name + part number from parts endpoint.
+    B: seg0 NOT in root, seg1 in rootInstMap (dissolved sub-asm) → use asmNameCount for qty.
+    C: 1-seg partial → direct part studio (partId = seg0) → psPartMap lookup.
+    D: 2-seg partial, seg1 in subAsmInstMap → deleted sub-asm part.
+    Anything else: DROP silently (deleted/stale geometry).
+
+  Step 6 — Insert 5-column BOM table:
+    POST /api/v6/drawings/d/{did}/w/{wid}/e/{drawEid}/modify
+    messageName: 'onshapeCreateAnnotations', type: 'Onshape::Table::GeneralTable'
+    Columns: Item(15mm) | Part Number(35mm) | Part Name(55mm) | Description(75mm,blank) | Qty(15mm)
+    position: {coordinate:[200,287,0], type:'Onshape::Reference::Point'} fixedCorners:'FixedCornerTopRight'
+    Header row height: 10, data rows: 8; textHeight: header=3.5, data=3.
+    Minimum rows=4 (pad with empty rows if fewer than 3 data rows).
+    NOTE: sheetReference in jsonRequests causes server connection reset — do NOT use it.
+    NOTE: use onshapePost (not onshapeFetch) — onshapeFetch is GET-only and ignores method/body.
+
+MESSAGE TYPES (for restoration):
+  popup→background: {type:"insert-bom-table", did, wid, eid}
+  background→popup: {type:"insert-bom-progress", message} (progress updates)
+                    {type:"insert-bom-done", result?:string, error?:string}
