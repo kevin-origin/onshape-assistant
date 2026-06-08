@@ -436,7 +436,7 @@ async function onshapePost(path, body) {
 const DRAWING_TEMPLATE = {
   templateDocumentId: "e4ecea9df80b53b39ab4fa38",
   templateWorkspaceId: "038996d814574f1d1d3b774a",
-  templateElementId: "4a80b03c1485e714f587fb61",
+  templateElementId: "bce2f17233fc06112d8bc251",
 };
 
 // ---------------------------------------------------------------------------
