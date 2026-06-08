@@ -1212,54 +1212,23 @@ function appendDxfSyncLog(text, cls) {
   $log.scrollTop = $log.scrollHeight;
 }
 
-document.getElementById("btnDxfFolderSync").addEventListener("click", async () => {
-  const btn = document.getElementById("btnDxfFolderSync");
-  const $log = document.getElementById("dxfSyncLog");
-  $log.innerHTML = "";
-  $log.style.display = "none";
-
-  // Get current workspace URL
+async function _dxfSyncSendFiles(files, btn) {
+  if (!files.length) {
+    appendDxfSyncLog("No .dxf files found", "log-warn");
+    btn.disabled = false;
+    return;
+  }
   const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-  if (!tabs.length) return;
+  if (!tabs.length) { btn.disabled = false; return; }
   const url = tabs[0].url || "";
   const didM = url.match(/\/documents\/([a-f0-9]+)/);
   const widM = url.match(/\/w\/([a-f0-9]+)/);
   if (!didM || !widM) {
     appendDxfSyncLog("Open an Onshape workspace tab first", "log-err");
+    btn.disabled = false;
     return;
   }
-
-  // Let user pick a folder
-  let dirHandle;
-  try {
-    dirHandle = await window.showDirectoryPicker({ mode: "read" });
-  } catch (e) {
-    if (e.name !== "AbortError") appendDxfSyncLog("Folder picker error: " + e.message, "log-err");
-    return;
-  }
-
-  // Read all .dxf files from the folder
-  const files = [];
-  for await (const [name, handle] of dirHandle) {
-    if (handle.kind === "file" && name.toLowerCase().endsWith(".dxf")) {
-      try {
-        const file = await handle.getFile();
-        const text = await file.text();
-        files.push({ name, text });
-      } catch (e) {
-        appendDxfSyncLog(`  SKIP ${name}: ${e.message}`, "log-warn");
-      }
-    }
-  }
-
-  if (!files.length) {
-    appendDxfSyncLog("No .dxf files found in that folder", "log-warn");
-    return;
-  }
-
-  btn.disabled = true;
-  appendDxfSyncLog(`Reading ${files.length} DXF file(s)...`);
-
+  appendDxfSyncLog(`Syncing ${files.length} DXF file(s)...`);
   chrome.runtime.sendMessage(
     { type: "dxf-folder-sync", files, did: didM[1], wid: widM[1] },
     (response) => {
@@ -1269,6 +1238,64 @@ document.getElementById("btnDxfFolderSync").addEventListener("click", async () =
       }
     }
   );
+}
+
+document.getElementById("btnDxfFolderSync").addEventListener("click", async () => {
+  const btn = document.getElementById("btnDxfFolderSync");
+  document.getElementById("dxfSyncLog").innerHTML = "";
+  document.getElementById("dxfSyncLog").style.display = "none";
+  btn.disabled = true;
+
+  let dirHandle;
+  try {
+    dirHandle = await window.showDirectoryPicker({ mode: "read" });
+  } catch (e) {
+    if (e.name !== "AbortError") appendDxfSyncLog("Picker error: " + e.message, "log-err");
+    btn.disabled = false;
+    return;
+  }
+
+  const files = [];
+  for await (const [name, handle] of dirHandle) {
+    if (handle.kind === "file" && name.toLowerCase().endsWith(".dxf")) {
+      try {
+        files.push({ name, text: await (await handle.getFile()).text() });
+      } catch (e) {
+        appendDxfSyncLog(`  SKIP ${name}: ${e.message}`, "log-warn");
+      }
+    }
+  }
+  await _dxfSyncSendFiles(files, btn);
+});
+
+document.getElementById("btnDxfFilesSync").addEventListener("click", async () => {
+  const btn = document.getElementById("btnDxfFilesSync");
+  document.getElementById("dxfSyncLog").innerHTML = "";
+  document.getElementById("dxfSyncLog").style.display = "none";
+  btn.disabled = true;
+
+  let fileHandles;
+  try {
+    fileHandles = await window.showOpenFilePicker({
+      multiple: true,
+      types: [{ description: "DXF files", accept: { "application/dxf": [".dxf"] } }],
+    });
+  } catch (e) {
+    if (e.name !== "AbortError") appendDxfSyncLog("Picker error: " + e.message, "log-err");
+    btn.disabled = false;
+    return;
+  }
+
+  const files = [];
+  for (const handle of fileHandles) {
+    try {
+      const file = await handle.getFile();
+      files.push({ name: file.name, text: await file.text() });
+    } catch (e) {
+      appendDxfSyncLog(`  SKIP ${handle.name}: ${e.message}`, "log-warn");
+    }
+  }
+  await _dxfSyncSendFiles(files, btn);
 });
 
 // ---------------------------------------------------------------------------
@@ -1403,6 +1430,7 @@ chrome.runtime.onMessage.addListener((msg) => {
     appendDxfSyncLog(msg.message, msg.cls);
   } else if (msg.type === "dxf-folder-sync-done") {
     document.getElementById("btnDxfFolderSync").disabled = false;
+    document.getElementById("btnDxfFilesSync").disabled = false;
     if (msg.error) {
       appendDxfSyncLog("Error: " + msg.error, "log-err");
     } else {
