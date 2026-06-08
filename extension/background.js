@@ -619,10 +619,16 @@ async function writeDxfMetadata(did, wid, files) {
     chrome.runtime.sendMessage({ type: "dxf-folder-sync-progress", message, cls }).catch(() => {});
   }
 
-  // Parse all DXFs up-front; key by lowercase filename
+  // Normalise name for matching: lowercase, collapse non-alphanumeric runs to "_", trim "_"
+  function normKey(s) {
+    return s.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '');
+  }
+
+  // Parse all DXFs up-front; key by normalised base name (no extension)
   const dxfMap = {};
   for (const { name, text } of files) {
-    dxfMap[name.toLowerCase()] = parseDxfMetrics(text);
+    const base = name.replace(/\.dxf$/i, '');
+    dxfMap[normKey(base)] = { origName: name, metrics: parseDxfMetrics(text) };
   }
   progress(`Parsed ${files.length} DXF file(s)`);
 
@@ -645,9 +651,9 @@ async function writeDxfMetadata(did, wid, files) {
     progress(`  ${ps.name}: ${candidates.length} part(s)`);
 
     for (const p of candidates) {
-      const safeName = (p.name || 'FlatPattern').replace(/[^a-zA-Z0-9_\-]/g, '_') + '.dxf';
-      const metrics = dxfMap[safeName.toLowerCase()];
-      if (!metrics) {
+      const entry = dxfMap[normKey(p.name || 'FlatPattern')];
+      if (!entry) {
+        progress(`  SKIP ${p.name} — no DXF matched (looking for "${(p.name || 'FlatPattern').replace(/[^a-zA-Z0-9_\-]/g, '_')}.dxf")`, 'log-warn');
         skipped++;
         continue;
       }
@@ -655,11 +661,11 @@ async function writeDxfMetadata(did, wid, files) {
         await onshapePost(
           `/api/metadata/d/${did}/w/${wid}/e/${ps.id}/p/${encodeURIComponent(p.partId)}`,
           { properties: [
-            { propertyId: CUT_EDGE_PROP_ID, value: metrics.cutEdgeMm.toFixed(2) },
-            { propertyId: BENDS_PROP_ID,    value: metrics.bendCount }
+            { propertyId: CUT_EDGE_PROP_ID, value: entry.metrics.cutEdgeMm.toFixed(2) },
+            { propertyId: BENDS_PROP_ID,    value: entry.metrics.bendCount }
           ]}
         );
-        progress(`  OK ${p.name}: cut=${metrics.cutEdgeMm.toFixed(2)} mm, bends=${metrics.bendCount}`, 'log-ok');
+        progress(`  OK ${p.name}: cut=${entry.metrics.cutEdgeMm.toFixed(2)} mm, bends=${entry.metrics.bendCount}`, 'log-ok');
         updated++;
       } catch (e) {
         progress(`  ERROR ${p.name}: ${e.message}`, 'log-err');
