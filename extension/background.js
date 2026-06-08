@@ -498,6 +498,182 @@ async function syncDrawingLinks(did, wid, force = false) {
 }
 
 // ---------------------------------------------------------------------------
+// DXF Metadata Sync — parses pre-exported DXFs to write cut-edge length + bend count
+// ---------------------------------------------------------------------------
+const CUT_EDGE_PROP_ID = "TODO_CUT_EDGE"; // Kevin to provide
+const BENDS_PROP_ID    = "TODO_BENDS";    // Kevin to provide
+
+// Parse a DXF file text and return { cutEdgeMm, bendCount }
+// Handles LINE, ARC, CIRCLE, LWPOLYLINE (with bulge). Other types contribute 0 length.
+// Entities on layers containing "BEND" (case-insensitive) count toward bendCount only.
+function parseDxfMetrics(text) {
+  const lines = text.split(/\r?\n/);
+  let i = 0;
+
+  function nextPair() {
+    while (i < lines.length) {
+      const codeLine = (lines[i++] || '').trim();
+      const valLine  = (lines[i++] || '').trim();
+      const code = parseInt(codeLine, 10);
+      if (!isNaN(code)) return { code, val: valLine };
+    }
+    return null;
+  }
+
+  // Fast-forward to ENTITIES section
+  let inEntities = false;
+  while (true) {
+    const p = nextPair();
+    if (!p) break;
+    if (p.code === 0 && p.val === 'SECTION') {
+      const q = nextPair();
+      if (q && q.code === 2 && q.val === 'ENTITIES') { inEntities = true; break; }
+    }
+  }
+  if (!inEntities) return { cutEdgeMm: 0, bendCount: 0 };
+
+  let cutEdgeMm = 0;
+  let bendCount  = 0;
+
+  while (true) {
+    const p = nextPair();
+    if (!p || (p.code === 0 && p.val === 'ENDSEC')) break;
+    if (p.code !== 0) continue;
+
+    const entityType = p.val;
+
+    // Collect all group-code pairs for this entity without consuming the next entity's code-0
+    const pairs = [];
+    while (i < lines.length) {
+      const code = parseInt((lines[i] || '').trim(), 10);
+      if (!isNaN(code) && code === 0) break; // next entity — peek only, don't consume
+      i++;
+      const val = (lines[i++] || '').trim();
+      if (!isNaN(code)) pairs.push({ code, val });
+    }
+
+    const layerEntry = pairs.find(p => p.code === 8);
+    const isBend = (layerEntry ? layerEntry.val : '').toUpperCase().includes('BEND');
+
+    // Build a simple code→first-value map (sufficient for single-valued codes)
+    const gc = {};
+    for (const { code, val } of pairs) {
+      if (!(code in gc)) gc[code] = val;
+    }
+
+    let length = 0;
+
+    if (entityType === 'LINE') {
+      const x1 = +gc[10] || 0, y1 = +gc[20] || 0;
+      const x2 = +gc[11] || 0, y2 = +gc[21] || 0;
+      length = Math.hypot(x2 - x1, y2 - y1);
+
+    } else if (entityType === 'ARC') {
+      const r = +gc[40] || 0;
+      let span = (+gc[51] || 0) - (+gc[50] || 0);
+      if (span <= 0) span += 360;
+      length = r * span * Math.PI / 180;
+
+    } else if (entityType === 'CIRCLE') {
+      length = 2 * Math.PI * (+gc[40] || 0);
+
+    } else if (entityType === 'LWPOLYLINE') {
+      // Rebuild vertex list from repeated 10/20/42 codes (in order)
+      const verts = [];
+      for (const { code, val } of pairs) {
+        if (code === 10) verts.push({ x: +val, y: 0, bulge: 0 });
+        else if (code === 20 && verts.length) verts[verts.length - 1].y = +val;
+        else if (code === 42 && verts.length) verts[verts.length - 1].bulge = +val;
+      }
+      const closed = (parseInt(gc[70] || 0) & 1) === 1;
+      const n = closed ? verts.length : verts.length - 1;
+      for (let j = 0; j < n; j++) {
+        length += _dxfSegLen(verts[j], verts[(j + 1) % verts.length]);
+      }
+    }
+    // SPLINE, POLYLINE, INSERT, etc. → length 0 (rare in Onshape flat pattern DXFs)
+
+    if (isBend) {
+      if (length > 0) bendCount++;
+    } else {
+      cutEdgeMm += length;
+    }
+  }
+
+  return { cutEdgeMm, bendCount };
+}
+
+// Arc-aware segment length for LWPOLYLINE (bulge = tan(θ/4))
+function _dxfSegLen(p1, p2) {
+  const d = Math.hypot(p2.x - p1.x, p2.y - p1.y);
+  if (Math.abs(p1.bulge) < 1e-9) return d;
+  const theta = 4 * Math.atan(Math.abs(p1.bulge));
+  const sinHalf = Math.sin(theta / 2);
+  if (sinHalf < 1e-9) return d;
+  return (d / (2 * sinHalf)) * theta;
+}
+
+// Message handler calls this with { files: [{name, text}], did, wid }
+async function writeDxfMetadata(did, wid, files) {
+  function progress(message, cls) {
+    chrome.runtime.sendMessage({ type: "dxf-folder-sync-progress", message, cls }).catch(() => {});
+  }
+
+  // Parse all DXFs up-front; key by lowercase filename
+  const dxfMap = {};
+  for (const { name, text } of files) {
+    dxfMap[name.toLowerCase()] = parseDxfMetrics(text);
+  }
+  progress(`Parsed ${files.length} DXF file(s)`);
+
+  const els = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
+  const partStudios = els.filter(e => e.elementType === 'PARTSTUDIO');
+  if (!partStudios.length) return { updated: 0, skipped: 0, errors: 0 };
+
+  let updated = 0, skipped = 0, errors = 0;
+
+  for (const ps of partStudios) {
+    let parts;
+    try {
+      parts = await onshapeFetch(`/api/v6/parts/d/${did}/w/${wid}/e/${ps.id}?withThumbnails=false`);
+      if (!Array.isArray(parts)) continue;
+    } catch (e) { errors++; continue; }
+
+    const sheetParts = parts.filter(p => {
+      if (p.isFlattenedBody) return false;
+      const mfg = (p.customProperties?.[MFGPROCESS_PROP_ID] || '').trim().toUpperCase();
+      return mfg === 'SHEET';
+    });
+
+    for (const p of sheetParts) {
+      const safeName = (p.name || 'FlatPattern').replace(/[^a-zA-Z0-9_\-]/g, '_') + '.dxf';
+      const metrics = dxfMap[safeName.toLowerCase()];
+      if (!metrics) {
+        progress(`  SKIP ${p.name} — no matching DXF (expected "${safeName}")`, 'log-warn');
+        skipped++;
+        continue;
+      }
+      try {
+        await onshapePost(
+          `/api/metadata/d/${did}/w/${wid}/e/${ps.id}/p/${encodeURIComponent(p.partId)}`,
+          { properties: [
+            { propertyId: CUT_EDGE_PROP_ID, value: metrics.cutEdgeMm.toFixed(2) },
+            { propertyId: BENDS_PROP_ID,    value: metrics.bendCount }
+          ]}
+        );
+        progress(`  OK ${p.name}: cut=${metrics.cutEdgeMm.toFixed(2)} mm, bends=${metrics.bendCount}`, 'log-ok');
+        updated++;
+      } catch (e) {
+        progress(`  ERROR ${p.name}: ${e.message}`, 'log-err');
+        errors++;
+      }
+    }
+  }
+
+  return { updated, skipped, errors };
+}
+
+// ---------------------------------------------------------------------------
 // Stock Mass Sync — writes calculated stock mass onto parts in all part studios
 // ---------------------------------------------------------------------------
 const MFGPROCESS_PROP_ID = "6a1fcc5971f563010c433f0d";
@@ -5347,6 +5523,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
       }
     })();
     return;
+
+  } else if (msg.type === "dxf-folder-sync") {
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const result = await writeDxfMetadata(msg.did, msg.wid, msg.files || []);
+        chrome.runtime.sendMessage({ type: "dxf-folder-sync-done", ...result }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "dxf-folder-sync-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return true;
 
   } else if (msg.type === "fill-bom") {
     sendResponse({ ok: true });
