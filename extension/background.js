@@ -628,7 +628,8 @@ async function writeDxfMetadata(did, wid, files) {
 
   const els = await onshapeFetch(`/api/v10/documents/d/${did}/w/${wid}/elements`);
   const partStudios = els.filter(e => e.elementType === 'PARTSTUDIO');
-  if (!partStudios.length) return { updated: 0, skipped: 0, errors: 0 };
+  if (!partStudios.length) { progress('No part studios found', 'log-warn'); return { updated: 0, skipped: 0, errors: 0 }; }
+  progress(`Found ${partStudios.length} part studio(s)`);
 
   let updated = 0, skipped = 0, errors = 0;
 
@@ -639,17 +640,14 @@ async function writeDxfMetadata(did, wid, files) {
       if (!Array.isArray(parts)) continue;
     } catch (e) { errors++; continue; }
 
-    const sheetParts = parts.filter(p => {
-      if (p.isFlattenedBody) return false;
-      const mfg = (p.customProperties?.[MFGPROCESS_PROP_ID] || '').trim().toUpperCase();
-      return mfg === 'SHEET';
-    });
+    // Match any non-flattened part whose sanitized name matches a picked DXF file
+    const candidates = parts.filter(p => !p.isFlattenedBody);
+    progress(`  ${ps.name}: ${candidates.length} part(s)`);
 
-    for (const p of sheetParts) {
+    for (const p of candidates) {
       const safeName = (p.name || 'FlatPattern').replace(/[^a-zA-Z0-9_\-]/g, '_') + '.dxf';
       const metrics = dxfMap[safeName.toLowerCase()];
       if (!metrics) {
-        progress(`  SKIP ${p.name} — no matching DXF (expected "${safeName}")`, 'log-warn');
         skipped++;
         continue;
       }
