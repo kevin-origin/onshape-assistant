@@ -4395,9 +4395,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (_extensionDisabled) {
       sendResponse({ disabled: true });
     } else {
-      chrome.storage.local.get("killSwitchUntil").then(({ killSwitchUntil }) => {
-        if (killSwitchUntil && Date.now() < killSwitchUntil) {
-          applyKillSwitch("cached (from msg handler)");
+      chrome.storage.sync.get("killSwitchActive").then(({ killSwitchActive }) => {
+        if (killSwitchActive) {
+          applyKillSwitch("sync flag (msg handler race fallback)");
           sendResponse({ disabled: true });
         } else {
           sendResponse({ disabled: false });
