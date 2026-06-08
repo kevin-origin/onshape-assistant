@@ -500,8 +500,8 @@ async function syncDrawingLinks(did, wid, force = false) {
 // ---------------------------------------------------------------------------
 // DXF Metadata Sync — parses pre-exported DXFs to write cut-edge length + bend count
 // ---------------------------------------------------------------------------
-const CUT_EDGE_PROP_ID = "TODO_CUT_EDGE"; // Kevin to provide
-const BENDS_PROP_ID    = "TODO_BENDS";    // Kevin to provide
+const CUT_EDGE_PROP_ID = "6a2661c61dcee27d77a5fdec";
+const BENDS_PROP_ID    = "6a26613db8f361639feec618";
 
 // Parse a DXF file text and return { cutEdgeMm, bendCount }
 // Handles LINE, ARC, CIRCLE, LWPOLYLINE (with bulge). Other types contribute 0 length.
