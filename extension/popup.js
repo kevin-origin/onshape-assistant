@@ -109,7 +109,7 @@ document.getElementById("btnBulkExport").addEventListener("click", () => {
   const btn = document.getElementById("btnBulkExport");
   const $status = document.getElementById("exportStatus");
   const $log = document.getElementById("exportLog");
-  const { did, wid } = _exportData;
+  const { did, wid, vid } = _exportData;
 
   // Collect selected part studios with their checked parts
   const psMap = {};
@@ -161,7 +161,7 @@ document.getElementById("btnBulkExport").addEventListener("click", () => {
   $status.style.color = "#7ec8e3";
   $status.textContent = "Exporting...";
 
-  chrome.runtime.sendMessage({ type: "bulk-export", did, wid, selectedPartStudios, selectedDrawings });
+  chrome.runtime.sendMessage({ type: "bulk-export", did, wid, vid, selectedPartStudios, selectedDrawings });
 });
 
 // ---------------------------------------------------------------------------
@@ -190,16 +190,30 @@ function loadExportElements() {
     const url = tabs[0].url || "";
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
-    if (!docMatch || !widMatch) {
-      $status.textContent = url.includes("/v/")
-        ? "Version link — open the workspace tab to export"
-        : "Not an Onshape workspace";
+    const vidMatch = url.match(/\/v\/([a-f0-9]+)/);
+    if (!docMatch || (!widMatch && !vidMatch)) {
+      $status.textContent = "Not an Onshape workspace";
       return;
     }
     const did = docMatch[1];
-    const wid = widMatch[1];
-    _exportData = { did, wid };
+    const wid = widMatch ? widMatch[1] : null;
+    const vid = vidMatch ? vidMatch[1] : null;
 
+    if (vid) {
+      // Version link — verify it's a revision before allowing export
+      chrome.runtime.sendMessage({ type: "check-version-is-release", docId: did, vid }, (resp) => {
+        if (!resp?.isRelease) {
+          $status.style.color = "#f59e0b";
+          $status.textContent = "This version is not a revision — create a release first.";
+          return;
+        }
+        _exportData = { did, vid };
+        chrome.runtime.sendMessage({ type: "fetch-export-elements", did, vid });
+      });
+      return;
+    }
+
+    _exportData = { did, wid };
     chrome.runtime.sendMessage({ type: "check-releases", docId: did }, (releaseResp) => {
       const noReleases = !releaseResp || !releaseResp.hasReleases;
       const staleRevision = !noReleases && !!releaseResp?.staleRevision;

@@ -841,9 +841,8 @@ function computeScale(bb, available = 100) {
   const dy = (bb.highY - bb.lowY) * 1000;
   const dz = (bb.highZ - bb.lowZ) * 1000;
   const largest = Math.max(dx, dy, dz);
-  broadcastDrawLog(`  bbox: ${dx.toFixed(1)} x ${dy.toFixed(1)} x ${dz.toFixed(1)} mm, largest=${largest.toFixed(1)}`);
   if (largest < 0.1) {
-    broadcastDrawLog("  bbox zero/tiny -- defaulting to 1:5", "log-err");
+    broadcastDrawLog("  Part is very small — using 1:5 scale", "log-err");
     return [1, 5];
   }
   const standards = [[2,1],[1,1],[1,2],[1,3],[1,4],[1,5],[1,6],[1,7],[1,10],[1,15],[1,20],[1,50]];
@@ -876,24 +875,23 @@ async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
       const state = r.requestState || "";
       if (state === "DONE") return true;
       if (state === "FAILED") {
-        broadcastDrawLog(`  modify FAILED: ${JSON.stringify(r).slice(0, 200)}`, "log-err");
+        broadcastDrawLog("  Drawing update failed", "log-err");
         return false;
       }
     } catch (e) {
       if (e.message.includes("404")) {
         notFound++;
         if (notFound >= 3) {
-          broadcastDrawLog(`  poll 404 x${notFound} -- assuming completed`);
           return true;
         }
       } else {
-        broadcastDrawLog(`  poll error: ${e.message}`, "log-err");
+        broadcastDrawLog("  Warning: drawing may still be processing", "log-err");
         return false;
       }
     }
     await new Promise(r => setTimeout(r, 2000));
   }
-  broadcastDrawLog(`  modify timed out after ${timeoutSec}s`, "log-err");
+  broadcastDrawLog("  Timed out — drawing may be incomplete", "log-err");
   return false;
 }
 
@@ -916,15 +914,11 @@ async function createDrawingsForUrl(url, selectedParts) {
     return;
   }
   const { docId, wid, eid } = parsed;
-  broadcastDrawLog(`Document: ${docId}`);
-  broadcastDrawLog(`Workspace: ${wid}`);
-  broadcastDrawLog(`Part Studio: ${eid}`);
 
   // Use pre-selected parts if provided, otherwise fetch (legacy fallback)
   let parts;
   if (selectedParts && selectedParts.length > 0) {
     parts = selectedParts;
-    broadcastDrawLog(`${parts.length} part(s) selected`);
   } else {
     broadcastDrawLog("Fetching parts...");
     try {
@@ -939,7 +933,6 @@ async function createDrawingsForUrl(url, selectedParts) {
       chrome.runtime.sendMessage({ type: "draw-done", error: "No parts" }).catch(() => {});
       return;
     }
-    broadcastDrawLog(`Found ${parts.length} part(s)`);
   }
   let created = 0;
   let failed = 0;
@@ -965,9 +958,9 @@ async function createDrawingsForUrl(url, selectedParts) {
       const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/create`, createBody);
       drawingEid = resp.id || "";
       if (!drawingEid) throw new Error("No drawing element ID returned");
-      broadcastDrawLog(`  drawing created: ${drawingEid}`);
+      broadcastDrawLog("  Creating drawing...");
     } catch (e) {
-      broadcastDrawLog(`  create failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  Create failed: ${e.message}`, "log-err");
       failed++;
       continue;
     }
@@ -982,9 +975,9 @@ async function createDrawingsForUrl(url, selectedParts) {
       bb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${encodeURIComponent(partId)}/boundingboxes?includeHidden=true`);
       scale = computeScale(bb);
     } catch (e) {
-      broadcastDrawLog(`  bbox failed (${e.message}), using 1:5`, "log-err");
+      broadcastDrawLog("  Bounding box unavailable — using 1:5 scale", "log-err");
     }
-    broadcastDrawLog(`  scale: ${scale[0]}:${scale[1]}`);
+    broadcastDrawLog(`  Scale: ${scale[0]}:${scale[1]}`);
 
     const ref = { documentId: docId, workspaceId: wid, elementId: eid, partId: partId };
 
@@ -996,10 +989,9 @@ async function createDrawingsForUrl(url, selectedParts) {
       const fb = (ins.items || []).find(i => i.isFlattenedBody && i.unflattenedPartDeterministicId === partId);
       if (fb) {
         flatRef = { documentId: docId, workspaceId: wid, elementId: eid, partId: fb.deterministicId };
-        broadcastDrawLog(`  flat body: ${fb.deterministicId}`);
       }
     } catch(e) {
-      broadcastDrawLog(`  flat body lookup: ${e.message}`, "log-err");
+      // flat body lookup failed — sheet metal sheet won't be added
     }
 
     // View positions: center the 4-view block within the usable A3 area.
@@ -1088,11 +1080,12 @@ async function createDrawingsForUrl(url, selectedParts) {
           ],
         }],
       };
+      broadcastDrawLog("  Placing views...");
       const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, viewBody);
       const mid = resp.id || "";
       if (mid) await pollModify(docId, wid, drawingEid, mid);
     } catch (e) {
-      broadcastDrawLog(`  views failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  Could not place views: ${e.message}`, "log-err");
       failed++;
       continue;
     }
@@ -1149,17 +1142,15 @@ async function createDrawingsForUrl(url, selectedParts) {
             viewPosMm[v.viewId] = _toPhys(LEFT_POS_M);
           }
         }
-        broadcastDrawLog(`  labels applied`);
-        broadcastDrawLog(`  adding overall dimensions...`);
+        broadcastDrawLog("  Adding dimensions...");
         await addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm);
       }
     } catch (e) {
-      broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  Labels failed: ${e.message}`, "log-err");
     }
 
     // Step 3: Flat pattern sheet (Sheet 2) — sheet metal parts only, pure REST
     if (flatRef) {
-      broadcastDrawLog(`  adding flat pattern sheet...`);
       try {
         // Fresh insertables fetch for latest microversionId
         const insP = new URLSearchParams({ includeFlattenedBodies: "true", includeParts: "false", elementId: eid });
@@ -1173,9 +1164,8 @@ async function createDrawingsForUrl(url, selectedParts) {
           const flatBb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${encodeURIComponent(fb.deterministicId)}/boundingboxes?includeHidden=true`);
           flatScale = computeScale(flatBb, 200);
         } catch (e) {
-          broadcastDrawLog(`  flat bbox failed (${e.message}), using 1:5`, "log-err");
+          // use default scale
         }
-        broadcastDrawLog(`  flat scale: ${flatScale[0]}:${flatScale[1]}`);
 
         // 3a. Add Sheet 2 by clicking the Add Sheet button in the drawing editor
         const drawUrl = `https://cad.onshape.com/documents/${docId}/w/${wid}/e/${drawingEid}`;
@@ -1183,7 +1173,6 @@ async function createDrawingsForUrl(url, selectedParts) {
         try {
           const sheetResult = await addSheetViaIframe(tab.id);
           if (!sheetResult.ok) throw new Error("add sheet: " + JSON.stringify(sheetResult));
-          broadcastDrawLog(`  sheet 2 added`);
         } finally {
           await new Promise(r => setTimeout(r, 1000));
           chrome.tabs.remove(tab.id);
@@ -1212,18 +1201,20 @@ async function createDrawingsForUrl(url, selectedParts) {
           }],
         });
         if (flatViewResp.id) await pollModify(docId, wid, drawingEid, flatViewResp.id);
-        broadcastDrawLog(`  flat pattern view placed`, "log-ok");
 
       } catch (e) {
-        broadcastDrawLog(`  flat pattern sheet: ${e.message}`, "log-err");
+        broadcastDrawLog(`  Flat pattern failed: ${e.message}`, "log-err");
       }
     }
 
     created++;
-    broadcastDrawLog(`  done`, "log-ok");
+    broadcastDrawLog("  ✓ Done", "log-ok");
   }
 
-  broadcastDrawLog(`Complete: ${created} created, ${failed} failed`, created > 0 ? "log-ok" : "log-err");
+  const summary = failed > 0
+    ? `All done — ${created} created, ${failed} failed`
+    : `All done — ${created} drawing${created !== 1 ? "s" : ""} created`;
+  broadcastDrawLog(summary, created > 0 ? "log-ok" : "log-err");
 
   // Sort new drawings into Drawings folder
   if (created > 0) {
@@ -1273,7 +1264,7 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
     const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
     viewList = viewsResp.items || [];
   } catch (e) {
-    broadcastDrawLog(`  dimensions: failed to fetch views: ${e.message}`, "log-err");
+    broadcastDrawLog(`  Dimensions unavailable: ${e.message}`, "log-err");
     return;
   }
 
@@ -1284,7 +1275,6 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
   });
 
   if (!targetViews.length) {
-    broadcastDrawLog(`  dimensions: no non-iso views on sheet 1`, "log-err");
     return;
   }
 
@@ -1298,16 +1288,14 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
         const j = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views/${vid}/jsongeometry`);
         lines = (j.bodyData || []).filter(e => e.type === "line");
       } catch (e) {
-        broadcastDrawLog(`  dimensions: geometry failed for ${vid} (attempt ${attempt}): ${e.message}`, "log-err");
+        // geometry fetch failed for this attempt
       }
       if (lines.length) break;
       if (attempt < 5) {
-        broadcastDrawLog(`  dimensions: geometry not ready for ${vid}, retrying in 2s (attempt ${attempt}/5)...`);
         await new Promise(r => setTimeout(r, 2000));
       }
     }
     if (!lines.length) {
-      broadcastDrawLog(`  dimensions: geometry still empty for ${vid} after 5 attempts, skipping`, "log-err");
       continue;
     }
 
@@ -1333,7 +1321,6 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
       const maxXval = Math.max(...allGX);
       const midHval = (minH + maxH) / 2;
       const hTextPos = [maxXval + off, midHval, 0];
-      broadcastDrawLog(`  ${vid} HEIGHT ${((maxH - minH) * 1000).toFixed(1)}mm`);
       annotations.push({
         type: "Onshape::Dimension::LineToLine",
         lineToLineDimension: {
@@ -1358,7 +1345,6 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
       const maxHval  = Math.max(...allGH);
       const midXval  = (minX + maxX) / 2;
       const wTextPos = [midXval, maxHval + off, 0];
-      broadcastDrawLog(`  ${vid} WIDTH ${((maxX - minX) * 1000).toFixed(1)}mm`);
       annotations.push({
         type: "Onshape::Dimension::LineToLine",
         lineToLineDimension: {
@@ -1373,11 +1359,9 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
   }
 
   if (!annotations.length) {
-    broadcastDrawLog(`  dimensions: no annotations built`, "log-err");
     return;
   }
 
-  broadcastDrawLog(`  submitting ${annotations.length} dimension annotations`);
   try {
     const body = {
       description: "all dims",
@@ -1386,9 +1370,8 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
     const r   = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, body);
     const mid = r.id || "";
     if (mid) await pollModify(docId, wid, drawingEid, mid);
-    broadcastDrawLog(`  dimensions added`, "log-ok");
   } catch (e) {
-    broadcastDrawLog(`  dimensions: modify failed: ${e.message}`, "log-err");
+    broadcastDrawLog(`  Dimensions failed: ${e.message}`, "log-err");
   }
 }
 
@@ -3271,11 +3254,12 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
  * @param {Array<{psId:string, psName:string, configuration:string, parts:Array<{partName:string, deterministicId:string}>}>} selectedPartStudios
  * @returns {Promise<Array<{name:string, data:Uint8Array}>>} Files ready for makeZip()
  */
-async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
+async function bulkExportFlatPatterns(did, wid, selectedPartStudios, vid) {
   const enc = new TextEncoder();
+  const wvm = vid ? `v/${vid}` : `w/${wid}`;
 
   // Fetch microversion once (plain-text endpoint)
-  const mvResp = await fetch(`${ONSHAPE_BASE}/api/v14/documents/d/${did}/w/${wid}/microversion`, {
+  const mvResp = await fetch(`${ONSHAPE_BASE}/api/v14/documents/d/${did}/${wvm}/microversion`, {
     credentials: "include",
     headers: { Accept: "text/plain, */*" },
   });
@@ -3311,7 +3295,7 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
       };
       try {
         const r = await fetch(
-          `${ONSHAPE_BASE}/api/documents/d/${did}/w/${wid}/e/${ps.psId}/exportinternal`,
+          `${ONSHAPE_BASE}/api/documents/d/${did}/${wvm}/e/${ps.psId}/exportinternal`,
           {
             method: "POST",
             credentials: "include",
@@ -3399,7 +3383,8 @@ async function splitPdfViaTab(did, extDataId, indices) {
   return bytes;
 }
 
-async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
+async function bulkExportDrawingPdfs(did, wid, selectedDrawings, vid) {
+  const wvm = vid ? `v/${vid}` : `w/${wid}`;
   console.log("[BulkExport] Drawing elements:", selectedDrawings.map(e => e.name));
   chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `${selectedDrawings.length} drawing(s) to export` }).catch(() => {});
 
@@ -3407,7 +3392,7 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
   const jobs = await Promise.all(selectedDrawings.map(async el => {
     try {
       const job = await onshapePost(
-        `/api/v6/drawings/d/${did}/w/${wid}/e/${el.id}/translations`,
+        `/api/v6/drawings/d/${did}/${wvm}/e/${el.id}/translations`,
         { formatName: "PDF", storeInDocument: false }
       );
       return { name: el.name, jobId: job.id, documentId: job.documentId || did, pageFrom: el.pageFrom, pageTo: el.pageTo };
@@ -5183,12 +5168,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
 
   } else if (msg.type === "fetch-export-elements") {
-    const { did, wid } = msg;
-    if (!did || !wid) { sendResponse({ error: "Missing did or wid" }); return; }
+    const { did, wid, vid } = msg;
+    if (!did || (!wid && !vid)) { sendResponse({ error: "Missing did or wid/vid" }); return; }
+    const wvm = vid ? `v/${vid}` : `w/${wid}`;
     sendResponse({ ok: true });
     (async () => {
       try {
-        const elResp = await onshapeFetch(`/api/documents/d/${did}/w/${wid}/elements`);
+        const elResp = await onshapeFetch(`/api/documents/d/${did}/${wvm}/elements`);
         const allEls = Array.isArray(elResp) ? elResp : (elResp.items || []);
         const partStudioEls = allEls.filter(e => e.elementType === "PARTSTUDIO");
         const drawings = allEls.filter(e => e.elementType === "APPLICATION").map(e => ({ id: e.id, name: e.name }));
@@ -5196,7 +5182,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         const partStudios = await Promise.all(partStudioEls.map(async ps => {
           try {
             const params = new URLSearchParams({ includeFlattenedBodies: "true", includeParts: "false", elementId: ps.id });
-            const ins = await onshapeFetch(`/api/documents/d/${did}/w/${wid}/insertables?${params}`);
+            const ins = await onshapeFetch(`/api/documents/d/${did}/${wvm}/insertables?${params}`);
             const flatParts = (ins.items || [])
               .filter(i => i.isFlattenedBody)
               .map(i => ({ partName: i.partName || i.name || "FlatPattern", deterministicId: i.deterministicId }));
@@ -5214,15 +5200,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
 
   } else if (msg.type === "bulk-export") {
-    const { did, wid, selectedPartStudios, selectedDrawings } = msg;
-    if (!did || !wid) { sendResponse({ error: "Missing did or wid" }); return; }
+    const { did, wid, vid, selectedPartStudios, selectedDrawings } = msg;
+    if (!did || (!wid && !vid)) { sendResponse({ error: "Missing did or wid/vid" }); return; }
     sendResponse({ ok: true });
     (async () => {
       try {
         chrome.runtime.sendMessage({ type: "bulk-export-progress", message: "Starting bulk export..." }).catch(() => {});
         const [dxfFiles, pdfFiles] = await Promise.all([
-          selectedPartStudios?.length ? bulkExportFlatPatterns(did, wid, selectedPartStudios) : Promise.resolve([]),
-          selectedDrawings?.length ? bulkExportDrawingPdfs(did, wid, selectedDrawings) : Promise.resolve([]),
+          selectedPartStudios?.length ? bulkExportFlatPatterns(did, wid, selectedPartStudios, vid) : Promise.resolve([]),
+          selectedDrawings?.length ? bulkExportDrawingPdfs(did, wid, selectedDrawings, vid) : Promise.resolve([]),
         ]);
         const allFiles = [...dxfFiles, ...pdfFiles];
         chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `Building ZIP: ${allFiles.length} file(s)...` }).catch(() => {});
