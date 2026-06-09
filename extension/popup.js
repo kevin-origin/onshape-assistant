@@ -273,7 +273,7 @@ function renderExportElements(partStudios, drawings) {
     cfgWrap.style.cssText = "padding-left:23px;margin-top:4px;display:none;";
     psRow.appendChild(cfgWrap);
     // Fetch configs for this PS
-    chrome.runtime.sendMessage({ type: "fetch-ps-configs", did: _exportData?.did, wid: _exportData?.wid, eid: ps.id });
+    chrome.runtime.sendMessage({ type: "fetch-ps-configs", did: _exportData?.did, wid: _exportData?.wid, vid: _exportData?.vid, eid: ps.id });
     const partContainer = document.createElement("div");
     partContainer.style.paddingLeft = "18px";
     psRow.addEventListener("click", (e) => {

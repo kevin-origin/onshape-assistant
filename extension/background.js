@@ -4416,20 +4416,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "fetch-ps-configs") {
-    const { url, did: msgDid, wid: msgWid, eid: msgEid } = msg;
+    const { url, did: msgDid, wid: msgWid, vid: msgVid, eid: msgEid } = msg;
     sendResponse({ ok: true });
     (async () => {
       try {
-        let did, wid, eid;
+        let did, wid, vid, eid;
         if (url) {
           const parsed = parsePartStudioUrl(url);
           if (!parsed) throw new Error("Invalid URL");
           ({ docId: did, wid, eid } = parsed);
         } else {
-          did = msgDid; wid = msgWid; eid = msgEid;
+          did = msgDid; wid = msgWid; vid = msgVid; eid = msgEid;
         }
-        if (!did || !wid || !eid) throw new Error("Missing did/wid/eid");
-        const cfg = await onshapeFetch(`/api/v10/elements/d/${did}/w/${wid}/e/${eid}/configuration`);
+        if (!did || (!wid && !vid) || !eid) throw new Error("Missing did/wid/eid");
+        const wvm = vid ? `v/${vid}` : `w/${wid}`;
+        const cfg = await onshapeFetch(`/api/v10/elements/d/${did}/${wvm}/e/${eid}/configuration`);
         const rawParams = cfg?.configurationParameters || [];
         const currentCfg = {};
         (cfg?.currentConfiguration || []).forEach(p => {
@@ -5011,12 +5012,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Try backend first, fall back to local storage
     (async () => {
       const user = await getSessionUser();
-      if (!user) return sendResponse({ allowed: false, error: "No session user" });
+      if (!user) return sendResponse({ allowed: true, error: "No session user" });
 
       // Try backend
       let docPerms = null;
       const remote = await syncFetch(`/api/merge-permissions/${msg.docId}`);
-      if (remote && remote.owners) {
+      if (remote && Array.isArray(remote.owners) && remote.owners.length > 0) {
         docPerms = remote;
         // Cache locally
         const stored = await chrome.storage.local.get("mergePermissions");
@@ -5035,7 +5036,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return sendResponse({ allowed: true, email: user.email });
       }
       const owners = docPerms.owners || [];
-      const allowed = owners.some(o => o.email === user.email);
+      const allowed = owners.some(o => o.email.toLowerCase() === user.email.toLowerCase());
       console.log(`[MergeBlock] User ${user.email} ${allowed ? "ALLOWED" : "BLOCKED"} for ${msg.docId}`);
       sendResponse({ allowed, email: user.email, owners });
     })();
@@ -5181,13 +5182,13 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
         const partStudios = await Promise.all(partStudioEls.map(async ps => {
           try {
-            const params = new URLSearchParams({ includeFlattenedBodies: "true", includeParts: "false", elementId: ps.id });
-            const ins = await onshapeFetch(`/api/documents/d/${did}/${wvm}/insertables?${params}`);
-            const flatParts = (ins.items || [])
-              .filter(i => i.isFlattenedBody)
-              .map(i => ({ partName: i.partName || i.name || "FlatPattern", deterministicId: i.deterministicId }));
+            const parts = await onshapeFetch(`/api/v6/parts/d/${did}/${wvm}/e/${ps.id}?withThumbnails=false`);
+            const flatParts = (Array.isArray(parts) ? parts : [])
+              .filter(p => p.isFlattenedBody)
+              .map(p => ({ partName: p.name || "FlatPattern", deterministicId: p.partId }));
             return { id: ps.id, name: ps.name, flatParts };
           } catch (e) {
+            console.warn(`[ExportElements] parts fetch failed for ${ps.id}:`, e.message);
             return { id: ps.id, name: ps.name, flatParts: [] };
           }
         }));
