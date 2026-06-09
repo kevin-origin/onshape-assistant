@@ -191,7 +191,9 @@ function loadExportElements() {
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
     if (!docMatch || !widMatch) {
-      $status.textContent = "Not an Onshape workspace";
+      $status.textContent = url.includes("/v/")
+        ? "Version link — open the workspace tab to export"
+        : "Not an Onshape workspace";
       return;
     }
     const did = docMatch[1];
@@ -904,7 +906,7 @@ $btnConfirm.addEventListener("click", () => {
   $drawLog.innerHTML = "";
   $btnCreateDraw.disabled = true;
 
-  appendDrawLog(`Creating drawings for ${selectedParts.length} part(s)...`);
+  appendDrawLog(`Starting ${selectedParts.length} drawing${selectedParts.length !== 1 ? "s" : ""}...`);
 
   chrome.runtime.sendMessage({
     type: "create-drawings",
@@ -941,7 +943,7 @@ document.getElementById("btnLoadDrawings").addEventListener("click", () => {
     const url      = tabs[0].url || "";
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
-    if (!docMatch || !widMatch) { $status.textContent = "Not an Onshape workspace"; return; }
+    if (!docMatch || !widMatch) { $status.textContent = url.includes("/v/") ? "Version link — open the workspace tab" : "Not an Onshape workspace"; return; }
 
     chrome.runtime.sendMessage({
       type: "fetch-drawing-elements",
@@ -1024,7 +1026,7 @@ document.getElementById("btnApplyNotes").addEventListener("click", () => {
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
     if (!docMatch || !widMatch) {
-      appendNotesLog("Not an Onshape workspace", "log-err");
+      appendNotesLog(url.includes("/v/") ? "Version link — open the workspace tab" : "Not an Onshape workspace", "log-err");
       $log.style.display = "block";
       return;
     }
