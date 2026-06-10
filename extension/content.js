@@ -986,6 +986,10 @@
         document.documentElement.dataset.oxtExportPath = 'pending';
 
         function runExportReleaseCheck() {
+          if (document.documentElement.dataset.oxtOtsParts === "1") {
+            console.log("[ExportDetect] OTS Parts — skipping release check");
+            return;
+          }
           const releaseCheck = new Promise(resolve =>
             chrome.runtime.sendMessage({ type: "check-releases", docId }, resolve)
           );
