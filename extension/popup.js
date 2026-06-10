@@ -200,31 +200,46 @@ function loadExportElements() {
     const vid = vidMatch ? vidMatch[1] : null;
 
     if (vid) {
-      // Version link — verify it's a revision before allowing export
-      chrome.runtime.sendMessage({ type: "check-version-is-release", docId: did, vid }, (resp) => {
-        if (!resp?.isRelease) {
-          $status.style.color = "#f59e0b";
-          $status.textContent = "This version is not a revision — create a release first.";
+      // Version link — OTS Parts docs skip release check; others require a formal revision
+      chrome.runtime.sendMessage({ type: "get-top-folder", docId: did }, (folderResp) => {
+        if (folderResp?.topFolderName === "OTS Parts") {
+          console.log("[ExportDetect] OTS Parts (version) — skipping release check");
+          _exportData = { did, vid };
+          chrome.runtime.sendMessage({ type: "fetch-export-elements", did, vid });
           return;
         }
-        _exportData = { did, vid };
-        chrome.runtime.sendMessage({ type: "fetch-export-elements", did, vid });
+        chrome.runtime.sendMessage({ type: "check-version-is-release", docId: did, vid }, (resp) => {
+          if (!resp?.isRelease) {
+            $status.style.color = "#f59e0b";
+            $status.textContent = "This version is not a revision — create a release first.";
+            return;
+          }
+          _exportData = { did, vid };
+          chrome.runtime.sendMessage({ type: "fetch-export-elements", did, vid });
+        });
       });
       return;
     }
 
     _exportData = { did, wid };
-    chrome.runtime.sendMessage({ type: "check-releases", docId: did }, (releaseResp) => {
-      const noReleases = !releaseResp || !releaseResp.hasReleases;
-      const staleRevision = !noReleases && !!releaseResp?.staleRevision;
-      if (noReleases || staleRevision) {
-        $status.style.color = "#f59e0b";
-        $status.textContent = noReleases
-          ? "Please create a release before exporting."
-          : "Changes have been made since the last release. Please create a new release before exporting.";
+    chrome.runtime.sendMessage({ type: "get-top-folder", docId: did }, (folderResp) => {
+      if (folderResp?.topFolderName === "OTS Parts") {
+        console.log("[ExportDetect] OTS Parts — skipping release check");
+        chrome.runtime.sendMessage({ type: "fetch-export-elements", did, wid });
         return;
       }
-      chrome.runtime.sendMessage({ type: "fetch-export-elements", did, wid });
+      chrome.runtime.sendMessage({ type: "check-releases", docId: did }, (releaseResp) => {
+        const noReleases = !releaseResp || !releaseResp.hasReleases;
+        const staleRevision = !noReleases && !!releaseResp?.staleRevision;
+        if (noReleases || staleRevision) {
+          $status.style.color = "#f59e0b";
+          $status.textContent = noReleases
+            ? "Please create a release before exporting."
+            : "Changes have been made since the last release. Please create a new release before exporting.";
+          return;
+        }
+        chrome.runtime.sendMessage({ type: "fetch-export-elements", did, wid });
+      });
     });
   });
 }
