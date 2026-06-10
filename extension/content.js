@@ -1191,7 +1191,11 @@
       }
       console.log(`[MergeBlock] Target is main — checking permissions`);
       chrome.runtime.sendMessage({ type: "check-merge-allowed", docId }, (response) => {
-        if (response && response.allowed) {
+        if (chrome.runtime.lastError || !response) {
+          console.log("[MergeBlock] SW unavailable — skipping block");
+          return;
+        }
+        if (response.allowed) {
           console.log("[MergeBlock] User is allowed to merge to main");
           return;
         }

@@ -376,6 +376,45 @@ document.getElementById("btnSortTabs").addEventListener("click", () => {
   });
 });
 
+document.getElementById("btnNormalizeNames").addEventListener("click", () => {
+  const btn = document.getElementById("btnNormalizeNames");
+  const $log = document.getElementById("normalizeNamesLog");
+  $log.style.display = "none";
+  $log.textContent = "";
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    const didM = url.match(/\/documents\/([a-f0-9]+)/);
+    const widM = url.match(/\/w\/([a-f0-9]+)/);
+    if (!didM || !widM) {
+      $log.style.display = "block";
+      $log.textContent = "Open an Onshape workspace tab first";
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Normalizing...";
+    chrome.runtime.sendMessage({ type: "normalize-part-names", did: didM[1], wid: widM[1] });
+  });
+});
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === "normalize-part-names-done") {
+    const btn = document.getElementById("btnNormalizeNames");
+    const $log = document.getElementById("normalizeNamesLog");
+    btn.disabled = false;
+    btn.textContent = "Normalize Part Names";
+    $log.style.display = "block";
+    if (msg.error) {
+      $log.style.color = "#ff6b6b";
+      $log.textContent = "Error: " + msg.error;
+    } else {
+      $log.style.color = "#aaa";
+      const r = msg.result || {};
+      $log.textContent = `Done — updated: ${r.updated ?? 0}, skipped: ${r.skipped ?? 0}, errors: ${r.errors ?? 0}`;
+    }
+  }
+});
+
 // Interference Check — run button
 document.getElementById("btnRunInterference").addEventListener("click", () => {
   const btn = document.getElementById("btnRunInterference");

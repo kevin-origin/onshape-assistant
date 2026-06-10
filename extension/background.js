@@ -4380,9 +4380,9 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     if (_extensionDisabled) {
       sendResponse({ disabled: true });
     } else {
-      chrome.storage.sync.get("killSwitchActive").then(({ killSwitchActive }) => {
-        if (killSwitchActive) {
-          applyKillSwitch("sync flag (msg handler race fallback)");
+      chrome.storage.local.get("killSwitchUntil").then(({ killSwitchUntil }) => {
+        if (killSwitchUntil && Date.now() < killSwitchUntil) {
+          applyKillSwitch("cached (from msg handler)");
           sendResponse({ disabled: true });
         } else {
           sendResponse({ disabled: false });
@@ -5515,6 +5515,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return;
 
+  } else if (msg.type === "normalize-part-names") {
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const result = await normalizePartNames(msg.did, msg.wid, true);
+        chrome.runtime.sendMessage({ type: "normalize-part-names-done", result }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "normalize-part-names-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
   } else if (msg.type === "dxf-folder-sync") {
     sendResponse({ ok: true });
     (async () => {
@@ -5604,14 +5616,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       console.log("[SPA] Content script not reachable, reloading tab");
       chrome.tabs.reload(tabId);
     });
-    if (newDocId !== prevDocId) {
-      const widM = changeInfo.url.match(/\/w\/([a-f0-9]+)/);
-      if (widM) {
-        syncDrawingLinks(newDocId, widM[1]).catch(e => console.log("[DrawingLinkSync] Auto-sync failed:", e.message));
-        syncStockMass(newDocId, widM[1]).catch(e => console.log("[StockMassSync] Auto-sync failed:", e.message));
-        normalizePartNames(newDocId, widM[1]).catch(e => console.log("[NormalizeNames] Auto-sync failed:", e.message));
-      }
-    }
   }
 });
 
