@@ -899,7 +899,54 @@ async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
   return false;
 }
 
+/**
+ * Polls until a newly-created drawing element is ready to accept modify calls.
+ * Onshape initialises the drawing asynchronously after creation; calling /modify
+ * too soon results in a 404 or silent failure. Polls GET .../views with a 2s
+ * interval and resolves as soon as the endpoint returns without error.
+ * @param {string} docId
+ * @param {string} wid
+ * @param {string} drawingEid
+ * @param {number} [timeoutSec=30]
+ */
+async function pollDrawingReady(docId, wid, drawingEid, timeoutSec = 30) {
+  const url = `/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`;
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    try {
+      await onshapeFetch(url);
+      return; // drawing responded — ready
+    } catch (e) {
+      if (e.status !== 404 && e.status !== 503) {
+        // Unexpected error — don't loop forever
+        console.warn('[Drawing] pollDrawingReady unexpected error:', e.message);
+        return;
+      }
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  console.warn('[Drawing] pollDrawingReady timed out — proceeding anyway');
+}
+
 let _drawingInProgress = false;
+
+/** Persists the drawingInProgress flag to storage so restarts can detect a crashed op. */
+function setDrawingInProgress(val) {
+  _drawingInProgress = val;
+  if (val) {
+    chrome.storage.local.set({ _drawingInProgress: { expiry: Date.now() + 20 * 60 * 1000 } });
+  } else {
+    chrome.storage.local.remove('_drawingInProgress');
+  }
+}
+
+// On SW startup: clear any stale drawingInProgress flag left by a crashed service worker.
+chrome.storage.local.get('_drawingInProgress', (data) => {
+  if (data._drawingInProgress) {
+    console.warn('[Drawing] Stale drawingInProgress flag found on startup — previous run was interrupted. Clearing.');
+    chrome.storage.local.remove('_drawingInProgress');
+  }
+});
 
 /**
  * Create an individual drawing for every part in a Part Studio.
@@ -909,12 +956,12 @@ let _drawingInProgress = false;
  * @param {Array<object>|null} selectedParts - Pre-selected part objects (null = fetch all from API)
  */
 async function createDrawingsForUrl(url, selectedParts) {
-  _drawingInProgress = true;
+  setDrawingInProgress(true);
   const parsed = parsePartStudioUrl(url);
   if (!parsed) {
     broadcastDrawLog("Invalid Part Studio URL", "log-err");
     chrome.runtime.sendMessage({ type: "draw-done", error: "Invalid URL" }).catch(() => {});
-    _drawingInProgress = false;
+    setDrawingInProgress(false);
     return;
   }
   const { docId, wid, eid } = parsed;
@@ -969,8 +1016,8 @@ async function createDrawingsForUrl(url, selectedParts) {
       continue;
     }
 
-    // 2b. Wait for drawing to initialize
-    await new Promise(r => setTimeout(r, 3000));
+    // 2b. Wait for drawing to initialize (poll instead of fixed sleep)
+    await pollDrawingReady(docId, wid, drawingEid);
 
     // 2c. Get bounding box + compute scale
     let scale = [1, 5];
@@ -1224,7 +1271,7 @@ async function createDrawingsForUrl(url, selectedParts) {
   if (created > 0) {
   }
 
-  _drawingInProgress = false;
+  setDrawingInProgress(false);
   chrome.runtime.sendMessage({ type: "draw-done", created, failed }).catch(() => {});
 }
 
