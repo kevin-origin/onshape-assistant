@@ -20,7 +20,6 @@
     "https://cad.onshape.com/*",
     "https://*.onshape.com/*",
     "http://localhost/*",
-    "https://*.onrender.com/*",
     "https://*.workers.dev/*"
   ],
   "background": {

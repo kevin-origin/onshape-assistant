@@ -393,7 +393,11 @@ async function onshapeFetch(path) {
     credentials: "include",
     headers: { "Accept": "application/json" },
   });
-  if (!resp.ok) throw new Error(`Onshape ${path}: ${resp.status}`);
+  if (!resp.ok) {
+    const err = new Error(`Onshape ${path}: ${resp.status}`);
+    err.status = resp.status;
+    throw err;
+  }
   return resp.json();
 }
 
@@ -879,7 +883,7 @@ async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
         return false;
       }
     } catch (e) {
-      if (e.message.includes("404")) {
+      if (e.status === 404) {
         notFound++;
         if (notFound >= 3) {
           return true;
@@ -1445,6 +1449,7 @@ function trySendScan(tabId) {
 // Store scan result per doc in chrome.storage.local
 // ---------------------------------------------------------------------------
 
+// NOTE: must match ALLOWED_FOLDERS in content.js and popup.js
 const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
 // Tracks docs already notified about high tab count this SW session (avoid spamming)
@@ -1489,7 +1494,7 @@ async function storeDocScanResult(result) {
       if (elements.length >= 35 && elements.length < 40 && !_tabCountNotifiedDocs.has(result.doc_id)) {
         _tabCountNotifiedDocs.add(result.doc_id);
         const docName = result.doc_name || result.doc_id;
-        chrome.notifications.create(`tab-count-${result.doc_id}-${Date.now()}`, {
+        chrome.notifications.create(`tab-count-${crypto.randomUUID()}`, {
           type: "basic",
           iconUrl: "icons/icon128.png",
           title: docName,
@@ -1721,52 +1726,6 @@ async function addFlatPatternSheet(tabId, frameId, docId, psEid, fb, flatScale, 
 // ---------------------------------------------------------------------------
 // CDP helpers — chrome.debugger wrappers for trusted input events
 // ---------------------------------------------------------------------------
-
-// Freeze screen: inject overlay into the PAGE's main world via Runtime.evaluate.
-// Content script listeners can't block main-world events (isolated world), but
-// Runtime.evaluate runs in the main world so capture-phase listeners here DO
-// block Onshape's handlers. CDP synthetic events (Input.dispatch*) bypass the
-// DOM entirely, so automation is unaffected.
-// async function showCdpOverlay(tabId) {
-//   // Visual overlay via content script (informational banner)
-//   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-show" }).catch(() => {});
-//   // Main-world input blocker via CDP — this is what actually freezes the page
-//   try {
-//     await cdpSend(tabId, "Runtime.evaluate", {
-//       expression: `(() => {
-//         if (document.getElementById("oxt-cdp-input-blocker")) return;
-//         const blocker = document.createElement("div");
-//         blocker.id = "oxt-cdp-input-blocker";
-//         blocker.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;background:transparent;";
-//         const events = ["click","dblclick","mousedown","mouseup","mousemove",
-//           "keydown","keyup","keypress","wheel","scroll","contextmenu",
-//           "touchstart","touchend","touchmove","pointerdown","pointerup","pointermove"];
-//         events.forEach(evt => {
-//           blocker.addEventListener(evt, e => {
-//             e.preventDefault();
-//             e.stopPropagation();
-//             e.stopImmediatePropagation();
-//           }, { capture: true });
-//         });
-//         document.documentElement.appendChild(blocker);
-//       })()`,
-//     });
-//   } catch (_) {}
-// }
-
-// async function hideCdpOverlay(tabId) {
-//   // Remove main-world input blocker
-//   try {
-//     await cdpSend(tabId, "Runtime.evaluate", {
-//       expression: `(() => {
-//         const b = document.getElementById("oxt-cdp-input-blocker");
-//         if (b) b.remove();
-//       })()`,
-//     });
-//   } catch (_) {}
-//   // Remove visual overlay
-//   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
-// }
 
 /**
  * Promise wrapper for chrome.debugger.sendCommand.
@@ -3215,7 +3174,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
     if (results.totalInterferences > 0) {
       const docName = docScan?.doc_name || docId;
       const affectedCount = Object.values(results.assemblies).filter(a => a.count > 0).length;
-      chrome.notifications.create(`interference-${docId}-${Date.now()}`, {
+      chrome.notifications.create(`interference-${crypto.randomUUID()}`, {
         type: "basic",
         iconUrl: "icons/icon128.png",
         title: docName,
@@ -4402,7 +4361,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!user) return;
         await fetch(`${SYNC_SERVER}/api/compliance/extension-event`, {
           method: "POST",
-          headers: { "Content-Type": "application/json" },
+          headers: { "Content-Type": "application/json", "X-API-Key": SYNC_API_KEY },
           body: JSON.stringify({
             email: user.email,
             event: msg.event,
@@ -4556,7 +4515,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   } else if (msg.type === "folder-scan-notify") {
     // Delayed notification from content.js (10s after scan found illegal tabs)
-    chrome.notifications.create(`folder-scan-${msg.docId}-${Date.now()}`, {
+    chrome.notifications.create(`folder-scan-${crypto.randomUUID()}`, {
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: msg.docName || msg.docId,
@@ -4564,7 +4523,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
 
   } else if (msg.type === "feature-count-notify") {
-    chrome.notifications.create(`feature-count-${msg.eid}-${Date.now()}`, {
+    chrome.notifications.create(`feature-count-${crypto.randomUUID()}`, {
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: msg.docName || msg.docId,

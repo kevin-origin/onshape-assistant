@@ -7,6 +7,7 @@
 
   const CLICK_DELAY = 500;   // ms after clicking a folder before reading children
   const ROOT_DELAY  = 500;   // ms after clicking "All tabs" breadcrumb
+  // NOTE: must match ALLOWED_FOLDERS in background.js and popup.js
   const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
   const EXCLUDED_DOC_NAMES = ["OTS Parts"];  // shared library docs — skip scanning/sorting
   let _scanning = false;     // lock to prevent concurrent scans
@@ -74,7 +75,7 @@
       else if (iconSrc === "drawing") tabType = "drawing";
       else if (iconSrc === "feature-studio-element") tabType = "featurestudio";
       else if (iconSrc === "variable-studio-element") tabType = "variablestudio";
-      return { text: el.textContent.trim(), el: el, tab: tab, isFolder, tabType, iconSrc };
+      return { text: el.textContent.trim(), isFolder, tabType, iconSrc };
     });
   }
 
@@ -248,10 +249,6 @@
       console.log("[Scanner] autoScan skipped: folder creation in progress");
       return;
     }
-    // if (_unpackInProgress) {
-    //   console.log("[Scanner] autoScan skipped: folder unpack in progress");
-    //   return;
-    // }
     const docId = getDocIdFromUrl();
     if (!docId) { console.log("[Scanner] autoScan: no docId"); return; }
 
@@ -307,18 +304,7 @@
     const folders = Object.keys(folderData);
     const rootTabs = result.root_tabs || [];
 
-    // // Auto-unpack illegal folders (names not in ALLOWED_FOLDERS)
     const illegalFolders = folders.filter(f => !ALLOWED_FOLDERS.includes(f));
-    // if (illegalFolders.length > 0 && !_unpackInProgress) {
-    //   console.log("[Unpack] Found illegal folders:", illegalFolders);
-    //   _unpackInProgress = true;
-    //   showProgressToast("Unpacking illegal folders...");
-    //   if (HAS_DEBUGGER) {
-    //     chrome.runtime.sendMessage({ type: "unpack-illegal-folders", folders: illegalFolders });
-    //   }
-    //   return; // sort + re-scan will happen after unpack completes
-    // }
-
     const illegal = [
       ...illegalFolders,
       ...rootTabs,
@@ -653,25 +639,6 @@
         })();
         return true;
       }
-
-    } else if (msg.type === "unpack-progress") {
-      /* unpack disabled
-      showProgressToast(`Unpacking folder: "${msg.name}"...`);
-      */
-
-    } else if (msg.type === "unpack-done") {
-      /* unpack disabled
-      _unpackInProgress = false;
-      if (msg.error) {
-        const toast = showProgressToast(`Unpack error: ${msg.error}`);
-        toast.style.background = "#dc2626";
-        setTimeout(removeProgressToast, 5000);
-      } else {
-        showProgressToast(`Unpacked ${msg.count} folder(s), sorting...`);
-        setTimeout(removeProgressToast, 3000);
-        // sort-tabs + re-scan happen automatically from background.js
-      }
-      */
 
     } else if (msg.type === "tab-sort-progress") {
       showProgressToast(`Sorting: moving "${msg.name}"...`);

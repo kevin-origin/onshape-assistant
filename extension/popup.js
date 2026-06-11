@@ -561,6 +561,7 @@ chrome.storage.local.get("popupTargetSection", (data) => {
 // Folder Structure validation — ALLOWED_FOLDERS whitelist and scan result validator
 // ---------------------------------------------------------------------------
 
+// NOTE: must match ALLOWED_FOLDERS in background.js and content.js
 const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
 /**
