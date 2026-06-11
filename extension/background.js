@@ -477,7 +477,7 @@ async function syncDrawingLinks(did, wid, force = false) {
         if (!partToUrls[key]) partToUrls[key] = new Set();
         partToUrls[key].add(drawingUrl);
       }
-    } catch (_) {}
+    } catch (e) { console.warn(`[DrawingLinks] resolveReferences failed for ${drawing.id}:`, e.message); }
   }
 
   // 3. Write metadata in parallel — 1 URL → write it, 2+ URLs → write error string
@@ -648,7 +648,7 @@ async function writeDxfMetadata(did, wid, files) {
     try {
       parts = await onshapeFetch(`/api/v6/parts/d/${did}/w/${wid}/e/${ps.id}?withThumbnails=false`);
       if (!Array.isArray(parts)) continue;
-    } catch (e) { errors++; continue; }
+    } catch (e) { console.warn(`[DxfMetadata] parts fetch failed for ${ps.id}:`, e.message); errors++; continue; }
 
     // Match any non-flattened part whose sanitized name matches a picked DXF file
     const candidates = parts.filter(p => !p.isFlattenedBody);
@@ -707,7 +707,7 @@ async function syncStockMass(did, wid, force = false) {
     try {
       parts = await onshapeFetch(`/api/v6/parts/d/${did}/w/${wid}/e/${eid}?withThumbnails=false`);
       if (!Array.isArray(parts)) continue;
-    } catch (e) { errors++; continue; }
+    } catch (e) { console.warn(`[StockMass] parts fetch failed for ${eid}:`, e.message); errors++; continue; }
 
     const workParts = parts.filter(p => {
       if (p.isFlattenedBody) return false;
@@ -729,7 +729,7 @@ async function syncStockMass(did, wid, force = false) {
           if (item.isFlattenedBody && item.unflattenedPartDeterministicId)
             flatBodyMap.set(item.unflattenedPartDeterministicId, item.deterministicId);
         }
-      } catch (_) {}
+      } catch (e) { console.warn(`[StockMass] flat body insertables fetch failed for ${eid}:`, e.message); }
       return flatBodyMap;
     };
 
@@ -759,7 +759,7 @@ async function syncStockMass(did, wid, force = false) {
           { properties: [{ propertyId: STOCKMASS_PROP_ID, value: stockMassKg.toFixed(3) + " kg" }] }
         );
         updated++;
-      } catch (e) { errors++; }
+      } catch (e) { console.warn(`[StockMass] metadata write failed for ${p.partId}:`, e.message); errors++; }
     }
   }
 
@@ -795,7 +795,7 @@ async function normalizePartNames(did, wid, force = false) {
     try {
       meta = await onshapeFetch(`/api/metadata/d/${did}/w/${wid}/e/${eid}/p`);
       if (!Array.isArray(meta?.items)) continue;
-    } catch (e) { errors++; continue; }
+    } catch (e) { console.warn(`[NormalizeNames] metadata fetch failed for ${eid}:`, e.message); errors++; continue; }
 
     const changes = [];
     for (const item of meta.items) {
