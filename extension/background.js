@@ -19,12 +19,14 @@ async function syncFetch(path, options = {}) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4000);
+    const isWrite = options.method && options.method !== "GET";
     const resp = await fetch(`${SYNC_SERVER}${path}`, {
       ...options,
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        "X-API-Key": SYNC_API_KEY,
+        // Only send the key for write operations — GET endpoints are public
+        ...(isWrite ? { "X-API-Key": SYNC_API_KEY } : {}),
         ...(options.headers || {}),
       },
     });
@@ -4380,6 +4382,9 @@ chrome.runtime.onConnect.addListener(port => {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Reject messages not originating from our own extension (content scripts, popup)
+  if (sender.id !== chrome.runtime.id) return;
+
   // check-kill-switch must respond even when disabled, so content.js knows to stop
   // Also check storage cache in case the async startup read hasn't finished yet
   if (msg.type === "check-kill-switch") {
@@ -4408,7 +4413,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         if (!user) return;
         await fetch(`${SYNC_SERVER}/api/compliance/extension-event`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "X-API-Key": SYNC_API_KEY },
+          headers: { "Content-Type": "application/json" },
           body: JSON.stringify({
             email: user.email,
             event: msg.event,
