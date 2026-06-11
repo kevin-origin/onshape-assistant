@@ -1,6 +1,9 @@
 // background.js — Onshape Doc Scanner service worker
 // Handles rescan requests, stores per-doc scan results, and drawing creation.
 // No bulk scan — content.js auto-scans every doc on open.
+// TODO: split into ES modules (drawing/, compliance/, scanner/, etc.) once CDP
+//       code (interference, tab-sort, folder-create) is removed — the refactor
+//       should happen in one coordinated pass to keep the file map coherent.
 
 const ONSHAPE_BASE = "https://cad.onshape.com";
 const COMPANY_ID   = "6810c247e7c40668c32816a6";
@@ -3349,18 +3352,28 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios, vid) {
 async function splitPdfViaTab(did, extDataId, indices) {
   const [tab] = await chrome.tabs.query({ url: "*://cad.onshape.com/*" });
   if (!tab) throw new Error("No Onshape tab open for PDF split");
-  const libCode = await fetch(chrome.runtime.getURL("pdf-lib.min.js")).then(r => r.text());
+
+  // Inject pdf-lib via the chrome.scripting files API — more reliable than
+  // passing the whole library as a string arg and inserting a script tag.
+  // Only injects if PDFLib is not already present in the page's MAIN world.
+  const [checkResult] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: "MAIN",
+    func: () => typeof PDFLib !== "undefined",
+  });
+  if (!checkResult?.result) {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      files: ["pdf-lib.min.js"],
+    });
+  }
+
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: "MAIN",
-    func: async (libCode, did, extDataId, indices) => {
+    func: async (did, extDataId, indices) => {
       try {
-        if (typeof PDFLib === "undefined") {
-          const s = document.createElement("script");
-          s.textContent = libCode;
-          (document.head || document.documentElement).appendChild(s);
-          await new Promise(r => setTimeout(r, 300));
-        }
         if (typeof PDFLib === "undefined") return { error: "PDFLib not loaded" };
         const resp = await fetch(
           `https://cad.onshape.com/api/v6/documents/d/${did}/externaldata/${extDataId}`,
@@ -3381,7 +3394,7 @@ async function splitPdfViaTab(did, extDataId, indices) {
         return { error: e.message };
       }
     },
-    args: [libCode, did, extDataId, indices],
+    args: [did, extDataId, indices],
   });
   const res = results[0]?.result;
   if (!res || res.error) throw new Error(res?.error || "splitPdfViaTab failed");
