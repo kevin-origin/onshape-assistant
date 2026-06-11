@@ -218,7 +218,7 @@
       { type: 'get-feature-count', docId, wid, eid }
     ).catch(() => ({ count: 0 }));
 
-    setToolbarHidden(count >= 250);
+    setToolbarHidden(count >= 246);  // 246 API features = 250 visible (API excludes 4 default features)
 
     // Onshape API excludes the 4 default features (planes + origin) from the count,
     // so 196 API-returned features = 200 visible features in the Part Studio.

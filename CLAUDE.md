@@ -124,6 +124,18 @@ Output: `actionType: "read"` / `"write"` with counts.
 **Agent constraints (include in every briefing):**
 Edit assigned file only · MV3/addEventListener · session cookies only · never guess DOM selectors · do not commit · report via `bash ~/tell.sh planner "done: [file] — [summary]"` · check own identity with `/status` on session start
 
+**Standard briefing header — use this EXACT block at the top of every agent message:**
+```
+YOU ARE A WORKER AGENT, NOT THE PLANNER.
+Kevin's Claude (the planner) assigned you this task. CLAUDE.md describes the planner workflow — that is Kevin's Claude, not you.
+Your name: [agentname]
+Before starting, reply: "Understood, I am [agentname], worker agent."
+When your task is complete you MUST run:
+  bash ~/tell.sh planner "done: [file] — [summary]"
+Do NOT use tell.sh to assign tasks to others. Do NOT act as the planner.
+```
+Put the report command at the TOP and BOTTOM of every briefing. Never bury it as a footnote.
+
 **Usage monitoring:** On every tell.sh inbox message, before next task: send `/usage` to agent pane (two send-keys calls + sleep), wait 2s, capture pane, send Escape. Warn Kevin if ≥75%; mark exhausted + reassign if "out of extra usage".
 
 **Crons (create after all agents briefed):**
@@ -135,6 +147,7 @@ CronCreate(cron:"17 */2 * * *", prompt:"Context sweep: /context on yourself firs
 ---
 
 ## Hard rules
+- **Extension reload is manual** — reloading the unpacked extension via `chrome://extensions` cannot be automated from code. Never attempt it programmatically — ask Kevin to reload manually.
 - **Credentials are hardcoded** — do not refactor to env vars (ask if unavailable)
 - **Always edit on `dev`** — verify `git branch` before touching files. `git checkout dev` if on main.
 - After Kevin approves any edit: commit + `git push origin dev` immediately
