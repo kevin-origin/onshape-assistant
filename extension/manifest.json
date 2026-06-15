@@ -1,9 +1,9 @@
 {
   "manifest_version": 3,
   "name": "Onshape Assistant",
-  "version": "3.0.18",
+  "version": "3.0.19",
   "update_url": "https://raw.githubusercontent.com/kevin-origin/onshape-assistant/main/updates.xml",
-  "description": "Onshape assistant \u2014 drawing creator, doc scanner, violations & interference checker",
+  "description": "Onshape assistant \u2014 drawing creator, BOM sync, export tools, doc scanner",
   "permissions": [
     "activeTab",
     "storage",
@@ -12,7 +12,6 @@
     "cookies",
     "notifications",
     "webNavigation",
-    "debugger",
     "downloads",
     "alarms"
   ],
