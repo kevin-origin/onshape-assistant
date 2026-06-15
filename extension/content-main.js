@@ -148,7 +148,7 @@
         if (event && did) {
           this.addEventListener('load', () => {
             if (this.status >= 200 && this.status < 300) {
-              window.postMessage({ type: 'oxt-compliance-event', event, documentId: did }, '*');
+              window.postMessage({ type: 'oxt-compliance-event', event, documentId: did }, window.location.origin);
             }
           });
         }

@@ -1,6 +1,9 @@
 // background.js — Onshape Doc Scanner service worker
 // Handles rescan requests, stores per-doc scan results, and drawing creation.
 // No bulk scan — content.js auto-scans every doc on open.
+// TODO: split into ES modules (drawing/, compliance/, scanner/, etc.) once CDP
+//       code (interference, tab-sort, folder-create) is removed — the refactor
+//       should happen in one coordinated pass to keep the file map coherent.
 
 const ONSHAPE_BASE = "https://cad.onshape.com";
 const COMPANY_ID   = "6810c247e7c40668c32816a6";
@@ -19,12 +22,14 @@ async function syncFetch(path, options = {}) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 4000);
+    const isWrite = options.method && options.method !== "GET";
     const resp = await fetch(`${SYNC_SERVER}${path}`, {
       ...options,
       signal: controller.signal,
       headers: {
         "Content-Type": "application/json",
-        "X-API-Key": SYNC_API_KEY,
+        // Only send the key for write operations — GET endpoints are public
+        ...(isWrite ? { "X-API-Key": SYNC_API_KEY } : {}),
         ...(options.headers || {}),
       },
     });
@@ -393,7 +398,11 @@ async function onshapeFetch(path) {
     credentials: "include",
     headers: { "Accept": "application/json" },
   });
-  if (!resp.ok) throw new Error(`Onshape ${path}: ${resp.status}`);
+  if (!resp.ok) {
+    const err = new Error(`Onshape ${path}: ${resp.status}`);
+    err.status = resp.status;
+    throw err;
+  }
   return resp.json();
 }
 
@@ -436,7 +445,7 @@ async function onshapePost(path, body) {
 const DRAWING_TEMPLATE = {
   templateDocumentId: "e4ecea9df80b53b39ab4fa38",
   templateWorkspaceId: "038996d814574f1d1d3b774a",
-  templateElementId: "4a80b03c1485e714f587fb61",
+  templateElementId: "bce2f17233fc06112d8bc251",
 };
 
 // ---------------------------------------------------------------------------
@@ -473,7 +482,7 @@ async function syncDrawingLinks(did, wid, force = false) {
         if (!partToUrls[key]) partToUrls[key] = new Set();
         partToUrls[key].add(drawingUrl);
       }
-    } catch (_) {}
+    } catch (e) { console.warn(`[DrawingLinks] resolveReferences failed for ${drawing.id}:`, e.message); }
   }
 
   // 3. Write metadata in parallel — 1 URL → write it, 2+ URLs → write error string
@@ -644,7 +653,7 @@ async function writeDxfMetadata(did, wid, files) {
     try {
       parts = await onshapeFetch(`/api/v6/parts/d/${did}/w/${wid}/e/${ps.id}?withThumbnails=false`);
       if (!Array.isArray(parts)) continue;
-    } catch (e) { errors++; continue; }
+    } catch (e) { console.warn(`[DxfMetadata] parts fetch failed for ${ps.id}:`, e.message); errors++; continue; }
 
     // Match any non-flattened part whose sanitized name matches a picked DXF file
     const candidates = parts.filter(p => !p.isFlattenedBody);
@@ -703,7 +712,7 @@ async function syncStockMass(did, wid, force = false) {
     try {
       parts = await onshapeFetch(`/api/v6/parts/d/${did}/w/${wid}/e/${eid}?withThumbnails=false`);
       if (!Array.isArray(parts)) continue;
-    } catch (e) { errors++; continue; }
+    } catch (e) { console.warn(`[StockMass] parts fetch failed for ${eid}:`, e.message); errors++; continue; }
 
     const workParts = parts.filter(p => {
       if (p.isFlattenedBody) return false;
@@ -725,7 +734,7 @@ async function syncStockMass(did, wid, force = false) {
           if (item.isFlattenedBody && item.unflattenedPartDeterministicId)
             flatBodyMap.set(item.unflattenedPartDeterministicId, item.deterministicId);
         }
-      } catch (_) {}
+      } catch (e) { console.warn(`[StockMass] flat body insertables fetch failed for ${eid}:`, e.message); }
       return flatBodyMap;
     };
 
@@ -755,7 +764,7 @@ async function syncStockMass(did, wid, force = false) {
           { properties: [{ propertyId: STOCKMASS_PROP_ID, value: stockMassKg.toFixed(3) + " kg" }] }
         );
         updated++;
-      } catch (e) { errors++; }
+      } catch (e) { console.warn(`[StockMass] metadata write failed for ${p.partId}:`, e.message); errors++; }
     }
   }
 
@@ -791,7 +800,7 @@ async function normalizePartNames(did, wid, force = false) {
     try {
       meta = await onshapeFetch(`/api/metadata/d/${did}/w/${wid}/e/${eid}/p`);
       if (!Array.isArray(meta?.items)) continue;
-    } catch (e) { errors++; continue; }
+    } catch (e) { console.warn(`[NormalizeNames] metadata fetch failed for ${eid}:`, e.message); errors++; continue; }
 
     const changes = [];
     for (const item of meta.items) {
@@ -841,9 +850,8 @@ function computeScale(bb, available = 100) {
   const dy = (bb.highY - bb.lowY) * 1000;
   const dz = (bb.highZ - bb.lowZ) * 1000;
   const largest = Math.max(dx, dy, dz);
-  broadcastDrawLog(`  bbox: ${dx.toFixed(1)} x ${dy.toFixed(1)} x ${dz.toFixed(1)} mm, largest=${largest.toFixed(1)}`);
   if (largest < 0.1) {
-    broadcastDrawLog("  bbox zero/tiny -- defaulting to 1:5", "log-err");
+    broadcastDrawLog("  Part is very small — using 1:5 scale", "log-err");
     return [1, 5];
   }
   const standards = [[2,1],[1,1],[1,2],[1,3],[1,4],[1,5],[1,6],[1,7],[1,10],[1,15],[1,20],[1,50]];
@@ -876,28 +884,74 @@ async function pollModify(docId, wid, drawingEid, mid, timeoutSec = 30) {
       const state = r.requestState || "";
       if (state === "DONE") return true;
       if (state === "FAILED") {
-        broadcastDrawLog(`  modify FAILED: ${JSON.stringify(r).slice(0, 200)}`, "log-err");
+        broadcastDrawLog("  Drawing update failed", "log-err");
         return false;
       }
     } catch (e) {
-      if (e.message.includes("404")) {
+      if (e.status === 404) {
         notFound++;
         if (notFound >= 3) {
-          broadcastDrawLog(`  poll 404 x${notFound} -- assuming completed`);
           return true;
         }
       } else {
-        broadcastDrawLog(`  poll error: ${e.message}`, "log-err");
+        broadcastDrawLog("  Warning: drawing may still be processing", "log-err");
         return false;
       }
     }
     await new Promise(r => setTimeout(r, 2000));
   }
-  broadcastDrawLog(`  modify timed out after ${timeoutSec}s`, "log-err");
+  broadcastDrawLog("  Timed out — drawing may be incomplete", "log-err");
   return false;
 }
 
+/**
+ * Polls until a newly-created drawing element is ready to accept modify calls.
+ * Onshape initialises the drawing asynchronously after creation; calling /modify
+ * too soon results in a 404 or silent failure. Polls GET .../views with a 2s
+ * interval and resolves as soon as the endpoint returns without error.
+ * @param {string} docId
+ * @param {string} wid
+ * @param {string} drawingEid
+ * @param {number} [timeoutSec=30]
+ */
+async function pollDrawingReady(docId, wid, drawingEid, timeoutSec = 30) {
+  const url = `/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`;
+  const deadline = Date.now() + timeoutSec * 1000;
+  while (Date.now() < deadline) {
+    try {
+      await onshapeFetch(url);
+      return; // drawing responded — ready
+    } catch (e) {
+      if (e.status !== 404 && e.status !== 503) {
+        // Unexpected error — don't loop forever
+        console.warn('[Drawing] pollDrawingReady unexpected error:', e.message);
+        return;
+      }
+    }
+    await new Promise(r => setTimeout(r, 2000));
+  }
+  console.warn('[Drawing] pollDrawingReady timed out — proceeding anyway');
+}
+
 let _drawingInProgress = false;
+
+/** Persists the drawingInProgress flag to storage so restarts can detect a crashed op. */
+function setDrawingInProgress(val) {
+  _drawingInProgress = val;
+  if (val) {
+    chrome.storage.local.set({ _drawingInProgress: { expiry: Date.now() + 20 * 60 * 1000 } });
+  } else {
+    chrome.storage.local.remove('_drawingInProgress');
+  }
+}
+
+// On SW startup: clear any stale drawingInProgress flag left by a crashed service worker.
+chrome.storage.local.get('_drawingInProgress', (data) => {
+  if (data._drawingInProgress) {
+    console.warn('[Drawing] Stale drawingInProgress flag found on startup — previous run was interrupted. Clearing.');
+    chrome.storage.local.remove('_drawingInProgress');
+  }
+});
 
 /**
  * Create an individual drawing for every part in a Part Studio.
@@ -907,24 +961,20 @@ let _drawingInProgress = false;
  * @param {Array<object>|null} selectedParts - Pre-selected part objects (null = fetch all from API)
  */
 async function createDrawingsForUrl(url, selectedParts) {
-  _drawingInProgress = true;
+  setDrawingInProgress(true);
   const parsed = parsePartStudioUrl(url);
   if (!parsed) {
     broadcastDrawLog("Invalid Part Studio URL", "log-err");
     chrome.runtime.sendMessage({ type: "draw-done", error: "Invalid URL" }).catch(() => {});
-    _drawingInProgress = false;
+    setDrawingInProgress(false);
     return;
   }
   const { docId, wid, eid } = parsed;
-  broadcastDrawLog(`Document: ${docId}`);
-  broadcastDrawLog(`Workspace: ${wid}`);
-  broadcastDrawLog(`Part Studio: ${eid}`);
 
   // Use pre-selected parts if provided, otherwise fetch (legacy fallback)
   let parts;
   if (selectedParts && selectedParts.length > 0) {
     parts = selectedParts;
-    broadcastDrawLog(`${parts.length} part(s) selected`);
   } else {
     broadcastDrawLog("Fetching parts...");
     try {
@@ -939,7 +989,6 @@ async function createDrawingsForUrl(url, selectedParts) {
       chrome.runtime.sendMessage({ type: "draw-done", error: "No parts" }).catch(() => {});
       return;
     }
-    broadcastDrawLog(`Found ${parts.length} part(s)`);
   }
   let created = 0;
   let failed = 0;
@@ -965,15 +1014,15 @@ async function createDrawingsForUrl(url, selectedParts) {
       const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/create`, createBody);
       drawingEid = resp.id || "";
       if (!drawingEid) throw new Error("No drawing element ID returned");
-      broadcastDrawLog(`  drawing created: ${drawingEid}`);
+      broadcastDrawLog("  Creating drawing...");
     } catch (e) {
-      broadcastDrawLog(`  create failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  Create failed: ${e.message}`, "log-err");
       failed++;
       continue;
     }
 
-    // 2b. Wait for drawing to initialize
-    await new Promise(r => setTimeout(r, 3000));
+    // 2b. Wait for drawing to initialize (poll instead of fixed sleep)
+    await pollDrawingReady(docId, wid, drawingEid);
 
     // 2c. Get bounding box + compute scale
     let scale = [1, 5];
@@ -982,9 +1031,9 @@ async function createDrawingsForUrl(url, selectedParts) {
       bb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${encodeURIComponent(partId)}/boundingboxes?includeHidden=true`);
       scale = computeScale(bb);
     } catch (e) {
-      broadcastDrawLog(`  bbox failed (${e.message}), using 1:5`, "log-err");
+      broadcastDrawLog("  Bounding box unavailable — using 1:5 scale", "log-err");
     }
-    broadcastDrawLog(`  scale: ${scale[0]}:${scale[1]}`);
+    broadcastDrawLog(`  Scale: ${scale[0]}:${scale[1]}`);
 
     const ref = { documentId: docId, workspaceId: wid, elementId: eid, partId: partId };
 
@@ -996,10 +1045,9 @@ async function createDrawingsForUrl(url, selectedParts) {
       const fb = (ins.items || []).find(i => i.isFlattenedBody && i.unflattenedPartDeterministicId === partId);
       if (fb) {
         flatRef = { documentId: docId, workspaceId: wid, elementId: eid, partId: fb.deterministicId };
-        broadcastDrawLog(`  flat body: ${fb.deterministicId}`);
       }
     } catch(e) {
-      broadcastDrawLog(`  flat body lookup: ${e.message}`, "log-err");
+      // flat body lookup failed — sheet metal sheet won't be added
     }
 
     // View positions: center the 4-view block within the usable A3 area.
@@ -1088,11 +1136,12 @@ async function createDrawingsForUrl(url, selectedParts) {
           ],
         }],
       };
+      broadcastDrawLog("  Placing views...");
       const resp = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, viewBody);
       const mid = resp.id || "";
       if (mid) await pollModify(docId, wid, drawingEid, mid);
     } catch (e) {
-      broadcastDrawLog(`  views failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  Could not place views: ${e.message}`, "log-err");
       failed++;
       continue;
     }
@@ -1149,17 +1198,15 @@ async function createDrawingsForUrl(url, selectedParts) {
             viewPosMm[v.viewId] = _toPhys(LEFT_POS_M);
           }
         }
-        broadcastDrawLog(`  labels applied`);
-        broadcastDrawLog(`  adding overall dimensions...`);
+        broadcastDrawLog("  Adding dimensions...");
         await addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm);
       }
     } catch (e) {
-      broadcastDrawLog(`  labels failed: ${e.message}`, "log-err");
+      broadcastDrawLog(`  Labels failed: ${e.message}`, "log-err");
     }
 
     // Step 3: Flat pattern sheet (Sheet 2) — sheet metal parts only, pure REST
     if (flatRef) {
-      broadcastDrawLog(`  adding flat pattern sheet...`);
       try {
         // Fresh insertables fetch for latest microversionId
         const insP = new URLSearchParams({ includeFlattenedBodies: "true", includeParts: "false", elementId: eid });
@@ -1173,9 +1220,8 @@ async function createDrawingsForUrl(url, selectedParts) {
           const flatBb = await onshapeFetch(`/api/v10/parts/d/${docId}/w/${wid}/e/${eid}/partid/${encodeURIComponent(fb.deterministicId)}/boundingboxes?includeHidden=true`);
           flatScale = computeScale(flatBb, 200);
         } catch (e) {
-          broadcastDrawLog(`  flat bbox failed (${e.message}), using 1:5`, "log-err");
+          // use default scale
         }
-        broadcastDrawLog(`  flat scale: ${flatScale[0]}:${flatScale[1]}`);
 
         // 3a. Add Sheet 2 by clicking the Add Sheet button in the drawing editor
         const drawUrl = `https://cad.onshape.com/documents/${docId}/w/${wid}/e/${drawingEid}`;
@@ -1183,7 +1229,6 @@ async function createDrawingsForUrl(url, selectedParts) {
         try {
           const sheetResult = await addSheetViaIframe(tab.id);
           if (!sheetResult.ok) throw new Error("add sheet: " + JSON.stringify(sheetResult));
-          broadcastDrawLog(`  sheet 2 added`);
         } finally {
           await new Promise(r => setTimeout(r, 1000));
           chrome.tabs.remove(tab.id);
@@ -1212,24 +1257,26 @@ async function createDrawingsForUrl(url, selectedParts) {
           }],
         });
         if (flatViewResp.id) await pollModify(docId, wid, drawingEid, flatViewResp.id);
-        broadcastDrawLog(`  flat pattern view placed`, "log-ok");
 
       } catch (e) {
-        broadcastDrawLog(`  flat pattern sheet: ${e.message}`, "log-err");
+        broadcastDrawLog(`  Flat pattern failed: ${e.message}`, "log-err");
       }
     }
 
     created++;
-    broadcastDrawLog(`  done`, "log-ok");
+    broadcastDrawLog("  ✓ Done", "log-ok");
   }
 
-  broadcastDrawLog(`Complete: ${created} created, ${failed} failed`, created > 0 ? "log-ok" : "log-err");
+  const summary = failed > 0
+    ? `All done — ${created} created, ${failed} failed`
+    : `All done — ${created} drawing${created !== 1 ? "s" : ""} created`;
+  broadcastDrawLog(summary, created > 0 ? "log-ok" : "log-err");
 
   // Sort new drawings into Drawings folder
   if (created > 0) {
   }
 
-  _drawingInProgress = false;
+  setDrawingInProgress(false);
   chrome.runtime.sendMessage({ type: "draw-done", created, failed }).catch(() => {});
 }
 
@@ -1273,7 +1320,7 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
     const viewsResp = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views`);
     viewList = viewsResp.items || [];
   } catch (e) {
-    broadcastDrawLog(`  dimensions: failed to fetch views: ${e.message}`, "log-err");
+    broadcastDrawLog(`  Dimensions unavailable: ${e.message}`, "log-err");
     return;
   }
 
@@ -1284,7 +1331,6 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
   });
 
   if (!targetViews.length) {
-    broadcastDrawLog(`  dimensions: no non-iso views on sheet 1`, "log-err");
     return;
   }
 
@@ -1298,16 +1344,14 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
         const j = await onshapeFetch(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/views/${vid}/jsongeometry`);
         lines = (j.bodyData || []).filter(e => e.type === "line");
       } catch (e) {
-        broadcastDrawLog(`  dimensions: geometry failed for ${vid} (attempt ${attempt}): ${e.message}`, "log-err");
+        // geometry fetch failed for this attempt
       }
       if (lines.length) break;
       if (attempt < 5) {
-        broadcastDrawLog(`  dimensions: geometry not ready for ${vid}, retrying in 2s (attempt ${attempt}/5)...`);
         await new Promise(r => setTimeout(r, 2000));
       }
     }
     if (!lines.length) {
-      broadcastDrawLog(`  dimensions: geometry still empty for ${vid} after 5 attempts, skipping`, "log-err");
       continue;
     }
 
@@ -1333,7 +1377,6 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
       const maxXval = Math.max(...allGX);
       const midHval = (minH + maxH) / 2;
       const hTextPos = [maxXval + off, midHval, 0];
-      broadcastDrawLog(`  ${vid} HEIGHT ${((maxH - minH) * 1000).toFixed(1)}mm`);
       annotations.push({
         type: "Onshape::Dimension::LineToLine",
         lineToLineDimension: {
@@ -1358,7 +1401,6 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
       const maxHval  = Math.max(...allGH);
       const midXval  = (minX + maxX) / 2;
       const wTextPos = [midXval, maxHval + off, 0];
-      broadcastDrawLog(`  ${vid} WIDTH ${((maxX - minX) * 1000).toFixed(1)}mm`);
       annotations.push({
         type: "Onshape::Dimension::LineToLine",
         lineToLineDimension: {
@@ -1373,11 +1415,9 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
   }
 
   if (!annotations.length) {
-    broadcastDrawLog(`  dimensions: no annotations built`, "log-err");
     return;
   }
 
-  broadcastDrawLog(`  submitting ${annotations.length} dimension annotations`);
   try {
     const body = {
       description: "all dims",
@@ -1386,9 +1426,8 @@ async function addOverallDimensions(docId, wid, drawingEid, scale, viewPosMm = {
     const r   = await onshapePost(`/api/v6/drawings/d/${docId}/w/${wid}/e/${drawingEid}/modify`, body);
     const mid = r.id || "";
     if (mid) await pollModify(docId, wid, drawingEid, mid);
-    broadcastDrawLog(`  dimensions added`, "log-ok");
   } catch (e) {
-    broadcastDrawLog(`  dimensions: modify failed: ${e.message}`, "log-err");
+    broadcastDrawLog(`  Dimensions failed: ${e.message}`, "log-err");
   }
 }
 
@@ -1462,6 +1501,7 @@ function trySendScan(tabId) {
 // Store scan result per doc in chrome.storage.local
 // ---------------------------------------------------------------------------
 
+// NOTE: must match ALLOWED_FOLDERS in content.js and popup.js
 const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
 // Tracks docs already notified about high tab count this SW session (avoid spamming)
@@ -1506,7 +1546,7 @@ async function storeDocScanResult(result) {
       if (elements.length >= 35 && elements.length < 40 && !_tabCountNotifiedDocs.has(result.doc_id)) {
         _tabCountNotifiedDocs.add(result.doc_id);
         const docName = result.doc_name || result.doc_id;
-        chrome.notifications.create(`tab-count-${result.doc_id}-${Date.now()}`, {
+        chrome.notifications.create(`tab-count-${crypto.randomUUID()}`, {
           type: "basic",
           iconUrl: "icons/icon128.png",
           title: docName,
@@ -1738,52 +1778,6 @@ async function addFlatPatternSheet(tabId, frameId, docId, psEid, fb, flatScale, 
 // ---------------------------------------------------------------------------
 // CDP helpers — chrome.debugger wrappers for trusted input events
 // ---------------------------------------------------------------------------
-
-// Freeze screen: inject overlay into the PAGE's main world via Runtime.evaluate.
-// Content script listeners can't block main-world events (isolated world), but
-// Runtime.evaluate runs in the main world so capture-phase listeners here DO
-// block Onshape's handlers. CDP synthetic events (Input.dispatch*) bypass the
-// DOM entirely, so automation is unaffected.
-// async function showCdpOverlay(tabId) {
-//   // Visual overlay via content script (informational banner)
-//   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-show" }).catch(() => {});
-//   // Main-world input blocker via CDP — this is what actually freezes the page
-//   try {
-//     await cdpSend(tabId, "Runtime.evaluate", {
-//       expression: `(() => {
-//         if (document.getElementById("oxt-cdp-input-blocker")) return;
-//         const blocker = document.createElement("div");
-//         blocker.id = "oxt-cdp-input-blocker";
-//         blocker.style.cssText = "position:fixed;top:0;left:0;width:100%;height:100%;z-index:2147483647;background:transparent;";
-//         const events = ["click","dblclick","mousedown","mouseup","mousemove",
-//           "keydown","keyup","keypress","wheel","scroll","contextmenu",
-//           "touchstart","touchend","touchmove","pointerdown","pointerup","pointermove"];
-//         events.forEach(evt => {
-//           blocker.addEventListener(evt, e => {
-//             e.preventDefault();
-//             e.stopPropagation();
-//             e.stopImmediatePropagation();
-//           }, { capture: true });
-//         });
-//         document.documentElement.appendChild(blocker);
-//       })()`,
-//     });
-//   } catch (_) {}
-// }
-
-// async function hideCdpOverlay(tabId) {
-//   // Remove main-world input blocker
-//   try {
-//     await cdpSend(tabId, "Runtime.evaluate", {
-//       expression: `(() => {
-//         const b = document.getElementById("oxt-cdp-input-blocker");
-//         if (b) b.remove();
-//       })()`,
-//     });
-//   } catch (_) {}
-//   // Remove visual overlay
-//   chrome.tabs.sendMessage(tabId, { type: "cdp-overlay-hide" }).catch(() => {});
-// }
 
 /**
  * Promise wrapper for chrome.debugger.sendCommand.
@@ -3232,7 +3226,7 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
     if (results.totalInterferences > 0) {
       const docName = docScan?.doc_name || docId;
       const affectedCount = Object.values(results.assemblies).filter(a => a.count > 0).length;
-      chrome.notifications.create(`interference-${docId}-${Date.now()}`, {
+      chrome.notifications.create(`interference-${crypto.randomUUID()}`, {
         type: "basic",
         iconUrl: "icons/icon128.png",
         title: docName,
@@ -3271,11 +3265,12 @@ async function checkInterference(tabId, senderTabId, docId, wid) {
  * @param {Array<{psId:string, psName:string, configuration:string, parts:Array<{partName:string, deterministicId:string}>}>} selectedPartStudios
  * @returns {Promise<Array<{name:string, data:Uint8Array}>>} Files ready for makeZip()
  */
-async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
+async function bulkExportFlatPatterns(did, wid, selectedPartStudios, vid) {
   const enc = new TextEncoder();
+  const wvm = vid ? `v/${vid}` : `w/${wid}`;
 
   // Fetch microversion once (plain-text endpoint)
-  const mvResp = await fetch(`${ONSHAPE_BASE}/api/v14/documents/d/${did}/w/${wid}/microversion`, {
+  const mvResp = await fetch(`${ONSHAPE_BASE}/api/v14/documents/d/${did}/${wvm}/microversion`, {
     credentials: "include",
     headers: { Accept: "text/plain, */*" },
   });
@@ -3311,7 +3306,7 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
       };
       try {
         const r = await fetch(
-          `${ONSHAPE_BASE}/api/documents/d/${did}/w/${wid}/e/${ps.psId}/exportinternal`,
+          `${ONSHAPE_BASE}/api/documents/d/${did}/${wvm}/e/${ps.psId}/exportinternal`,
           {
             method: "POST",
             credentials: "include",
@@ -3357,18 +3352,28 @@ async function bulkExportFlatPatterns(did, wid, selectedPartStudios) {
 async function splitPdfViaTab(did, extDataId, indices) {
   const [tab] = await chrome.tabs.query({ url: "*://cad.onshape.com/*" });
   if (!tab) throw new Error("No Onshape tab open for PDF split");
-  const libCode = await fetch(chrome.runtime.getURL("pdf-lib.min.js")).then(r => r.text());
+
+  // Inject pdf-lib via the chrome.scripting files API — more reliable than
+  // passing the whole library as a string arg and inserting a script tag.
+  // Only injects if PDFLib is not already present in the page's MAIN world.
+  const [checkResult] = await chrome.scripting.executeScript({
+    target: { tabId: tab.id },
+    world: "MAIN",
+    func: () => typeof PDFLib !== "undefined",
+  });
+  if (!checkResult?.result) {
+    await chrome.scripting.executeScript({
+      target: { tabId: tab.id },
+      world: "MAIN",
+      files: ["pdf-lib.min.js"],
+    });
+  }
+
   const results = await chrome.scripting.executeScript({
     target: { tabId: tab.id },
     world: "MAIN",
-    func: async (libCode, did, extDataId, indices) => {
+    func: async (did, extDataId, indices) => {
       try {
-        if (typeof PDFLib === "undefined") {
-          const s = document.createElement("script");
-          s.textContent = libCode;
-          (document.head || document.documentElement).appendChild(s);
-          await new Promise(r => setTimeout(r, 300));
-        }
         if (typeof PDFLib === "undefined") return { error: "PDFLib not loaded" };
         const resp = await fetch(
           `https://cad.onshape.com/api/v6/documents/d/${did}/externaldata/${extDataId}`,
@@ -3389,7 +3394,7 @@ async function splitPdfViaTab(did, extDataId, indices) {
         return { error: e.message };
       }
     },
-    args: [libCode, did, extDataId, indices],
+    args: [did, extDataId, indices],
   });
   const res = results[0]?.result;
   if (!res || res.error) throw new Error(res?.error || "splitPdfViaTab failed");
@@ -3399,7 +3404,8 @@ async function splitPdfViaTab(did, extDataId, indices) {
   return bytes;
 }
 
-async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
+async function bulkExportDrawingPdfs(did, wid, selectedDrawings, vid) {
+  const wvm = vid ? `v/${vid}` : `w/${wid}`;
   console.log("[BulkExport] Drawing elements:", selectedDrawings.map(e => e.name));
   chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `${selectedDrawings.length} drawing(s) to export` }).catch(() => {});
 
@@ -3407,7 +3413,7 @@ async function bulkExportDrawingPdfs(did, wid, selectedDrawings) {
   const jobs = await Promise.all(selectedDrawings.map(async el => {
     try {
       const job = await onshapePost(
-        `/api/v6/drawings/d/${did}/w/${wid}/e/${el.id}/translations`,
+        `/api/v6/drawings/d/${did}/${wvm}/e/${el.id}/translations`,
         { formatName: "PDF", storeInDocument: false }
       );
       return { name: el.name, jobId: job.id, documentId: job.documentId || did, pageFrom: el.pageFrom, pageTo: el.pageTo };
@@ -4389,6 +4395,9 @@ chrome.runtime.onConnect.addListener(port => {
 // ---------------------------------------------------------------------------
 
 chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
+  // Reject messages not originating from our own extension (content scripts, popup)
+  if (sender.id !== chrome.runtime.id) return;
+
   // check-kill-switch must respond even when disabled, so content.js knows to stop
   // Also check storage cache in case the async startup read hasn't finished yet
   if (msg.type === "check-kill-switch") {
@@ -4431,20 +4440,21 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
   }
 
   if (msg.type === "fetch-ps-configs") {
-    const { url, did: msgDid, wid: msgWid, eid: msgEid } = msg;
+    const { url, did: msgDid, wid: msgWid, vid: msgVid, eid: msgEid } = msg;
     sendResponse({ ok: true });
     (async () => {
       try {
-        let did, wid, eid;
+        let did, wid, vid, eid;
         if (url) {
           const parsed = parsePartStudioUrl(url);
           if (!parsed) throw new Error("Invalid URL");
           ({ docId: did, wid, eid } = parsed);
         } else {
-          did = msgDid; wid = msgWid; eid = msgEid;
+          did = msgDid; wid = msgWid; vid = msgVid; eid = msgEid;
         }
-        if (!did || !wid || !eid) throw new Error("Missing did/wid/eid");
-        const cfg = await onshapeFetch(`/api/v10/elements/d/${did}/w/${wid}/e/${eid}/configuration`);
+        if (!did || (!wid && !vid) || !eid) throw new Error("Missing did/wid/eid");
+        const wvm = vid ? `v/${vid}` : `w/${wid}`;
+        const cfg = await onshapeFetch(`/api/v10/elements/d/${did}/${wvm}/e/${eid}/configuration`);
         const rawParams = cfg?.configurationParameters || [];
         const currentCfg = {};
         (cfg?.currentConfiguration || []).forEach(p => {
@@ -4570,7 +4580,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
 
   } else if (msg.type === "folder-scan-notify") {
     // Delayed notification from content.js (10s after scan found illegal tabs)
-    chrome.notifications.create(`folder-scan-${msg.docId}-${Date.now()}`, {
+    chrome.notifications.create(`folder-scan-${crypto.randomUUID()}`, {
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: msg.docName || msg.docId,
@@ -4578,7 +4588,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     });
 
   } else if (msg.type === "feature-count-notify") {
-    chrome.notifications.create(`feature-count-${msg.eid}-${Date.now()}`, {
+    chrome.notifications.create(`feature-count-${crypto.randomUUID()}`, {
       type: "basic",
       iconUrl: "icons/icon128.png",
       title: msg.docName || msg.docId,
@@ -5026,12 +5036,12 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     // Try backend first, fall back to local storage
     (async () => {
       const user = await getSessionUser();
-      if (!user) return sendResponse({ allowed: false, error: "No session user" });
+      if (!user) return sendResponse({ allowed: true, error: "No session user" });
 
       // Try backend
       let docPerms = null;
       const remote = await syncFetch(`/api/merge-permissions/${msg.docId}`);
-      if (remote && remote.owners) {
+      if (remote && Array.isArray(remote.owners) && remote.owners.length > 0) {
         docPerms = remote;
         // Cache locally
         const stored = await chrome.storage.local.get("mergePermissions");
@@ -5050,7 +5060,7 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
         return sendResponse({ allowed: true, email: user.email });
       }
       const owners = docPerms.owners || [];
-      const allowed = owners.some(o => o.email === user.email);
+      const allowed = owners.some(o => o.email.toLowerCase() === user.email.toLowerCase());
       console.log(`[MergeBlock] User ${user.email} ${allowed ? "ALLOWED" : "BLOCKED"} for ${msg.docId}`);
       sendResponse({ allowed, email: user.email, owners });
     })();
@@ -5183,25 +5193,26 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return true;
 
   } else if (msg.type === "fetch-export-elements") {
-    const { did, wid } = msg;
-    if (!did || !wid) { sendResponse({ error: "Missing did or wid" }); return; }
+    const { did, wid, vid } = msg;
+    if (!did || (!wid && !vid)) { sendResponse({ error: "Missing did or wid/vid" }); return; }
+    const wvm = vid ? `v/${vid}` : `w/${wid}`;
     sendResponse({ ok: true });
     (async () => {
       try {
-        const elResp = await onshapeFetch(`/api/documents/d/${did}/w/${wid}/elements`);
+        const elResp = await onshapeFetch(`/api/documents/d/${did}/${wvm}/elements`);
         const allEls = Array.isArray(elResp) ? elResp : (elResp.items || []);
         const partStudioEls = allEls.filter(e => e.elementType === "PARTSTUDIO");
         const drawings = allEls.filter(e => e.elementType === "APPLICATION").map(e => ({ id: e.id, name: e.name }));
 
         const partStudios = await Promise.all(partStudioEls.map(async ps => {
           try {
-            const params = new URLSearchParams({ includeFlattenedBodies: "true", includeParts: "false", elementId: ps.id });
-            const ins = await onshapeFetch(`/api/documents/d/${did}/w/${wid}/insertables?${params}`);
-            const flatParts = (ins.items || [])
-              .filter(i => i.isFlattenedBody)
-              .map(i => ({ partName: i.partName || i.name || "FlatPattern", deterministicId: i.deterministicId }));
+            const parts = await onshapeFetch(`/api/v6/parts/d/${did}/${wvm}/e/${ps.id}?withThumbnails=false`);
+            const flatParts = (Array.isArray(parts) ? parts : [])
+              .filter(p => p.isFlattenedBody)
+              .map(p => ({ partName: p.name || "FlatPattern", deterministicId: p.partId }));
             return { id: ps.id, name: ps.name, flatParts };
           } catch (e) {
+            console.warn(`[ExportElements] parts fetch failed for ${ps.id}:`, e.message);
             return { id: ps.id, name: ps.name, flatParts: [] };
           }
         }));
@@ -5214,15 +5225,15 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     return;
 
   } else if (msg.type === "bulk-export") {
-    const { did, wid, selectedPartStudios, selectedDrawings } = msg;
-    if (!did || !wid) { sendResponse({ error: "Missing did or wid" }); return; }
+    const { did, wid, vid, selectedPartStudios, selectedDrawings } = msg;
+    if (!did || (!wid && !vid)) { sendResponse({ error: "Missing did or wid/vid" }); return; }
     sendResponse({ ok: true });
     (async () => {
       try {
         chrome.runtime.sendMessage({ type: "bulk-export-progress", message: "Starting bulk export..." }).catch(() => {});
         const [dxfFiles, pdfFiles] = await Promise.all([
-          selectedPartStudios?.length ? bulkExportFlatPatterns(did, wid, selectedPartStudios) : Promise.resolve([]),
-          selectedDrawings?.length ? bulkExportDrawingPdfs(did, wid, selectedDrawings) : Promise.resolve([]),
+          selectedPartStudios?.length ? bulkExportFlatPatterns(did, wid, selectedPartStudios, vid) : Promise.resolve([]),
+          selectedDrawings?.length ? bulkExportDrawingPdfs(did, wid, selectedDrawings, vid) : Promise.resolve([]),
         ]);
         const allFiles = [...dxfFiles, ...pdfFiles];
         chrome.runtime.sendMessage({ type: "bulk-export-progress", message: `Building ZIP: ${allFiles.length} file(s)...` }).catch(() => {});
@@ -5528,6 +5539,18 @@ chrome.runtime.onMessage.addListener((msg, sender, sendResponse) => {
     })();
     return;
 
+  } else if (msg.type === "normalize-part-names") {
+    sendResponse({ ok: true });
+    (async () => {
+      try {
+        const result = await normalizePartNames(msg.did, msg.wid, true);
+        chrome.runtime.sendMessage({ type: "normalize-part-names-done", result }).catch(() => {});
+      } catch (e) {
+        chrome.runtime.sendMessage({ type: "normalize-part-names-done", error: e.message }).catch(() => {});
+      }
+    })();
+    return;
+
   } else if (msg.type === "dxf-folder-sync") {
     sendResponse({ ok: true });
     (async () => {
@@ -5617,14 +5640,6 @@ chrome.tabs.onUpdated.addListener((tabId, changeInfo, tab) => {
       console.log("[SPA] Content script not reachable, reloading tab");
       chrome.tabs.reload(tabId);
     });
-    if (newDocId !== prevDocId) {
-      const widM = changeInfo.url.match(/\/w\/([a-f0-9]+)/);
-      if (widM) {
-        syncDrawingLinks(newDocId, widM[1]).catch(e => console.log("[DrawingLinkSync] Auto-sync failed:", e.message));
-        syncStockMass(newDocId, widM[1]).catch(e => console.log("[StockMassSync] Auto-sync failed:", e.message));
-        normalizePartNames(newDocId, widM[1]).catch(e => console.log("[NormalizeNames] Auto-sync failed:", e.message));
-      }
-    }
   }
 });
 

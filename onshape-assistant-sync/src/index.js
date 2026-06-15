@@ -48,6 +48,15 @@ export default {
       return json({ disabledDocs: val || [] }, corsHeaders);
     }
 
+    // GET /api/merge-permissions/:docId — public, no auth; extension reads who may merge a doc
+    const docMatchPublic = path.match(/^\/api\/merge-permissions\/([a-f0-9]+)$/);
+    if (docMatchPublic && request.method === "GET") {
+      const docId = docMatchPublic[1];
+      const val = await env.MERGE_PERMS.get(docId, "json");
+      if (!val) return json({ error: "Not found" }, corsHeaders, 404);
+      return json(val, corsHeaders);
+    }
+
     // POST /api/compliance/extension-event — extension event record (no auth, extension calls directly)
     // Body: { email, event, documentId, timestamp }
     if (path === "/api/compliance/extension-event" && request.method === "POST") {

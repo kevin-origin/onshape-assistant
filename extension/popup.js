@@ -109,7 +109,7 @@ document.getElementById("btnBulkExport").addEventListener("click", () => {
   const btn = document.getElementById("btnBulkExport");
   const $status = document.getElementById("exportStatus");
   const $log = document.getElementById("exportLog");
-  const { did, wid } = _exportData;
+  const { did, wid, vid } = _exportData;
 
   // Collect selected part studios with their checked parts
   const psMap = {};
@@ -161,7 +161,7 @@ document.getElementById("btnBulkExport").addEventListener("click", () => {
   $status.style.color = "#7ec8e3";
   $status.textContent = "Exporting...";
 
-  chrome.runtime.sendMessage({ type: "bulk-export", did, wid, selectedPartStudios, selectedDrawings });
+  chrome.runtime.sendMessage({ type: "bulk-export", did, wid, vid, selectedPartStudios, selectedDrawings });
 });
 
 // ---------------------------------------------------------------------------
@@ -190,25 +190,56 @@ function loadExportElements() {
     const url = tabs[0].url || "";
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
-    if (!docMatch || !widMatch) {
+    const vidMatch = url.match(/\/v\/([a-f0-9]+)/);
+    if (!docMatch || (!widMatch && !vidMatch)) {
       $status.textContent = "Not an Onshape workspace";
       return;
     }
     const did = docMatch[1];
-    const wid = widMatch[1];
-    _exportData = { did, wid };
+    const wid = widMatch ? widMatch[1] : null;
+    const vid = vidMatch ? vidMatch[1] : null;
 
-    chrome.runtime.sendMessage({ type: "check-releases", docId: did }, (releaseResp) => {
-      const noReleases = !releaseResp || !releaseResp.hasReleases;
-      const staleRevision = !noReleases && !!releaseResp?.staleRevision;
-      if (noReleases || staleRevision) {
-        $status.style.color = "#f59e0b";
-        $status.textContent = noReleases
-          ? "Please create a release before exporting."
-          : "Changes have been made since the last release. Please create a new release before exporting.";
+    if (vid) {
+      // Version link — OTS Parts docs skip release check; others require a formal revision
+      chrome.runtime.sendMessage({ type: "get-top-folder", docId: did }, (folderResp) => {
+        if (folderResp?.topFolderName === "OTS Parts") {
+          console.log("[ExportDetect] OTS Parts (version) — skipping release check");
+          _exportData = { did, vid };
+          chrome.runtime.sendMessage({ type: "fetch-export-elements", did, vid });
+          return;
+        }
+        chrome.runtime.sendMessage({ type: "check-version-is-release", docId: did, vid }, (resp) => {
+          if (!resp?.isRelease) {
+            $status.style.color = "#f59e0b";
+            $status.textContent = "This version is not a revision — create a release first.";
+            return;
+          }
+          _exportData = { did, vid };
+          chrome.runtime.sendMessage({ type: "fetch-export-elements", did, vid });
+        });
+      });
+      return;
+    }
+
+    _exportData = { did, wid };
+    chrome.runtime.sendMessage({ type: "get-top-folder", docId: did }, (folderResp) => {
+      if (folderResp?.topFolderName === "OTS Parts") {
+        console.log("[ExportDetect] OTS Parts — skipping release check");
+        chrome.runtime.sendMessage({ type: "fetch-export-elements", did, wid });
         return;
       }
-      chrome.runtime.sendMessage({ type: "fetch-export-elements", did, wid });
+      chrome.runtime.sendMessage({ type: "check-releases", docId: did }, (releaseResp) => {
+        const noReleases = !releaseResp || !releaseResp.hasReleases;
+        const staleRevision = !noReleases && !!releaseResp?.staleRevision;
+        if (noReleases || staleRevision) {
+          $status.style.color = "#f59e0b";
+          $status.textContent = noReleases
+            ? "Please create a release before exporting."
+            : "Changes have been made since the last release. Please create a new release before exporting.";
+          return;
+        }
+        chrome.runtime.sendMessage({ type: "fetch-export-elements", did, wid });
+      });
     });
   });
 }
@@ -257,7 +288,7 @@ function renderExportElements(partStudios, drawings) {
     cfgWrap.style.cssText = "padding-left:23px;margin-top:4px;display:none;";
     psRow.appendChild(cfgWrap);
     // Fetch configs for this PS
-    chrome.runtime.sendMessage({ type: "fetch-ps-configs", did: _exportData?.did, wid: _exportData?.wid, eid: ps.id });
+    chrome.runtime.sendMessage({ type: "fetch-ps-configs", did: _exportData?.did, wid: _exportData?.wid, vid: _exportData?.vid, eid: ps.id });
     const partContainer = document.createElement("div");
     partContainer.style.paddingLeft = "18px";
     psRow.addEventListener("click", (e) => {
@@ -358,6 +389,45 @@ document.getElementById("btnSortTabs").addEventListener("click", () => {
       setTimeout(() => { btn.textContent = "Sort Tabs"; }, 3000);
     }
   });
+});
+
+document.getElementById("btnNormalizeNames").addEventListener("click", () => {
+  const btn = document.getElementById("btnNormalizeNames");
+  const $log = document.getElementById("normalizeNamesLog");
+  $log.style.display = "none";
+  $log.textContent = "";
+  chrome.tabs.query({ active: true, currentWindow: true }, (tabs) => {
+    if (!tabs.length) return;
+    const url = tabs[0].url || "";
+    const didM = url.match(/\/documents\/([a-f0-9]+)/);
+    const widM = url.match(/\/w\/([a-f0-9]+)/);
+    if (!didM || !widM) {
+      $log.style.display = "block";
+      $log.textContent = "Open an Onshape workspace tab first";
+      return;
+    }
+    btn.disabled = true;
+    btn.textContent = "Normalizing...";
+    chrome.runtime.sendMessage({ type: "normalize-part-names", did: didM[1], wid: widM[1] });
+  });
+});
+
+chrome.runtime.onMessage.addListener((msg) => {
+  if (msg.type === "normalize-part-names-done") {
+    const btn = document.getElementById("btnNormalizeNames");
+    const $log = document.getElementById("normalizeNamesLog");
+    btn.disabled = false;
+    btn.textContent = "Normalize Part Names";
+    $log.style.display = "block";
+    if (msg.error) {
+      $log.style.color = "#ff6b6b";
+      $log.textContent = "Error: " + msg.error;
+    } else {
+      $log.style.color = "#aaa";
+      const r = msg.result || {};
+      $log.textContent = `Done — updated: ${r.updated ?? 0}, skipped: ${r.skipped ?? 0}, errors: ${r.errors ?? 0}`;
+    }
+  }
 });
 
 // Interference Check — run button
@@ -491,6 +561,7 @@ chrome.storage.local.get("popupTargetSection", (data) => {
 // Folder Structure validation — ALLOWED_FOLDERS whitelist and scan result validator
 // ---------------------------------------------------------------------------
 
+// NOTE: must match ALLOWED_FOLDERS in background.js and content.js
 const ALLOWED_FOLDERS = ["Part Studios", "Assemblies", "Drawings", "CAD Imports", "Feature Studios", "Variable Studios"];
 
 /**
@@ -904,7 +975,7 @@ $btnConfirm.addEventListener("click", () => {
   $drawLog.innerHTML = "";
   $btnCreateDraw.disabled = true;
 
-  appendDrawLog(`Creating drawings for ${selectedParts.length} part(s)...`);
+  appendDrawLog(`Starting ${selectedParts.length} drawing${selectedParts.length !== 1 ? "s" : ""}...`);
 
   chrome.runtime.sendMessage({
     type: "create-drawings",
@@ -941,7 +1012,7 @@ document.getElementById("btnLoadDrawings").addEventListener("click", () => {
     const url      = tabs[0].url || "";
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
-    if (!docMatch || !widMatch) { $status.textContent = "Not an Onshape workspace"; return; }
+    if (!docMatch || !widMatch) { $status.textContent = url.includes("/v/") ? "Version link — open the workspace tab" : "Not an Onshape workspace"; return; }
 
     chrome.runtime.sendMessage({
       type: "fetch-drawing-elements",
@@ -1024,7 +1095,7 @@ document.getElementById("btnApplyNotes").addEventListener("click", () => {
     const docMatch = url.match(/\/documents\/([a-f0-9]+)/);
     const widMatch = url.match(/\/w\/([a-f0-9]+)/);
     if (!docMatch || !widMatch) {
-      appendNotesLog("Not an Onshape workspace", "log-err");
+      appendNotesLog(url.includes("/v/") ? "Version link — open the workspace tab" : "Not an Onshape workspace", "log-err");
       $log.style.display = "block";
       return;
     }
